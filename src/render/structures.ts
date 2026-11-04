@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  BufferAttribute,
   BufferGeometry,
   CatmullRomCurve3,
   Color,
@@ -31,10 +32,32 @@ import {
   type V3,
 } from '../sim/site';
 import { terrainHeight } from '../sim/terrain';
-import { fouledMaterial, makeLabelTexture } from './materials';
+import { fouledMaterial, makeGratingTexture, makeLabelTexture, makeTagAtlas } from './materials';
 import type { GraphicsQuality } from '../config/settings';
 
 type MatKey = 'paint' | 'steel' | 'pipe' | 'handle' | 'anode' | 'dark' | 'concrete';
+
+/** Valve / equipment tags: one atlas, one merged mesh for the whole site. */
+const TAGS = ['V-101', 'V-102', 'V-103', 'V-104', 'V-105', 'V-106', 'V-107', 'V-108', 'XV-1', 'XV-2', 'XV-3', 'V-301', 'P-1', 'P-2', 'P-3', 'P-4'];
+const TAG_W = 0.24;
+const TAG_H = 0.12;
+
+/** Collects tag plates (in world space) for a single draw call. */
+class TagSet {
+  readonly parts: BufferGeometry[] = [];
+  constructor(private readonly uv: (i: number) => { u0: number; u1: number; v0: number; v1: number }) {}
+  /** Plate facing local +Z of `m`. */
+  add(label: string, m: Matrix4): void {
+    const i = TAGS.indexOf(label);
+    if (i < 0) return;
+    const g = new PlaneGeometry(TAG_W, TAG_H);
+    const r = this.uv(i);
+    const uv = g.attributes.uv as BufferAttribute;
+    for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) ? r.u1 : r.u0, uv.getY(k) ? r.v1 : r.v0);
+    g.applyMatrix4(m);
+    this.parts.push(g);
+  }
+}
 
 /** Collects geometry per material and merges it into few draw calls. */
 class Builder {
@@ -89,14 +112,29 @@ const HALF = Math.PI / 2;
 
 function makeMaterials(): Record<MatKey, Material> {
   return {
-    paint: fouledMaterial({ color: 0xd9a21b, roughness: 0.6, metalness: 0.1 }, { amount: 0.55, sediment: 0.7 }),
-    steel: fouledMaterial({ color: 0x8a8f94, roughness: 0.45, metalness: 0.7 }, { amount: 0.4, sediment: 0.5 }),
-    pipe: fouledMaterial({ color: 0x2a2c2e, roughness: 0.7, metalness: 0.1 }, { amount: 0.45, sediment: 0.8, scale: 1.1 }),
-    handle: fouledMaterial({ color: 0xe86a1c, roughness: 0.5, metalness: 0.1 }, { amount: 0.2, sediment: 0.3 }),
-    anode: new MeshStandardMaterial({ color: 0xb7b9b6, roughness: 0.85, metalness: 0.3 }),
-    dark: fouledMaterial({ color: 0x3b3f44, roughness: 0.6, metalness: 0.4 }, { amount: 0.35, sediment: 0.5 }),
-    concrete: fouledMaterial({ color: 0x8c8a83, roughness: 0.95, metalness: 0 }, { amount: 0.4, sediment: 0.9 }),
+    paint: fouledMaterial({ color: 0xd9a21b, roughness: 0.6, metalness: 0.1 }, { amount: 0.55, sediment: 0.7, chips: 0.35, relief: 0.7 }),
+    steel: fouledMaterial({ color: 0x8a8f94, roughness: 0.45, metalness: 0.7 }, { amount: 0.4, sediment: 0.5, chips: 0.2, relief: 0.6 }),
+    pipe: fouledMaterial({ color: 0x2a2c2e, roughness: 0.7, metalness: 0.1 }, { amount: 0.45, sediment: 0.8, scale: 1.1, chips: 0.15, relief: 0.6 }),
+    handle: fouledMaterial({ color: 0xe86a1c, roughness: 0.5, metalness: 0.1 }, { amount: 0.2, sediment: 0.3, chips: 0.25, relief: 0.4 }),
+    // Anodes: dull, slightly pitted aluminium-zinc with white corrosion product.
+    anode: fouledMaterial({ color: 0xa9aca8, roughness: 0.9, metalness: 0.25 }, { amount: 0.15, sediment: 0.4, growth: new Color(0.78, 0.78, 0.74), chips: 0, relief: 1, scale: 4 }),
+    dark: fouledMaterial({ color: 0x3b3f44, roughness: 0.6, metalness: 0.4 }, { amount: 0.35, sediment: 0.5, chips: 0.2, relief: 0.6 }),
+    concrete: fouledMaterial({ color: 0x8c8a83, roughness: 0.95, metalness: 0 }, { amount: 0.4, sediment: 0.9, chips: 0, relief: 0.9, scale: 2.4 }),
   };
+}
+
+/** ROV grab handle (D-handle on two stand-offs), axis along local X, protruding towards +Z. */
+function dHandle(b: Builder, m: Matrix4): void {
+  const h = new TorusGeometry(0.12, 0.022, 6, 10, Math.PI);
+  h.rotateX(Math.PI / 2);
+  b.add('handle', h, new Matrix4().makeTranslation(0, 0, 0.04).premultiply(m));
+}
+
+/** Bracelet / stand-off anode on a vertical member. */
+function anode(b: Builder, x: number, y: number, z: number, out: Vector3): void {
+  b.box('anode', 0.16, 0.65, 0.16, x + out.x * 0.26, y, z + out.z * 0.26);
+  b.box('steel', 0.05, 0.05, 0.2, x + out.x * 0.15, y + 0.28, z + out.z * 0.15);
+  b.box('steel', 0.05, 0.05, 0.2, x + out.x * 0.15, y - 0.28, z + out.z * 0.15);
 }
 
 /** Gate valve with actuator, handwheel and ROV handle, axis along local X. */
@@ -123,7 +161,7 @@ function hub(b: Builder, x: number, y: number, z: number, axis: 'x' | 'y', r: nu
   }
 }
 
-function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQuality): Group {
+function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQuality, tags: TagSet): Group {
   const g = new Group();
   g.name = 'manifold';
   const b = new Builder();
@@ -166,11 +204,27 @@ function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQua
     // header supports
     for (const x of [-3.5, 0, 3.5]) b.box('steel', 0.3, y - 0.3, 0.5, x, (y - 0.3) / 2 + 0.3, z);
   }
-  // Branch valves along the headers.
-  for (const x of [-3, -1, 1, 3]) {
+  // Branch valves along the headers (with engraved tags on the bodies).
+  const local = new Matrix4().compose(
+    new Vector3(MANIFOLD.position.x, MANIFOLD.position.y, MANIFOLD.position.z),
+    new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), MANIFOLD.yaw),
+    new Vector3(1, 1, 1),
+  );
+  const flip = new Matrix4().makeRotationY(Math.PI);
+  [-3, -1, 1, 3].forEach((x, i) => {
     valve(b, x, 2.45, -0.8, 1);
     valve(b, x + 0.6, 2.9, 0.8, 0.9);
     b.cyl('pipe', 0.12, 1.1, x, 1.9, -0.2, RX(HALF), 12);
+    tags.add(`V-10${i + 1}`, new Matrix4().makeTranslation(x, 2.45, -0.8 - 0.28).multiply(flip).premultiply(local));
+    tags.add(`V-10${i + 5}`, new Matrix4().makeTranslation(x + 0.6, 2.9, 0.8 + 0.255).premultiply(local));
+  });
+  // Panel position tags.
+  for (let i = 0; i < 4; i++) tags.add(`P-${i + 1}`, new Matrix4().makeTranslation(0.9 + i * 0.6, 1.85, hw + 0.315).premultiply(local));
+  // ROV grab handles on the outer columns (both long faces).
+  for (const [x, z] of cols) {
+    const out = z > 0 ? 0 : Math.PI;
+    for (const y of [1.0, 2.6])
+      dHandle(b, new Matrix4().makeTranslation(x, y, z + Math.sign(z) * 0.16).multiply(new Matrix4().makeRotationY(out)));
   }
   // ROV control panel on the south face.
   b.box('dark', 2.4, 1.2, 0.12, 1.8, 1.4, hw + 0.25);
@@ -188,11 +242,11 @@ function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQua
   b.cyl('pipe', PIPELINE_RADIUS, 1.6, 4.9, 0.9, 0.8, RZ(HALF), 18);
   b.cyl('pipe', 0.2, 1.2, 4.2, 1.4, 0.8, undefined, 16);
   // Sacrificial anodes on the columns.
-  if (quality !== 'low')
-    for (const [x, z] of cols) {
-      b.box('anode', 0.18, 0.7, 0.18, x + 0.26 * Math.sign(x || 1), 1.2, z);
-      b.box('anode', 0.18, 0.7, 0.18, x + 0.26 * Math.sign(x || 1), 3.0, z);
-    }
+  for (const [x, z] of cols) {
+    const out = new Vector3(Math.sign(x || 1), 0, 0);
+    anode(b, x, 1.2, z, out);
+    if (quality !== 'low') anode(b, x, 3.0, z, out);
+  }
   // Lifting padeyes.
   for (const [x, z] of [
     [-hl, -hw],
@@ -202,6 +256,18 @@ function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQua
   ])
     b.add('steel', new TorusGeometry(0.16, 0.05, 6, 12), compose(x, H + 0.25, z));
   b.build(materials, g);
+
+  // Bar grating over the two outer roof bays (the middle hatch is open).
+  const grating = fouledMaterial(
+    { map: makeGratingTexture(8), alphaTest: 0.5, side: DoubleSide, roughness: 0.65, metalness: 0.2 },
+    { amount: 0.45, sediment: 0.8, chips: 0.2, relief: 0 },
+  );
+  (grating.map!.repeat as { set(x: number, y: number): void }).set(L / 3 / 0.5, W / 0.5);
+  const grateGeo = mergeGeometries([-1, 1].map((sx) => new PlaneGeometry(L / 3, W).rotateX(-HALF).translate((sx * L) / 3, H + 0.1, 0)))!;
+  const grate = new Mesh(grateGeo, grating);
+  grate.castShadow = true;
+  grate.receiveShadow = true;
+  g.add(grate);
 
   // Identification board.
   const tag = new Mesh(new PlaneGeometry(2.2, 0.8), new MeshStandardMaterial({ map: makeLabelTexture('MF-01', { w: 512, h: 186 }), roughness: 0.6 }));
@@ -213,7 +279,7 @@ function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQua
   return g;
 }
 
-function buildTree(materials: Record<MatKey, Material>): Group {
+function buildTree(materials: Record<MatKey, Material>, tags: TagSet): Group {
   const g = new Group();
   g.name = 'xmas-tree';
   const b = new Builder();
@@ -248,7 +314,18 @@ function buildTree(materials: Record<MatKey, Material>): Group {
   // ROV panel.
   b.box('dark', 1.6, 0.9, 0.1, 0, 1.6, -h - 0.05);
   for (let i = 0; i < 3; i++) b.cyl('handle', 0.06, 0.25, -0.5 + i * 0.5, 1.65, -h - 0.2, RX(HALF), 10);
+  // Anodes and grab handles on the guide frame.
+  for (const x of [-h, h]) for (const z of [-h, h]) anode(b, x, 1.4, z, new Vector3(Math.sign(x), 0, 0));
+  for (const z of [-h, h]) dHandle(b, new Matrix4().makeTranslation(0.9, 2.2, z + Math.sign(z) * 0.12).multiply(new Matrix4().makeRotationY(z > 0 ? 0 : Math.PI)));
   b.build(materials, g);
+  const treeM = new Matrix4().compose(
+    new Vector3(TREE.position.x, TREE.position.y, TREE.position.z),
+    new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), TREE.yaw),
+    new Vector3(1, 1, 1),
+  );
+  // Valve tags on the panel face (local −Z) above the handles.
+  const back = new Matrix4().makeRotationY(Math.PI);
+  for (let i = 0; i < 3; i++) tags.add(`XV-${i + 1}`, new Matrix4().makeTranslation(-0.5 + i * 0.5, 1.95, -h - 0.112).multiply(back).premultiply(treeM));
   const tag = new Mesh(new PlaneGeometry(1.4, 0.5), new MeshStandardMaterial({ map: makeLabelTexture('ANM-03', { w: 384, h: 136 }), roughness: 0.6 }));
   tag.position.set(0, 3.1, h + 0.13);
   g.add(tag);
@@ -267,7 +344,7 @@ function tube(path: V3[], radius: number, segPerPoint: number, radial: number, t
   return { curve, geo: new TubeGeometry(curve, Math.max(8, path.length * segPerPoint), radius, radial, false) };
 }
 
-function buildPipes(materials: Record<MatKey, Material>, quality: GraphicsQuality): Group {
+function buildPipes(materials: Record<MatKey, Material>, quality: GraphicsQuality, tags: TagSet): Group {
   const g = new Group();
   g.name = 'pipes';
   const radial = quality === 'low' ? 10 : 18;
@@ -311,11 +388,14 @@ function buildPipes(materials: Record<MatKey, Material>, quality: GraphicsQualit
     plet.box('paint', 0.18, 0.18, W, (s * L) / 2, H, 0);
   }
   valve(plet, 0, 0.8, 0, 1);
+  tags.add('V-301', new Matrix4().makeTranslation(PLET.position.x, PLET.position.y + 0.8, PLET.position.z + 0.285));
+  for (const x of [-L / 2, L / 2]) anode(plet, x, 0.9, -W / 2, new Vector3(Math.sign(x), 0, 0));
   plet.cyl('pipe', PIPELINE_RADIUS, L, 0, 0.6, 0, RZ(HALF), radial);
   const pletGroup = new Group();
   plet.build(materials, pletGroup);
   pletGroup.position.set(PLET.position.x, PLET.position.y, PLET.position.z);
   g.add(pletGroup);
+  concreteMattresses(b, pipeline.curve, quality);
   b.build(materials, g);
   return g;
 }
@@ -349,14 +429,61 @@ function buildMarkers(): Group {
   return g;
 }
 
+/**
+ * Articulated concrete mattresses draped over the pipeline where it leaves
+ * the manifold (protection / stabilisation), built from individual blocks.
+ */
+function concreteMattresses(b: Builder, curve: CatmullRomCurve3, quality: GraphicsQuality): void {
+  const len = curve.getLength();
+  const block = 0.5;
+  const gap = 0.06;
+  const across = 6;
+  const along = quality === 'low' ? 4 : 5;
+  const geo = new BoxGeometry(block, 0.15, block);
+  for (const s0 of [7, 10.5, 14]) {
+    for (let i = 0; i < along; i++) {
+      const s = s0 + (i - (along - 1) / 2) * (block + gap);
+      const t = Math.min(1, Math.max(0, s / len));
+      const c = curve.getPointAt(t);
+      const d = curve.getTangentAt(t);
+      const side = new Vector3(-d.z, 0, d.x).normalize();
+      const fwd = new Vector3(d.x, 0, d.z).normalize();
+      for (let j = 0; j < across; j++) {
+        const v = (j - (across - 1) / 2) * (block + gap);
+        const x = c.x + side.x * v;
+        const z = c.z + side.z * v;
+        const gnd = terrainHeight(x, z);
+        const top = c.y + PIPELINE_RADIUS;
+        const drape = (u: number) => Math.max(gnd, top - Math.max(0, Math.abs(u) - 0.2) * 0.55);
+        const y = drape(v) + 0.075;
+        const slope = Math.atan2(drape(v + 0.25) - drape(v - 0.25), 0.5);
+        const m = new Matrix4().makeBasis(side, new Vector3(0, 1, 0), fwd);
+        m.multiply(new Matrix4().makeRotationZ(slope));
+        m.setPosition(x, y, z);
+        b.add('concrete', geo.clone(), m);
+      }
+    }
+  }
+}
+
 export function createStructures(quality: GraphicsQuality): Group {
   const root = new Group();
   root.name = 'structures';
   const materials = makeMaterials();
-  root.add(buildManifold(materials, quality));
-  root.add(buildTree(materials));
-  root.add(buildPipes(materials, quality));
+  const atlas = makeTagAtlas(TAGS, { cols: 4, cellW: 160, cellH: 80 });
+  const tags = new TagSet(atlas.uv);
+  root.add(buildManifold(materials, quality, tags));
+  root.add(buildTree(materials, tags));
+  root.add(buildPipes(materials, quality, tags));
   root.add(buildMarkers());
+  const tagGeo = mergeGeometries(tags.parts, false);
+  if (tagGeo) {
+    const tagMesh = new Mesh(tagGeo, new MeshStandardMaterial({ map: atlas.texture, roughness: 0.55, metalness: 0.1, side: DoubleSide }));
+    tagMesh.name = 'valve-tags';
+    tagMesh.receiveShadow = true;
+    root.add(tagMesh);
+    tags.parts.forEach((g) => g.dispose());
+  }
   // Debug info: free span height is part of the site description.
   root.userData.freeSpanGap = FREE_SPAN.gap;
   return root;
