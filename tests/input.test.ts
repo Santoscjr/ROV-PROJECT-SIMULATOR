@@ -79,19 +79,38 @@ describe('input manager', () => {
     poll: () => ({ axes, actions: [] }),
   });
 
-  it('merges devices, clamps and applies sensitivity / inversion / fine control', () => {
+  it('dominant policy: per axis, the largest deflection wins (no unpredictable sums)', () => {
     const im = new InputManager();
     im.add(fake({ surge: 0.8, yaw: 0.5 }, 'a'));
-    im.add(fake({ surge: 0.6, heave: -0.5 }, 'b'));
+    im.add(fake({ surge: -0.6, heave: -0.5 }, 'b'));
     im.shaping = { sensitivity: 0.5, invert: { heave: true }, fineGain: 0.4 };
     im.poll();
-    expect(im.raw.surge).toBe(1);
-    expect(im.command.surge).toBeCloseTo(0.5);
+    expect(im.raw.surge).toBe(0.8);
+    expect(im.sources.surge).toBe('a');
+    expect(im.command.surge).toBeCloseTo(0.4);
     expect(im.command.heave).toBeCloseTo(0.25);
-    expect(im.sources.surge).toBe('b');
+    expect(im.sources.heave).toBe('b');
     im.fine = true;
     im.poll();
     expect(im.command.yaw).toBeCloseTo(0.5 * 0.5 * 0.4);
+  });
+
+  it('sum policy adds and clamps', () => {
+    const im = new InputManager();
+    im.policy = 'sum';
+    im.add(fake({ surge: 0.8 }, 'a'));
+    im.add(fake({ surge: 0.6 }, 'b'));
+    im.shaping = { sensitivity: 1, invert: {}, fineGain: 0.4 };
+    im.poll();
+    expect(im.raw.surge).toBe(1);
+  });
+
+  it('ignores non-finite values from a misbehaving device', () => {
+    const im = new InputManager();
+    im.add(fake({ surge: Number.NaN, sway: Infinity }, 'a'));
+    im.poll();
+    expect(im.command.surge).toBe(0);
+    expect(im.command.sway).toBe(0);
   });
 
   it('ignores disconnected devices', () => {

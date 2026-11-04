@@ -3,24 +3,28 @@ import {
   BINDABLE,
   KEYBOARD_PRESETS,
   type Bindable,
+  type CameraFx,
   type GraphicsQuality,
   type KeyboardPreset,
   type Settings,
   type SettingsStore,
 } from '../config/settings';
-import type { MissionStats } from '../mission/mission';
-import type { CurrentLevel } from '../sim/ocean';
+import type { MissionDefinition, MissionStats, OperationMission } from '../mission/types';
+import type { ConditionChoice } from '../sim/conditions';
+import { resolveConditions, visibilityRange } from '../sim/conditions';
 import type { PilotMode } from '../control/rovController';
+import type { SpaceMouseDevice } from '../input/spacemouse/spacemouseDevice';
+import { SpaceMousePanel } from './spacemousePanel';
 
 type ScreenName = 'main' | 'pause' | 'settings' | 'help' | 'report' | null;
+type SettingsTab = 'graphics' | 'controls' | 'spacemouse' | 'environment';
 
 export interface MenuCallbacks {
-  start(): void;
+  start(missionId: MissionDefinition['id']): void;
   resume(): void;
   restart(): void;
   mainMenu(): void;
-  connectSpaceMouse(): Promise<string | null>;
-  spaceMouseSupported(): boolean;
+  spaceMouse(): SpaceMouseDevice | null;
 }
 
 /** Human-readable label for a KeyboardEvent.code. */
@@ -61,16 +65,27 @@ const LOGO = `<svg width="46" height="46" viewBox="0 0 46 46" aria-hidden="true"
   <path d="M23 6v8" stroke="#c9d4dc" stroke-width="1.6"/>
 </svg>`;
 
+const COND_KEYS: { key: keyof ConditionChoice; options: string[] }[] = [
+  { key: 'current', options: ['off', 'low', 'normal', 'strong'] },
+  { key: 'visibility', options: ['clear', 'normal', 'turbid'] },
+  { key: 'light', options: ['day', 'overcast', 'night'] },
+  { key: 'sea', options: ['calm', 'moderate'] },
+];
+
 export class Menus {
   readonly root: HTMLDivElement;
   private screens: Record<Exclude<ScreenName, null>, HTMLElement>;
   current: ScreenName = 'main';
   private settingsReturn: ScreenName = 'main';
+  private helpReturn: ScreenName = 'main';
   private listening: { key: Bindable; btn: HTMLButtonElement } | null = null;
+  private tab: SettingsTab = 'graphics';
+  private smPanel: SpaceMousePanel | null = null;
 
   constructor(
     parent: HTMLElement,
     private readonly store: SettingsStore,
+    private readonly missions: MissionDefinition[],
     private readonly cb: MenuCallbacks,
   ) {
     this.root = document.createElement('div');
@@ -84,7 +99,10 @@ export class Menus {
     };
     Object.values(this.screens).forEach((s) => this.root.appendChild(s));
     window.addEventListener('keydown', this.onKeyCapture, true);
-    store.subscribe(() => this.refreshSettings());
+    store.subscribe(() => {
+      this.refreshSettings();
+      this.refreshMain();
+    });
     this.show('main');
   }
 
@@ -94,60 +112,108 @@ export class Menus {
 
   show(name: ScreenName): void {
     if (name === 'settings' && this.current !== 'settings') this.settingsReturn = this.current;
-    if (name === 'help' && this.current !== 'help') this.settingsReturn = this.current;
+    if (name === 'help' && this.current !== 'help') this.helpReturn = this.current;
     this.current = name;
     for (const [k, el] of Object.entries(this.screens)) el.hidden = k !== name;
     if (name === 'settings') this.refreshSettings();
+    if (name === 'main') this.refreshMain();
+    this.smPanel?.setVisible(name === 'settings' && this.tab === 'spacemouse');
     if (name) (this.screens[name].querySelector('button.primary, button') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
 
   back(): void {
-    this.show(this.settingsReturn);
+    this.show(this.current === 'help' ? this.helpReturn : this.settingsReturn);
+  }
+
+  /** Refresh dynamic device status (called by the app on connect/disconnect). */
+  refreshDevices(): void {
+    if (this.current === 'main') this.refreshMain();
+    if (this.current === 'settings' && this.tab === 'spacemouse') this.smPanel?.render();
   }
 
   // ---------- Main menu ----------
   private buildMain(): HTMLElement {
     const s = screen();
     s.innerHTML = `
-      <div class="card">
+      <div class="card wide">
         <div class="menu-grid">
           <section>
             <div class="brand">${LOGO}<div><div class="eyebrow">Offshore ROV Operations</div>
               <h1>${t('app.title')}</h1><div class="sub">${t('app.subtitle')}</div></div></div>
-            <dl class="facts">
-              <dt>${t('menu.mission')}</dt><dd><strong>${t('menu.missionName')}</strong><br><span class="muted">${t('menu.missionDesc')}</span></dd>
+            <h3 class="sec">${t('menu.selectOp')}</h3>
+            <div class="op-list" data-o="ops"></div>
+            <h3 class="sec">${t('menu.conditions')}</h3>
+            <div class="cond-grid" data-o="conds"></div>
+            <p class="muted small" data-o="condNote"></p>
+          </section>
+          <section class="side">
+            <div class="menu-actions">
+              <button class="primary big" data-a="start">${t('menu.start')}</button>
+              <button data-a="controls">${t('menu.controls')}</button>
+              <button data-a="settings">${t('menu.settings')}</button>
+            </div>
+            <h3 class="sec">${t('menu.devices')}</h3>
+            <div class="devices" data-o="devices"></div>
+            <dl class="facts compact">
               <dt>${t('menu.vehicle')}</dt><dd>${t('menu.vehicleDesc')}</dd>
               <dt>${t('menu.site')}</dt><dd>${t('menu.siteDesc')}</dd>
             </dl>
-            <ol class="steps">
-              <li>${t('stage.prep')} — ${t('mission.prep.title')}</li>
-              <li>${t('stage.launch')} · ${t('stage.descent')} · ${t('stage.bottom')}</li>
-              <li>${t('stage.inspection')} — IP-01, IP-02</li>
-              <li>${t('stage.return')} · ${t('stage.recovery')}</li>
-            </ol>
-          </section>
-          <section>
-            <div class="menu-actions">
-              <button class="primary" data-a="start">${t('menu.start')}</button>
-              <button data-a="controls">${t('menu.controls')}</button>
-              <button data-a="settings">${t('menu.settings')}</button>
-              <button data-a="spacemouse">${t('menu.spacemouse')}</button>
-            </div>
             <p class="disclaimer">${t('menu.disclaimer')}</p>
-            <div class="keys" style="margin-top:14px">
-              <span><kbd>W</kbd> <kbd>S</kbd></span><span>${t('axis.surge')}</span>
-              <span><kbd>A</kbd> <kbd>D</kbd></span><span>${t('axis.sway')}</span>
-              <span><kbd>Q</kbd> <kbd>E</kbd></span><span>${t('axis.yaw')}</span>
-              <span><kbd>R</kbd> <kbd>F</kbd></span><span>${t('axis.heave')}</span>
-            </div>
           </section>
         </div>
       </div>`;
-    on(s, 'start', () => this.cb.start());
+    on(s, 'start', () => this.cb.start(this.store.get().mission));
     on(s, 'controls', () => this.show('help'));
     on(s, 'settings', () => this.show('settings'));
-    on(s, 'spacemouse', () => window.open('./spacemouse.html', '_blank', 'noopener'));
     return s;
+  }
+
+  private refreshMain(): void {
+    const s = this.screens?.main;
+    if (!s) return;
+    const st = this.store.get();
+    const ops = s.querySelector('[data-o="ops"]')!;
+    ops.innerHTML = this.missions
+      .map(
+        (m) => `<button class="op ${m.id === st.mission ? 'sel' : ''}" data-op="${m.id}" aria-pressed="${m.id === st.mission}">
+          <span class="op-head"><strong>${t(m.titleKey)}</strong><span class="pips" title="${t('menu.difficulty')}">${[1, 2, 3]
+            .map((i) => `<i class="${i <= m.difficulty ? 'on' : ''}"></i>`)
+            .join('')}</span></span>
+          <span class="op-desc">${t(m.descKey)}</span></button>`,
+      )
+      .join('');
+    ops.querySelectorAll<HTMLButtonElement>('[data-op]').forEach((b) =>
+      b.addEventListener('click', () => this.store.update({ mission: b.dataset.op as Settings['mission'] })),
+    );
+    const def = this.missions.find((m) => m.id === st.mission)!;
+    const forced = def.forcedConditions ?? {};
+    const conds = s.querySelector('[data-o="conds"]')!;
+    conds.innerHTML = COND_KEYS.map(({ key, options }) => {
+      const locked = forced[key] !== undefined;
+      const val = (forced[key] ?? st[key]) as string;
+      return `<label class="cond ${locked ? 'locked' : ''}"><span>${t('settings.' + key)}</span>
+        <select data-cond="${key}" ${locked ? 'disabled' : ''}>${options
+          .map((o) => `<option value="${o}" ${o === val ? 'selected' : ''}>${t(`settings.${key}.${o}`)}</option>`)
+          .join('')}</select></label>`;
+    }).join('');
+    conds.querySelectorAll<HTMLSelectElement>('select[data-cond]').forEach((sel) =>
+      sel.addEventListener('change', () => this.store.update({ [sel.dataset.cond!]: sel.value } as Partial<Settings>)),
+    );
+    const eff = resolveConditions({ current: st.current, visibility: st.visibility, light: st.light, sea: st.sea }, forced);
+    s.querySelector('[data-o="condNote"]')!.textContent =
+      (Object.keys(forced).length ? t('menu.condForced') + ' ' : '') + t('menu.visibilityApprox', { m: visibilityRange(eff).toFixed(0) });
+
+    // Devices
+    const sm = this.cb.spaceMouse();
+    const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? Array.from(navigator.getGamepads()).filter((p) => p && p.connected) : [];
+    const smState = !sm ? 'unsupported' : sm.connected() ? 'on' : 'off';
+    s.querySelector('[data-o="devices"]')!.innerHTML = `
+      <div class="dev on"><span class="dot"></span>${t('dev.keyboard')}</div>
+      <div class="dev ${pads.length ? 'on' : 'off'}"><span class="dot"></span>${t('dev.gamepad')} <span class="muted small">${pads.length ? '' : t('dev.notDetected')}</span></div>
+      <div class="dev ${smState}"><span class="dot"></span>${t('dev.spacemouse')}
+        <span class="muted small">${smState === 'on' ? sm!.label : smState === 'off' ? t('sm.notConnected') : t('dev.unsupported')}</span>
+        ${smState === 'off' ? `<button class="mini" data-a="smconnect">${t('settings.spacemouseConnect')}</button>` : ''}</div>`;
+    s.querySelector('[data-a="smconnect"]')?.addEventListener('click', () => void sm?.requestAndOpen().then(() => this.refreshMain()));
   }
 
   private buildPause(): HTMLElement {
@@ -188,15 +254,21 @@ export class Menus {
             <div class="keys">${BINDABLE.map(row).join('')}</div>
           </div>
           <div>
-            <h3>${t('help.modes')}</h3>
+            <h3>${t('help.first')}</h3>
+            <ol class="help-steps">${[1, 2, 3, 4, 5].map((i) => `<li>${t('help.first.' + i)}</li>`).join('')}</ol>
+            <h3 style="margin-top:18px">${t('help.modes')}</h3>
             <p class="help-text">${t('help.modeManual')}</p>
             <p class="help-text">${t('help.modeStabilize')}</p>
             <p class="help-text">${t('help.modeDepthHold')}</p>
             <h3 style="margin-top:18px">${t('help.mouse')}</h3>
             <p class="help-text">${t('help.mouseOp')}</p>
             <p class="help-text">${t('help.mouseExt')}</p>
+            <h3 style="margin-top:18px">${t('help.spacemouse')}</h3>
+            <p class="help-text">${t('help.spacemouseDesc')}</p>
             <h3 style="margin-top:18px">${t('help.gamepad')}</h3>
             <p class="help-text">${t('help.gamepadDesc')}</p>
+            <h3 style="margin-top:18px">${t('help.combine')}</h3>
+            <p class="help-text">${t('help.combineDesc')}</p>
           </div>
         </div>`;
       on(card, 'back', () => this.back());
@@ -209,58 +281,89 @@ export class Menus {
   // ---------- Settings ----------
   private buildSettings(): HTMLElement {
     const s = screen(true);
+    const tabs: SettingsTab[] = ['graphics', 'controls', 'spacemouse', 'environment'];
     s.innerHTML = `
       <div class="card">
         <header><h2>${t('settings.title')}</h2><button data-a="back">${t('menu.back')}</button></header>
-        <div class="body settings-grid">
-          <div>
-            <h3>${t('settings.graphics')}</h3>
-            <div class="field"><label for="s-gfx">${t('settings.graphics')}</label>
-              <select id="s-gfx" data-s="graphics">
-                ${(['low', 'medium', 'high'] as GraphicsQuality[]).map((q) => `<option value="${q}">${t('settings.graphics.' + q)}</option>`).join('')}
-              </select></div>
-            <div class="field"><label for="s-fps">${t('settings.fps')}</label><input id="s-fps" type="checkbox" data-s="showFps"></div>
-            <div class="field"><label for="s-vol">${t('settings.volume')}</label><span class="ctl"><input id="s-vol" type="range" min="0" max="1" step="0.05" data-s="volume"><output data-o="volume"></output></span></div>
-            <p class="muted" style="font-size:12px">${t('settings.restartNote')}</p>
-            <h3 style="margin-top:18px">${t('menu.mission')}</h3>
-            <div class="field"><label for="s-cur">${t('settings.current')}</label>
-              <select id="s-cur" data-s="current">${(['off', 'low', 'normal', 'strong'] as CurrentLevel[])
-                .map((c) => `<option value="${c}">${t('settings.current.' + c)}</option>`)
-                .join('')}</select></div>
-            <div class="field"><label for="s-mode">${t('settings.mode')}</label>
-              <select id="s-mode" data-s="defaultMode">${(['manual', 'stabilize', 'depthHold'] as PilotMode[])
-                .map((m) => `<option value="${m}">${t('hud.mode.' + m)}</option>`)
-                .join('')}</select></div>
-            <h3 style="margin-top:18px">${t('settings.spacemouse')}</h3>
-            <div class="field"><span data-o="smStatus" class="muted"></span><button data-a="sm">${t('settings.spacemouseConnect')}</button></div>
+        <nav class="tabs" role="tablist">${tabs
+          .map((tb) => `<button role="tab" data-tab="${tb}">${t('settings.tab.' + tb)}</button>`)
+          .join('')}</nav>
+        <div class="body">
+          <div class="tab-pane settings-grid" data-pane="graphics">
+            <div>
+              <h3>${t('settings.graphics')}</h3>
+              <div class="field"><label for="s-gfx">${t('settings.graphics')}</label>
+                <select id="s-gfx" data-s="graphics">
+                  ${(['low', 'medium', 'high'] as GraphicsQuality[]).map((q) => `<option value="${q}">${t('settings.graphics.' + q)}</option>`).join('')}
+                </select></div>
+              <p class="muted small">${t('settings.graphicsNote')}</p>
+              <div class="field"><label for="s-fps">${t('settings.fps')}</label><input id="s-fps" type="checkbox" data-s="showFps"></div>
+              <div class="field"><label for="s-vol">${t('settings.volume')}</label><span class="ctl"><input id="s-vol" type="range" min="0" max="1" step="0.05" data-s="volume"><output data-o="volume"></output></span></div>
+              <div class="field"><label for="s-hints">${t('settings.hints')}</label><input id="s-hints" type="checkbox" data-s="showHints"></div>
+            </div>
+            <div>
+              <h3>${t('settings.camera')}</h3>
+              ${fxRange('distortion', 0, 1, 0.05)}
+              ${fxRange('noise', 0, 1, 0.05)}
+              ${fxRange('vignette', 0, 1, 0.05)}
+              ${fxRange('contrast', 0.8, 1.3, 0.01)}
+              ${fxRange('exposureBias', -1.5, 1.5, 0.1)}
+              <div class="field"><label for="fx-ae">${t('settings.fx.autoExposure')}</label><input id="fx-ae" type="checkbox" data-fx="autoExposure"></div>
+              <p class="muted small">${t('settings.fxNote')}</p>
+            </div>
           </div>
-          <div>
-            <h3>${t('menu.controls')}</h3>
-            <div class="field"><label for="s-sens">${t('settings.sensitivity')}</label><span class="ctl"><input id="s-sens" type="range" min="0.2" max="1" step="0.05" data-s="sensitivity"><output data-o="sensitivity"></output></span></div>
-            <div class="field"><label for="s-ramp">${t('settings.keyRamp')}</label><span class="ctl"><input id="s-ramp" type="range" min="0" max="1" step="0.05" data-s="keyRamp"><output data-o="keyRamp"></output></span></div>
-            <div class="field"><label for="s-mouse">${t('settings.mouse')}</label><span class="ctl"><input id="s-mouse" type="range" min="0.2" max="3" step="0.1" data-s="mouseSensitivity"><output data-o="mouseSensitivity"></output></span></div>
-            <div class="field"><label for="s-dz">${t('settings.deadzone')}</label><span class="ctl"><input id="s-dz" type="range" min="0" max="0.4" step="0.01" data-s="gamepadDeadzone"><output data-o="gamepadDeadzone"></output></span></div>
-            <div class="field" style="display:block"><div style="margin-bottom:6px">${t('settings.invert')}</div>
-              <div class="inv-row">${(['surge', 'sway', 'heave', 'yaw', 'camTilt'] as const)
-                .map((a) => `<label><input type="checkbox" data-inv="${a}"> ${t('axis.' + a)}</label>`)
-                .join('')}</div></div>
-            <div class="field"><label for="s-lay">${t('settings.layout')}</label>
-              <select id="s-lay" data-s="keyboardPreset">${(['wasd', 'arrows'] as KeyboardPreset[])
-                .map((p) => `<option value="${p}">${t('settings.layout.' + p)}</option>`)
-                .join('')}</select></div>
-            <h3 style="margin-top:18px">${t('settings.bindings')}</h3>
-            <table class="bind-table"><tbody data-o="binds"></tbody></table>
+          <div class="tab-pane settings-grid" data-pane="controls">
+            <div>
+              <h3>${t('menu.controls')}</h3>
+              <div class="field"><label for="s-sens">${t('settings.sensitivity')}</label><span class="ctl"><input id="s-sens" type="range" min="0.2" max="1" step="0.05" data-s="sensitivity"><output data-o="sensitivity"></output></span></div>
+              <div class="field"><label for="s-ramp">${t('settings.keyRamp')}</label><span class="ctl"><input id="s-ramp" type="range" min="0" max="1" step="0.05" data-s="keyRamp"><output data-o="keyRamp"></output></span></div>
+              <div class="field"><label for="s-mouse">${t('settings.mouse')}</label><span class="ctl"><input id="s-mouse" type="range" min="0.2" max="3" step="0.1" data-s="mouseSensitivity"><output data-o="mouseSensitivity"></output></span></div>
+              <div class="field"><label for="s-dz">${t('settings.deadzone')}</label><span class="ctl"><input id="s-dz" type="range" min="0" max="0.4" step="0.01" data-s="gamepadDeadzone"><output data-o="gamepadDeadzone"></output></span></div>
+              <div class="field" style="display:block"><div style="margin-bottom:6px">${t('settings.invert')}</div>
+                <div class="inv-row">${(['surge', 'sway', 'heave', 'yaw', 'camTilt'] as const)
+                  .map((a) => `<label><input type="checkbox" data-inv="${a}"> ${t('axis.' + a)}</label>`)
+                  .join('')}</div></div>
+              <div class="field"><label for="s-mode">${t('settings.mode')}</label>
+                <select id="s-mode" data-s="defaultMode">${(['manual', 'stabilize', 'depthHold'] as PilotMode[])
+                  .map((m) => `<option value="${m}">${t('hud.mode.' + m)}</option>`)
+                  .join('')}</select></div>
+            </div>
+            <div>
+              <div class="field"><label for="s-lay">${t('settings.layout')}</label>
+                <select id="s-lay" data-s="keyboardPreset">${(['wasd', 'arrows'] as KeyboardPreset[])
+                  .map((p) => `<option value="${p}">${t('settings.layout.' + p)}</option>`)
+                  .join('')}</select></div>
+              <h3 style="margin-top:12px">${t('settings.bindings')}</h3>
+              <table class="bind-table"><tbody data-o="binds"></tbody></table>
+            </div>
+          </div>
+          <div class="tab-pane" data-pane="spacemouse"></div>
+          <div class="tab-pane settings-grid" data-pane="environment">
+            <div>
+              <h3>${t('menu.conditions')}</h3>
+              ${COND_KEYS.map(
+                ({ key, options }) => `<div class="field"><label>${t('settings.' + key)}</label>
+                <select data-s="${key}">${options.map((o) => `<option value="${o}">${t(`settings.${key}.${o}`)}</option>`).join('')}</select></div>`,
+              ).join('')}
+              <p class="muted small">${t('settings.condNote')}</p>
+            </div>
+            <div>
+              <h3>${t('settings.condWhat')}</h3>
+              <p class="help-text">${t('settings.condWhat.current')}</p>
+              <p class="help-text">${t('settings.condWhat.visibility')}</p>
+              <p class="help-text">${t('settings.condWhat.light')}</p>
+              <p class="help-text">${t('settings.condWhat.sea')}</p>
+            </div>
           </div>
         </div>
         <footer><button data-a="reset">${t('settings.resetDefaults')}</button><button class="primary" data-a="back">${t('menu.back')}</button></footer>
       </div>`;
     s.querySelectorAll<HTMLElement>('[data-a="back"]').forEach((b) => b.addEventListener('click', () => this.back()));
     on(s, 'reset', () => this.store.reset());
-    on(s, 'sm', async () => {
-      const name = await this.cb.connectSpaceMouse();
-      const out = s.querySelector('[data-o="smStatus"]')!;
-      out.textContent = name ?? '—';
-    });
+    s.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((b) => b.addEventListener('click', () => this.setTab(b.dataset.tab as SettingsTab)));
+    this.smPanel = new SpaceMousePanel(this.cb.spaceMouse());
+    s.querySelector('[data-pane="spacemouse"]')!.appendChild(this.smPanel.el);
+
     s.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-s]').forEach((input) => {
       input.addEventListener('input', () => {
         const key = input.dataset.s as keyof Settings;
@@ -273,6 +376,13 @@ export class Menus {
         } else this.store.update({ [key]: value } as Partial<Settings>);
       });
     });
+    s.querySelectorAll<HTMLInputElement>('[data-fx]').forEach((input) =>
+      input.addEventListener('input', () => {
+        const k = input.dataset.fx as keyof CameraFx;
+        const val = input.type === 'checkbox' ? input.checked : Number(input.value);
+        this.store.update({ cameraFx: { ...this.store.get().cameraFx, [k]: val } });
+      }),
+    );
     s.querySelectorAll<HTMLInputElement>('[data-inv]').forEach((cb) =>
       cb.addEventListener('change', () => {
         const inv = { ...this.store.get().invert, [cb.dataset.inv!]: cb.checked };
@@ -282,14 +392,33 @@ export class Menus {
     return s;
   }
 
+  setTab(tab: SettingsTab): void {
+    this.tab = tab;
+    const s = this.screens.settings;
+    s.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+    s.querySelectorAll<HTMLElement>('[data-pane]').forEach((p) => (p.hidden = p.dataset.pane !== tab));
+    if (tab === 'spacemouse') this.smPanel?.render();
+    this.smPanel?.setVisible(this.current === 'settings' && tab === 'spacemouse');
+  }
+
   private refreshSettings(): void {
     const s = this.screens?.settings;
     if (!s) return;
+    this.setTab(this.tab);
     const v = this.store.get();
     s.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-s]').forEach((input) => {
       const val = v[input.dataset.s as keyof Settings];
       if (input instanceof HTMLInputElement && input.type === 'checkbox') input.checked = !!val;
       else if (document.activeElement !== input) input.value = String(val);
+    });
+    s.querySelectorAll<HTMLInputElement>('[data-fx]').forEach((input) => {
+      const val = v.cameraFx[input.dataset.fx as keyof CameraFx];
+      if (input.type === 'checkbox') input.checked = !!val;
+      else {
+        if (document.activeElement !== input) input.value = String(val);
+        const out = input.nextElementSibling as HTMLOutputElement | null;
+        if (out) out.textContent = (val as number).toFixed(2);
+      }
     });
     s.querySelectorAll<HTMLOutputElement>('output[data-o]').forEach((o) => {
       const val = v[o.dataset.o as keyof Settings];
@@ -298,11 +427,6 @@ export class Menus {
     s.querySelectorAll<HTMLInputElement>('[data-inv]').forEach((cb) => {
       cb.checked = v.invert[cb.dataset.inv as keyof Settings['invert']];
     });
-    const sm = s.querySelector('[data-o="smStatus"]')!;
-    if (!this.cb.spaceMouseSupported()) {
-      sm.textContent = t('settings.spacemouseUnsupported');
-      (s.querySelector('[data-a="sm"]') as HTMLButtonElement).disabled = true;
-    }
     const tbody = s.querySelector('[data-o="binds"]')!;
     tbody.innerHTML = BINDABLE.map(
       (k) => `<tr><td>${t('bind.' + k)}</td><td><button data-bind="${k}">${v.bindings[k].map(keyLabel).join(' / ') || '—'}</button></td></tr>`,
@@ -345,36 +469,38 @@ export class Menus {
   // ---------- Report ----------
   private buildReportShell(): HTMLElement {
     const s = screen();
-    s.innerHTML = `<div class="card" style="max-width:640px"></div>`;
+    s.innerHTML = `<div class="card" style="max-width:680px"></div>`;
     return s;
   }
 
-  showReport(stats: MissionStats, opts: { totalPoints: number; condition: 'ok' | 'minor' | 'damage'; completed: boolean }): void {
+  showReport(def: MissionDefinition, mission: OperationMission, conditionsLabel: string): void {
+    const stats: MissionStats = mission.stats;
     const card = this.screens.report.querySelector('.card')!;
-    const time = (stats.endTime ?? 0) - (stats.startTime ?? 0);
+    const time = (stats.endTime ?? mission.time) - (stats.startTime ?? 0);
     const mm = Math.floor(time / 60);
     const ss = Math.floor(time % 60);
     const hardest = stats.collisions.reduce((m, c) => Math.max(m, c.speed), 0);
-    const cond = { ok: ['report.state.ok', 'status-ok'], minor: ['report.state.minor', 'status-warn'], damage: ['report.state.damage', 'status-alarm'] }[
-      opts.condition
-    ];
-    const done = stats.inspections.length >= opts.totalPoints;
+    const condition = mission.condition();
+    const cond = { ok: ['report.state.ok', 'status-ok'], minor: ['report.state.minor', 'status-warn'], damage: ['report.state.damage', 'status-alarm'] }[condition];
+    const lines = mission
+      .reportLines()
+      .map((l) => `<tr><th>${t(l.labelKey)}</th><td class="${l.status ? 'status-' + (l.status === 'alarm' ? 'alarm' : l.status) : ''}">${l.value}</td></tr>`)
+      .join('');
+    const deviations = stats.deviations.length
+      ? stats.deviations.map((d) => t(d.key, d.params)).join('<br>')
+      : `<span class="status-ok">${t('report.noDeviations')}</span>`;
     card.innerHTML = `
-      <header><h2>${t('report.title')}</h2><span class="eyebrow">${t('menu.missionName')}</span></header>
+      <header><h2>${t('report.title')}</h2><span class="eyebrow">${t(def.titleKey)}</span></header>
       <div class="body">
         <table class="report-table">
+          <tr><th>${t('report.objective')}</th><td class="${mission.complete ? 'status-ok' : 'status-warn'}">${t(mission.complete ? 'report.objective.done' : 'report.objective.incomplete')}</td></tr>
           <tr><th>${t('report.time')}</th><td>${mm} min ${String(ss).padStart(2, '0')} s</td></tr>
           <tr><th>${t('report.maxDepth')}</th><td>${stats.maxDepth.toFixed(1)} m</td></tr>
           <tr><th>${t('report.distance')}</th><td>${stats.distance.toFixed(0)} m</td></tr>
-          <tr><th>${t('report.objective')}</th><td class="${done ? 'status-ok' : 'status-warn'}">${
-            done ? t('report.objective.done') : t('report.objective.partial', { n: stats.inspections.length, total: opts.totalPoints })
-          }</td></tr>
-          <tr><th>${t('report.inspections')}</th><td>${
-            stats.inspections.map((i) => `${i.id} · ${i.range.toFixed(1)} m · ${i.offAxis.toFixed(0)}°`).join('<br>') || '—'
-          }</td></tr>
-          <tr><th>${t('report.collisions')}</th><td>${stats.collisions.length}${
-            hardest > 0 ? ` · ${t('report.hardest')} ${hardest.toFixed(2)} m/s` : ''
-          }</td></tr>
+          ${lines}
+          <tr><th>${t('report.collisions')}</th><td>${stats.collisions.length}${hardest > 0 ? ` · ${t('report.hardest')} ${hardest.toFixed(2)} m/s` : ''}</td></tr>
+          <tr><th>${t('report.deviations')}</th><td>${deviations}</td></tr>
+          <tr><th>${t('report.conditions')}</th><td>${conditionsLabel}</td></tr>
           <tr><th>${t('report.state')}</th><td class="${cond[1]}">${t(cond[0])}</td></tr>
         </table>
       </div>
@@ -382,7 +508,12 @@ export class Menus {
     on(card as HTMLElement, 'main', () => this.cb.mainMenu());
     on(card as HTMLElement, 'new', () => this.cb.restart());
     this.show('report');
+    (card.querySelector('button.primary') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
+}
+
+function fxRange(key: keyof CameraFx, min: number, max: number, step: number): string {
+  return `<div class="field"><label for="fx-${key}">${t('settings.fx.' + key)}</label><span class="ctl"><input id="fx-${key}" type="range" min="${min}" max="${max}" step="${step}" data-fx="${key}"><output></output></span></div>`;
 }
 
 function screen(translucent = false): HTMLElement {

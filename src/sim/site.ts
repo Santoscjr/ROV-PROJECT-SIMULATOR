@@ -207,6 +207,16 @@ const pipeDir = norm(v(spanNext.x - spanP.x, 0, spanNext.z - spanP.z));
 const side = v(-pipeDir.z, 0, pipeDir.x);
 const spanApproach = norm(v(side.x * (side.z > 0 ? 1 : -1), 0.65, side.z * (side.z > 0 ? 1 : -1)));
 
+// Christmas-tree ROV panel (south face of the tree frame, local −Z).
+const treeLocal = (lx: number, ly: number, lz: number): V3 => {
+  const c = Math.cos(TREE.yaw);
+  const s = Math.sin(TREE.yaw);
+  return v(TREE.position.x + lx * c + lz * s, TREE.position.y + ly, TREE.position.z - lx * s + lz * c);
+};
+const treePanel = treeLocal(0, 1.6, -TREE.size.z / 2 - 0.1);
+const treeOut = treeLocal(0, 0, -1);
+const treeApproach = norm(v(treeOut.x - TREE.position.x, 0.25, treeOut.z - TREE.position.z));
+
 export const INSPECTION_POINTS: InspectionPoint[] = [
   {
     id: 'IP-01',
@@ -225,6 +235,16 @@ export const INSPECTION_POINTS: InspectionPoint[] = [
     approach: spanApproach,
     minRange: 1.8,
     maxRange: 6,
+    maxOffAxisDeg: 15,
+    holdSeconds: 8,
+  },
+  {
+    id: 'IP-03',
+    labelKey: 'mission.ip03',
+    target: treePanel,
+    approach: treeApproach,
+    minRange: 1.5,
+    maxRange: 4.5,
     maxOffAxisDeg: 15,
     holdSeconds: 8,
   },

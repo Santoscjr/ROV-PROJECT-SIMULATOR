@@ -1,31 +1,22 @@
 import type { InspectionPoint, V3 } from '../sim/site';
+import {
+  conditionFromCollisions,
+  emptyStats,
+  type CollisionRecord,
+  type MissionInput,
+  type MissionMarker,
+  type MissionStats,
+  type MissionStep,
+  type Objective,
+  type OperationMission,
+} from './types';
+
+export type { MissionInput, Objective, CollisionRecord, MissionStats, InspectionRecord } from './types';
 
 export type Stage = 'prep' | 'launch' | 'descent' | 'bottom' | 'inspection' | 'return' | 'recovery' | 'complete';
 export const STAGES: Stage[] = ['prep', 'launch', 'descent', 'bottom', 'inspection', 'return', 'recovery', 'complete'];
 
 export type InspectionPhase = 'locate' | 'approach' | 'aim' | 'hold' | 'confirm';
-
-/** Snapshot of simulation state consumed by the mission each frame. */
-export interface MissionInput {
-  dt: number;
-  depth: number;
-  altitude: number | null;
-  position: V3;
-  /** World velocity (m/s). */
-  velocity: V3;
-  /** Angular rate magnitude (deg/s). */
-  angularRate: number;
-  cameraPosition: V3;
-  /** Unit view direction of the operational camera. */
-  cameraDirection: V3;
-  cameraMode: 'operational' | 'external';
-  lightLevel: number;
-  /** True if any movement command is being given. */
-  commanding: boolean;
-  /** Crane state reported by the simulator. */
-  craneReleased: boolean;
-  craneOnDeck: boolean;
-}
 
 export interface MissionConfig {
   workingDepth: number;
@@ -37,46 +28,30 @@ export interface MissionConfig {
   recoveryRadius: number;
   recoveryDepth: number;
   points: InspectionPoint[];
-}
-
-export interface Objective {
-  key: string;
-  params?: Record<string, string | number>;
-}
-
-export interface InspectionRecord {
-  id: string;
-  labelKey: string;
-  time: number;
-  range: number;
-  offAxis: number;
-}
-
-export interface CollisionRecord {
-  time: number;
-  speed: number;
-  kind: 'seabed' | 'structure';
-}
-
-export interface MissionStats {
-  startTime: number | null;
-  endTime: number | null;
-  maxDepth: number;
-  distance: number;
-  collisions: CollisionRecord[];
-  inspections: InspectionRecord[];
+  /** Procedure: max speed when within `approachZone` m of the target (m/s). */
+  approachSpeedLimit?: number;
+  approachZone?: number;
+  /** Procedure: minimum lamp level to record an inspection image (0..1). */
+  minLightForRecord?: number;
 }
 
 const DEG = 180 / Math.PI;
 
-export class Mission {
+/**
+ * Offshore structure inspection: launch from the vessel, descent, approach to
+ * the seabed, visual inspection of each point (range, framing and a stable
+ * hold with adequate lighting, then confirmation), return and recovery.
+ * Every objective depends on the simulated position/attitude/state.
+ */
+export class Mission implements OperationMission {
+  readonly id: string = 'inspection';
   stage: Stage = 'prep';
   phase: InspectionPhase = 'locate';
   pointIndex = 0;
   /** Seconds of stable hold accumulated on the current point. */
   holdTime = 0;
-  readonly checklist = { lights: false, thrusters: false, camera: false };
-  readonly stats: MissionStats = { startTime: null, endTime: null, maxDepth: 0, distance: 0, collisions: [], inspections: [] };
+  readonly checklistState = { lights: false, thrusters: false, camera: false };
+  stats: MissionStats = emptyStats();
   /** Live geometry of the current inspection (for HUD). */
   range = Infinity;
   offAxis = 180;
@@ -87,18 +62,29 @@ export class Mission {
   private lastPos: V3 | null = null;
   private launchRequested = false;
   private recoveryRequested = false;
+  private lastSpeedDeviation = -100;
+  private lightLevel = 0;
 
   constructor(readonly config: MissionConfig) {}
+
+  /** Backwards-compatible accessor used by v1 code/tests. */
+  get checklist(): { lights: boolean; thrusters: boolean; camera: boolean } {
+    return this.checklistState;
+  }
+
+  get complete(): boolean {
+    return this.stage === 'complete';
+  }
 
   get currentPoint(): InspectionPoint | null {
     return this.stage === 'inspection' ? (this.config.points[this.pointIndex] ?? null) : null;
   }
 
   get checklistDone(): boolean {
-    return this.checklist.lights && this.checklist.thrusters && this.checklist.camera;
+    const c = this.checklistState;
+    return c.lights && c.thrusters && c.camera;
   }
 
-  /** Simulator polls these to drive the crane. */
   consumeLaunchRequest(): boolean {
     const r = this.launchRequested;
     this.launchRequested = false;
@@ -110,7 +96,6 @@ export class Mission {
     return r;
   }
 
-  /** Where the navigation display should point. */
   navTarget(): V3 | null {
     if (this.stage === 'inspection') return this.currentPoint?.target ?? null;
     if (this.stage === 'descent' || this.stage === 'bottom') return this.config.points[0]?.target ?? null;
@@ -118,9 +103,23 @@ export class Mission {
     return null;
   }
 
-  /** The pilot switched cameras (pre-dive camera check). */
+  navTargetLabel(): string | null {
+    const p = this.stage === 'inspection' ? this.currentPoint : this.stage === 'descent' || this.stage === 'bottom' ? this.config.points[0] : null;
+    if (p) return p.id;
+    if (this.stage === 'return' || this.stage === 'recovery') return 'LARS';
+    return null;
+  }
+
+  markers(): MissionMarker[] {
+    // Inspection targets are physical tags on the structures; only the
+    // recovery zone is shown as a virtual marker during the return.
+    if (this.stage !== 'return') return [];
+    const r = this.config.recoveryPoint;
+    return [{ id: 'recovery', kind: 'zone', position: { x: r.x, y: -this.config.recoveryDepth / 2, z: r.z }, radius: this.config.recoveryRadius, label: 'LARS', state: 'active' }];
+  }
+
   notifyCameraToggled(): void {
-    if (this.stage === 'prep') this.checklist.camera = true;
+    if (this.stage === 'prep') this.checklistState.camera = true;
   }
 
   recordCollision(c: CollisionRecord): void {
@@ -128,13 +127,12 @@ export class Mission {
     this.stats.collisions.push(c);
   }
 
-  /** Pilot pressed "confirm". Returns true if it was consumed. */
-  confirm(): boolean {
+  confirm(): Objective | null {
     if (this.stage === 'prep' && this.checklistDone) {
       this.stage = 'launch';
       this.stats.startTime = this.time;
       this.launchRequested = true;
-      return true;
+      return { key: 'msg.launchAuthorised' };
     }
     if (this.stage === 'inspection' && this.phase === 'confirm') {
       const p = this.config.points[this.pointIndex];
@@ -143,14 +141,15 @@ export class Mission {
       this.holdTime = 0;
       this.phase = 'locate';
       if (this.pointIndex >= this.config.points.length) this.stage = 'return';
-      return true;
+      return { key: 'mission.recorded', params: { label: p.labelKey } };
     }
-    return false;
+    return null;
   }
 
   update(s: MissionInput): void {
     this.time += s.dt;
     this.warning = null;
+    this.lightLevel = s.lightLevel;
 
     if (this.stage !== 'prep' && this.stage !== 'complete') {
       this.stats.maxDepth = Math.max(this.stats.maxDepth, s.depth);
@@ -163,8 +162,8 @@ export class Mission {
 
     switch (this.stage) {
       case 'prep':
-        if (s.lightLevel > 0) this.checklist.lights = true;
-        if (s.commanding) this.checklist.thrusters = true;
+        if (s.lightLevel > 0) this.checklistState.lights = true;
+        if (s.commanding) this.checklistState.thrusters = true;
         if (this.lastCameraMode !== null && s.cameraMode !== this.lastCameraMode) this.notifyCameraToggled();
         break;
       case 'launch':
@@ -216,8 +215,18 @@ export class Mission {
     const speed = Math.hypot(s.velocity.x, s.velocity.y, s.velocity.z);
     this.stable = speed < this.config.stableSpeed && s.angularRate < this.config.stableRate;
 
+    // Procedure: slow approach near the structure.
+    const zone = this.config.approachZone ?? 0;
+    const limit = this.config.approachSpeedLimit ?? Infinity;
+    if (range < zone && speed > limit) {
+      this.warning = { key: 'mission.tooFast', params: { v: limit.toFixed(1) } };
+      if (this.time - this.lastSpeedDeviation > 10) {
+        this.lastSpeedDeviation = this.time;
+        this.stats.deviations.push({ time: this.time, key: 'deviation.approachSpeed', params: { id: p.id, v: speed.toFixed(2) } });
+      }
+    }
+
     if (this.phase === 'confirm') {
-      // Keep the confirmation available while the framing is still acceptable.
       if (range > p.maxRange * 1.3 || this.offAxis > p.maxOffAxisDeg * 1.6) {
         this.phase = 'aim';
         this.holdTime = 0;
@@ -232,9 +241,13 @@ export class Mission {
     else if (!aimed) this.phase = 'aim';
     else this.phase = 'hold';
 
+    const minLight = this.config.minLightForRecord ?? 0;
     if (this.phase === 'hold') {
       if (s.cameraMode !== 'operational') {
         this.warning = { key: 'mission.cameraNeeded' };
+        this.holdTime = Math.max(0, this.holdTime - s.dt * 2);
+      } else if (s.lightLevel < minLight) {
+        this.warning = { key: 'mission.needLights', params: { v: Math.round(minLight * 100) } };
         this.holdTime = Math.max(0, this.holdTime - s.dt * 2);
       } else if (!this.stable) {
         this.warning = { key: 'mission.unstable' };
@@ -290,11 +303,73 @@ export class Mission {
     return { key: '' };
   }
 
-  /** Overall vehicle condition derived from the impacts. */
+  hint(s: MissionInput | null): Objective | null {
+    switch (this.stage) {
+      case 'prep':
+        return { key: 'hint.prep' };
+      case 'launch':
+        return { key: 'hint.launch' };
+      case 'descent':
+        return s?.pilotMode === 'depthHold' ? { key: 'hint.descentDH' } : { key: 'hint.descent' };
+      case 'bottom':
+        return { key: 'hint.bottom' };
+      case 'inspection':
+        if (this.phase === 'locate') return { key: 'hint.locate' };
+        if (this.phase === 'approach') return { key: 'hint.approach' };
+        if (this.phase === 'aim') return { key: 'hint.aim' };
+        if (this.phase === 'hold') return { key: 'hint.hold' };
+        return { key: 'hint.confirm' };
+      case 'return':
+        return { key: 'hint.return' };
+      default:
+        return null;
+    }
+  }
+
+  holdProgress(): number | null {
+    const p = this.currentPoint;
+    return p && (this.phase === 'hold' || this.phase === 'confirm') ? this.holdTime / p.holdSeconds : null;
+  }
+
+  targetGeometry(): { range: number; offAxis: number } | null {
+    return this.currentPoint ? { range: this.range, offAxis: this.offAxis } : null;
+  }
+
+  steps(): MissionStep[] {
+    const si = STAGES.indexOf(this.stage);
+    return STAGES.slice(0, -1).map((st, i) => ({ key: `stage.${st}`, state: i < si ? 'done' : i === si ? 'active' : 'pending' }));
+  }
+
+  stepIndex(): number {
+    return Math.min(STAGES.indexOf(this.stage), STAGES.length - 2);
+  }
+
+  stageKey(): string {
+    return `stage.${this.stage}`;
+  }
+
+  prepChecklist(): { lights: boolean; thrusters: boolean; camera: boolean } | null {
+    return this.stage === 'prep' ? this.checklistState : null;
+  }
+
   condition(): 'ok' | 'minor' | 'damage' {
-    const max = this.stats.collisions.reduce((m, c) => Math.max(m, c.speed), 0);
-    if (max >= 1.0) return 'damage';
-    if (this.stats.collisions.length > 0) return 'minor';
-    return 'ok';
+    return conditionFromCollisions(this.stats.collisions);
+  }
+
+  reportLines(): { labelKey: string; value: string; status?: 'ok' | 'warn' | 'alarm' }[] {
+    const total = this.config.points.length;
+    const n = this.stats.inspections.length;
+    return [
+      {
+        labelKey: 'report.inspections',
+        value: this.stats.inspections.map((i) => `${i.id} · ${i.range.toFixed(1)} m · ${i.offAxis.toFixed(0)}°`).join('<br>') || '—',
+        status: n >= total ? 'ok' : 'warn',
+      },
+    ];
+  }
+
+  /** Light level seen on the last update (for HUD/procedure display). */
+  get lastLightLevel(): number {
+    return this.lightLevel;
   }
 }

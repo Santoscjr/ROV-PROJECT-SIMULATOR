@@ -252,7 +252,7 @@ export interface SpaceMouseRawState {
   buttons: number;
 }
 
-export type SpaceMouseEvent = 'connect' | 'disconnect' | 'report' | 'error';
+export type SpaceMouseEvent = 'connect' | 'disconnect' | 'report' | 'error' | 'stale';
 
 function isCandidate(d: HIDDeviceLike): boolean {
   if (d.vendorId === VID_3DCONNEXION) return true;
@@ -456,12 +456,35 @@ export class SpaceMouseDevice implements InputDevice {
     return !!this.device && this.device.opened;
   }
 
-  poll(): { axes: Partial<AxisCommand>; actions: PilotAction[] } {
+  /**
+   * Safety watchdog: 3Dconnexion devices stream reports continuously while
+   * the cap is deflected. If reports stop for longer than this while the last
+   * known values are non-zero (lost report, device stall, tab in background),
+   * the axes are zeroed so thrusters never keep running on stale data.
+   * (Streaming behaviour per community documentation — to be confirmed on
+   * hardware; see docs/SPACEMOUSE.md.)
+   */
+  staleTimeoutMs = 600;
+
+  poll(now = typeof performance !== 'undefined' ? performance.now() : 0): { axes: Partial<AxisCommand>; actions: PilotAction[] } {
     const actions = this.pendingActions;
     this.pendingActions = [];
     this.polledButtons = this.raw.buttons;
     if (!this.connected()) return { axes: {}, actions };
+    if (this.lastReportAt && now - this.lastReportAt > this.staleTimeoutMs && this.hasDeflection()) {
+      this.releaseAxes();
+      this.emit('stale');
+    }
     return { axes: mapAxes(this.raw.axes, this.config), actions };
+  }
+
+  private hasDeflection(): boolean {
+    return RAW_AXES.some((a) => this.raw.axes[a] - this.config.offsets[a] !== 0);
+  }
+
+  /** Zero the axes (keeps the connection). Used on window blur and by the watchdog. */
+  releaseAxes(): void {
+    for (const a of RAW_AXES) this.raw.axes[a] = this.config.offsets[a];
   }
 
   dispose(): void {

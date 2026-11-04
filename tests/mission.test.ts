@@ -47,12 +47,12 @@ function input(over: Partial<MissionInput> = {}): MissionInput {
 describe('mission flow', () => {
   it('requires the pre-dive checklist before launch', () => {
     const m = new Mission(config);
-    expect(m.confirm()).toBe(false);
+    expect(m.confirm()).toBeNull();
     m.update(input({ lightLevel: 0.8 }));
     m.update(input({ commanding: true }));
     m.notifyCameraToggled();
     expect(m.checklistDone).toBe(true);
-    expect(m.confirm()).toBe(true);
+    expect(m.confirm()).not.toBeNull();
     expect(m.stage).toBe('launch');
     expect(m.consumeLaunchRequest()).toBe(true);
   });
@@ -95,7 +95,7 @@ describe('mission flow', () => {
     // Stable hold
     for (let i = 0; i < 21; i++) m.update(input());
     expect(m.phase).toBe('confirm');
-    expect(m.confirm()).toBe(true);
+    expect(m.confirm()).not.toBeNull();
     expect(m.stats.inspections).toHaveLength(1);
     expect(m.stage).toBe('return');
   });

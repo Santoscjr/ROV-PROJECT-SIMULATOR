@@ -1,18 +1,12 @@
 import { Vector3 } from 'three';
 import { RovPhysics, type ImpactEvent, type PhysicsEnvironment } from '../physics/rovPhysics';
 import { RovController, PILOT_MODES, type PilotMode } from '../control/rovController';
-import { Mission, type MissionInput } from '../mission/mission';
-import { currentAt, type CurrentLevel } from './ocean';
+import type { MissionDefinition, MissionInput, OperationMission } from '../mission/types';
+import { missionById } from '../mission/catalog';
+import { currentAt } from './ocean';
+import { DEFAULT_CONDITIONS, resolveConditions, type ConditionChoice, type EnvironmentConditions } from './conditions';
 import { terrainHeight } from './terrain';
-import {
-  COLLIDERS,
-  INSPECTION_POINTS,
-  LAUNCH_HANG_HEIGHT,
-  LAUNCH_POINT,
-  LAUNCH_RELEASE_DEPTH,
-  RECOVERY_DEPTH,
-  RECOVERY_RADIUS,
-} from './site';
+import { COLLIDERS, LAUNCH_HANG_HEIGHT, LAUNCH_POINT, LAUNCH_RELEASE_DEPTH } from './site';
 import { zeroAxes, type AxisCommand } from '../input/types';
 
 export type CraneState = 'hanging' | 'lowering' | 'released' | 'latching' | 'lifting' | 'onDeck';
@@ -35,9 +29,13 @@ export interface SimEvents {
 export class Simulation {
   readonly rov = new RovPhysics();
   readonly controller = new RovController(this.rov);
-  mission!: Mission;
+  mission!: OperationMission;
+  missionDef: MissionDefinition = missionById('inspection');
   readonly env: PhysicsEnvironment;
-  currentLevel: CurrentLevel = 'normal';
+  /** Pilot's choice of conditions (Settings). */
+  conditionChoice: ConditionChoice = { ...DEFAULT_CONDITIONS };
+  /** Effective conditions = pilot's choice + mission overrides. */
+  conditions: EnvironmentConditions = resolveConditions(DEFAULT_CONDITIONS);
   crane: CraneState = 'hanging';
   /** Lamp level 0..1 and on/off state. */
   lightLevel = 0.8;
@@ -52,12 +50,13 @@ export class Simulation {
   readonly launchPoint = new Vector3(LAUNCH_POINT.x, 0, LAUNCH_POINT.z);
   private readonly tmp = new Vector3();
 
-  constructor(defaultMode: PilotMode = 'stabilize') {
+  constructor(defaultMode: PilotMode = 'stabilize', missionId = 'inspection') {
+    this.missionDef = missionById(missionId);
     this.env = {
       current: (p, out) => {
         const depth = -p.y;
         const alt = p.y - terrainHeight(p.x, p.z);
-        const c = currentAt(depth, alt, this.rov.time, this.currentLevel);
+        const c = currentAt(depth, alt, this.rov.time, this.conditions.current);
         return out.set(c.x, c.y, c.z);
       },
       terrainHeight,
@@ -66,31 +65,39 @@ export class Simulation {
     this.reset(defaultMode);
   }
 
-  reset(mode: PilotMode): void {
-    this.rov.reset(new Vector3(LAUNCH_POINT.x, LAUNCH_HANG_HEIGHT, LAUNCH_POINT.z), Math.PI / 2 - 0); // facing north
-    // Body +X forward; yaw π/2 about +Y turns +X to −Z (north).
-    this.rov.kinematic = true;
-    this.rov.kinematicYaw = Math.PI / 2;
-    this.rov.kinematicTarget.copy(this.rov.position);
-    this.crane = 'hanging';
+  /** Update the pilot's condition choice (mission overrides still apply). */
+  setConditionChoice(choice: ConditionChoice): void {
+    this.conditionChoice = { ...choice };
+    this.conditions = resolveConditions(this.conditionChoice, this.missionDef.forcedConditions);
+  }
+
+  /** Start (or restart) an operation. */
+  reset(mode: PilotMode, def: MissionDefinition = this.missionDef): void {
+    this.missionDef = def;
+    this.conditions = resolveConditions(this.conditionChoice, def.forcedConditions);
     this.controller.mode = mode;
-    this.controller.reset();
-    this.mission = new Mission({
-      workingDepth: 100,
-      bottomAltitude: 12,
-      locateRange: 25,
-      stableSpeed: 0.15,
-      stableRate: 4,
-      recoveryPoint: { x: LAUNCH_POINT.x, y: 0, z: LAUNCH_POINT.z },
-      recoveryRadius: RECOVERY_RADIUS,
-      recoveryDepth: RECOVERY_DEPTH,
-      points: INSPECTION_POINTS,
-    });
-    this.lightsOn = false;
-    this.lightLevel = 0.8;
+    this.mission = def.create();
     this.accumulator = 0;
-    this.wasSubmerged = false;
     Object.assign(this.command, zeroAxes());
+    if (def.start === 'crane') {
+      // Body +X forward; yaw π/2 about +Y turns +X to −Z (north).
+      this.rov.reset(new Vector3(LAUNCH_POINT.x, LAUNCH_HANG_HEIGHT, LAUNCH_POINT.z), Math.PI / 2);
+      this.rov.kinematic = true;
+      this.rov.kinematicYaw = Math.PI / 2;
+      this.rov.kinematicTarget.copy(this.rov.position);
+      this.crane = 'hanging';
+      this.lightsOn = false;
+      this.wasSubmerged = false;
+    } else {
+      const p = def.start.position;
+      this.rov.reset(new Vector3(p.x, p.y, p.z), ((90 - def.start.heading) * Math.PI) / 180);
+      this.rov.kinematic = false;
+      this.crane = 'released';
+      this.lightsOn = def.start.lights;
+      this.wasSubmerged = true;
+    }
+    this.lightLevel = 0.8;
+    this.controller.reset();
   }
 
   setMode(mode: PilotMode): boolean {
@@ -192,6 +199,8 @@ export class Simulation {
       cameraDirection: view.cameraDirection,
       cameraMode: view.cameraMode,
       lightLevel: this.effectiveLight,
+      heading: this.rov.heading,
+      pilotMode: this.controller.mode,
       commanding: Math.abs(c.surge) + Math.abs(c.sway) + Math.abs(c.heave) + Math.abs(c.yaw) > 0.05,
       craneReleased: this.crane === 'released',
       craneOnDeck: this.crane === 'onDeck',

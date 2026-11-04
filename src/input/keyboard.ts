@@ -17,6 +17,7 @@ const ACTIONS: PilotAction[] = [
   'confirm',
   'pause',
   'help',
+  'toggleHud',
 ];
 
 export interface KeySource {

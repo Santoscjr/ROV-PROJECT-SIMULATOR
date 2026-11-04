@@ -28,6 +28,7 @@ export const BINDABLE = [
   'confirm',
   'pause',
   'help',
+  'toggleHud',
 ] as const;
 export type Bindable = (typeof BINDABLE)[number];
 export type KeyBindings = Record<Bindable, string[]>;
@@ -50,6 +51,7 @@ const COMMON: Omit<KeyBindings, 'surge+' | 'surge-' | 'sway+' | 'sway-' | 'heave
   confirm: ['Enter', 'NumpadEnter'],
   pause: ['Escape', 'KeyP'],
   help: ['KeyH', 'F1'],
+  toggleHud: ['KeyU'],
 };
 
 export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
@@ -114,6 +116,10 @@ export interface Settings {
   cameraFx: CameraFx;
   volume: number;
   showFps: boolean;
+  /** Contextual tips for beginners in the mission panel. */
+  showHints: boolean;
+  /** Last selected operation. */
+  mission: 'training' | 'inspection' | 'adverse';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -133,6 +139,8 @@ export const DEFAULT_SETTINGS: Settings = {
   cameraFx: { ...DEFAULT_CAMERA_FX },
   volume: 0.7,
   showFps: false,
+  showHints: true,
+  mission: 'training',
 };
 
 const STORAGE_KEY = 'rov.settings.v1';
@@ -183,6 +191,8 @@ export function sanitizeSettings(raw: unknown): Settings {
     cameraFx: sanitizeCameraFx(r.cameraFx),
     volume: num(r.volume, 0, 1, d.volume),
     showFps: r.showFps === true,
+    showHints: r.showHints !== false,
+    mission: pick(r.mission, ['training', 'inspection', 'adverse'] as const, d.mission),
   };
 }
 
