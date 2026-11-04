@@ -1,0 +1,479 @@
+/* ---------- HUD ---------- */
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  font-family: var(--mono);
+  color: #dfe8ee;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  user-select: none;
+}
+
+.hud[hidden] {
+  display: none;
+}
+
+.hud .panel {
+  position: absolute;
+  background: var(--panel);
+  border: 1px solid rgba(52, 73, 90, 0.85);
+  border-radius: 3px;
+  backdrop-filter: blur(2px);
+}
+
+.hud .ptitle {
+  font: 600 10px var(--mono);
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  padding: 6px 10px 0;
+  text-transform: uppercase;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Status (top-left) */
+.hud .status {
+  top: 12px;
+  left: 12px;
+  padding: 4px 0 8px;
+  min-width: 228px;
+}
+
+.hud .kv {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  padding: 3px 10px;
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.hud .kv .k {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.hud .kv .v {
+  color: #e9eff3;
+}
+
+.hud .v.mode {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hud .v.ok {
+  color: var(--ok);
+}
+
+.hud .v.warn {
+  color: var(--warn);
+}
+
+.hud .v.off {
+  color: var(--muted);
+}
+
+/* Heading tape */
+.hud .heading {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, 46vw);
+  height: 54px;
+}
+
+.hud canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Depth tape */
+.hud .depth {
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 104px;
+  height: min(360px, 46vh);
+}
+
+/* Right column: attitude + altitude */
+.hud .attitude {
+  right: 12px;
+  top: 50%;
+  transform: translateY(-62%);
+  width: 176px;
+  display: flex;
+  flex-direction: column;
+}
+
+.hud .attitude canvas {
+  height: 150px;
+  flex: none;
+}
+
+.hud .readouts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  font-size: 11px;
+  border-top: 1px solid rgba(52, 73, 90, 0.85);
+}
+
+.hud .readouts div {
+  padding: 4px 8px;
+}
+
+.hud .readouts .k,
+.hud .alt .ptitle {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  display: block;
+}
+
+.hud .alt {
+  padding: 5px 8px 7px;
+  border-top: 1px solid rgba(52, 73, 90, 0.85);
+}
+
+.hud .alt .ptitle {
+  display: flex;
+  justify-content: space-between;
+}
+
+.hud .alt .big {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--data);
+}
+
+.hud .alt .big.warn {
+  color: var(--warn);
+}
+
+.hud .alt .big.alarm {
+  color: var(--alarm);
+}
+
+.hud .alt .sub {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Mission (top-right) */
+.hud .mission {
+  top: 12px;
+  right: 12px;
+  width: min(360px, 32vw);
+  padding: 0 0 10px;
+  font-family: var(--sans);
+}
+
+.hud .stages {
+  display: flex;
+  gap: 3px;
+  padding: 8px 10px 0;
+}
+
+.hud .stages span {
+  flex: 1;
+  height: 4px;
+  background: #22313c;
+  border-radius: 1px;
+}
+
+.hud .stages span.done {
+  background: #4c7a5d;
+}
+
+.hud .stages span.now {
+  background: var(--accent);
+}
+
+.hud .stage-name {
+  font: 600 13px var(--sans);
+  padding: 8px 10px 2px;
+  color: var(--accent);
+}
+
+.hud .objective {
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 2px 10px;
+  color: #e7edf1;
+}
+
+.hud .checklist {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.hud .checklist li {
+  padding: 2px 0;
+  color: var(--muted);
+}
+
+.hud .checklist li::before {
+  content: '○';
+  display: inline-block;
+  width: 18px;
+  color: var(--muted);
+}
+
+.hud .checklist li.done {
+  color: #d6e4dc;
+}
+
+.hud .checklist li.done::before {
+  content: '●';
+  color: var(--ok);
+}
+
+.hud .progress {
+  margin: 8px 10px 0;
+  height: 6px;
+  background: #1c2730;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.hud .progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ok);
+  transition: width 0.1s linear;
+}
+
+.hud .geom {
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px 0;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+
+.hud .geom b {
+  color: var(--data);
+  font-weight: 500;
+}
+
+.hud .warning {
+  margin: 8px 10px 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+/* Thrust (bottom-left) */
+.hud .thrust {
+  left: 12px;
+  bottom: 12px;
+  padding: 0 0 8px;
+  width: 316px;
+}
+
+.hud .bars {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
+  padding: 8px 10px 0;
+}
+
+.hud .bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 9px;
+  color: var(--muted);
+  gap: 3px;
+}
+
+.hud .bar .track {
+  position: relative;
+  width: 12px;
+  height: 58px;
+  background: #18232c;
+  border: 1px solid #2a3a46;
+}
+
+.hud .bar .track::after {
+  content: '';
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 50%;
+  border-top: 1px solid #4a5f6f;
+}
+
+.hud .bar .fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: var(--data);
+}
+
+.hud .cmds {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 8px 10px 0;
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+}
+
+.hud .cmd .h {
+  position: relative;
+  height: 8px;
+  background: #18232c;
+  border: 1px solid #2a3a46;
+  margin-top: 3px;
+}
+
+.hud .cmd .h::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: 50%;
+  border-left: 1px solid #4a5f6f;
+}
+
+.hud .cmd .h i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+}
+
+.hud .cmd.active {
+  color: var(--accent);
+}
+
+/* Nav display (bottom-right) */
+.hud .nav {
+  right: 12px;
+  bottom: 12px;
+  width: 248px;
+  height: 244px;
+}
+
+.hud .nav canvas {
+  height: calc(100% - 46px);
+}
+
+.hud .nav .navinfo {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hud .nav .navinfo b {
+  color: var(--data);
+  font-weight: 500;
+}
+
+/* Center reticle */
+.hud .reticle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 120px;
+  height: 120px;
+  transform: translate(-50%, -50%);
+  opacity: 0.75;
+}
+
+.hud .reticle[hidden] {
+  display: none;
+}
+
+/* Video overlay text (operational camera) */
+.hud .osd {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: #f1f5f7;
+  letter-spacing: 0.06em;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.hud .osd .hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--sans);
+  letter-spacing: 0;
+}
+
+.hud .toasts {
+  position: absolute;
+  left: 50%;
+  top: 82px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud .toast {
+  background: rgba(14, 22, 29, 0.9);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--data);
+  padding: 6px 12px;
+  font: 13px var(--sans);
+  border-radius: 2px;
+  animation: toast-in 0.18s ease-out;
+}
+
+.hud .toast.warn {
+  border-left-color: var(--warn);
+}
+
+.hud .toast.alarm {
+  border-left-color: var(--alarm);
+}
+
+.hud .toast.ok {
+  border-left-color: var(--ok);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.hud .fps {
+  position: absolute;
+  left: 50%;
+  top: 70px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+@media (max-width: 1100px) {
+  .hud .nav {
+    width: 200px;
+    height: 210px;
+  }
+  .hud .thrust {
+    width: 270px;
+  }
+  .hud .mission {
+    width: 300px;
+  }
+}
