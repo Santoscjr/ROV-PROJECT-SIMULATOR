@@ -110,7 +110,8 @@ export function fouledMaterial(params: MeshStandardMaterialParameters, f: Foulin
           diffuseColor.rgb = mix(diffuseColor.rgb, uGrowth, patches * 0.85);
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.18, 0.10), streak * 0.5);
           // Hydroid / encrusting specks on the growth.
-          float speck = step(0.9, wHash(floor(vWPos * 40.0))) * patches;
+          vec3 sc = vWPos * 30.0;
+          float speck = step(0.88, wHash(floor(sc))) * smoothstep(0.32, 0.12, length(fract(sc) - 0.5)) * patches;
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.75, 0.72, 0.62), speck * 0.5);
           float up = smoothstep(0.55, 0.95, wn.y);
           float silt = up * uSediment * (0.6 + 0.4 * wNoise(p * 3.0));
@@ -247,37 +248,52 @@ export function makeGratingTexture(cells = 8, size = 256): Texture {
   return t;
 }
 
+export interface TagEntry {
+  text: string;
+  /** Plate width / height (≥ 1). */
+  aspect?: number;
+  bg?: string;
+  fg?: string;
+}
+
 /**
- * Texture atlas of small engraved tags (white plates, black text) laid out in
- * a grid; returns the texture and a function giving the UV rectangle of each.
+ * Texture atlas of plates (equipment tags, ID boards, inspection markers)
+ * so they can all be drawn in one call; returns the texture and the UV
+ * rectangle of each plate.
  */
-export function makeTagAtlas(labels: string[], opts: { cols?: number; cellW?: number; cellH?: number; bg?: string[] } = {}) {
+export function makeTagAtlas(entries: TagEntry[], opts: { cols?: number; cellW?: number; cellH?: number } = {}) {
   const cols = opts.cols ?? 4;
-  const cw = opts.cellW ?? 128;
-  const ch = opts.cellH ?? 64;
-  const rows = Math.ceil(labels.length / cols);
+  const cw = opts.cellW ?? 256;
+  const ch = opts.cellH ?? 128;
+  const rows = Math.ceil(entries.length / cols);
   const c = document.createElement('canvas');
   c.width = cols * cw;
   c.height = rows * ch;
   const ctx = c.getContext('2d')!;
-  labels.forEach((text, i) => {
-    const x = (i % cols) * cw;
-    const y = Math.floor(i / cols) * ch;
-    ctx.fillStyle = opts.bg?.[i] ?? '#e9e7df';
-    ctx.fillRect(x, y, cw, ch);
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(x + 3, y + 3, cw - 6, ch - 6);
-    ctx.fillStyle = '#111';
-    ctx.font = `bold ${Math.round(ch * 0.5)}px "IBM Plex Sans", Arial, sans-serif`;
+  const rects: { x: number; y: number; w: number; h: number }[] = [];
+  entries.forEach((e, i) => {
+    const aspect = Math.max(1, e.aspect ?? 2);
+    const w = aspect >= cw / ch ? cw : ch * aspect;
+    const h = w / aspect;
+    const x = (i % cols) * cw + (cw - w) / 2;
+    const y = Math.floor(i / cols) * ch + (ch - h) / 2;
+    rects.push({ x, y, w, h });
+    ctx.fillStyle = e.bg ?? '#e9e7df';
+    ctx.fillRect(x, y, w, h);
+    const lw = Math.max(3, h * 0.05);
+    ctx.strokeStyle = e.fg ?? '#111';
+    ctx.lineWidth = lw;
+    ctx.strokeRect(x + lw, y + lw, w - 2 * lw, h - 2 * lw);
+    ctx.fillStyle = e.fg ?? '#111';
+    ctx.font = `bold ${Math.round(h * 0.46)}px "IBM Plex Sans", Arial, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, x + cw / 2, y + ch * 0.54);
+    ctx.fillText(e.text, x + w / 2, y + h * 0.53, w * 0.86);
     // Fixing rivets.
     ctx.fillStyle = '#555';
-    for (const rx of [x + 9, x + cw - 9]) {
+    for (const rx of [x + lw * 3, x + w - lw * 3]) {
       ctx.beginPath();
-      ctx.arc(rx, y + ch / 2, 3, 0, Math.PI * 2);
+      ctx.arc(rx, y + h / 2, Math.max(2, h * 0.04), 0, Math.PI * 2);
       ctx.fill();
     }
   });
@@ -285,9 +301,8 @@ export function makeTagAtlas(labels: string[], opts: { cols?: number; cellW?: nu
   tex.colorSpace = SRGBColorSpace;
   tex.anisotropy = 4;
   const uv = (i: number) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    return { u0: col / cols, u1: (col + 1) / cols, v0: 1 - (row + 1) / rows, v1: 1 - row / rows };
+    const r = rects[i];
+    return { u0: r.x / c.width, u1: (r.x + r.w) / c.width, v0: 1 - (r.y + r.h) / c.height, v1: 1 - r.y / c.height };
   };
   return { texture: tex, uv };
 }

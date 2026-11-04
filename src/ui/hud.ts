@@ -79,9 +79,11 @@ const COLORS = {
   ground: 'rgba(90,70,40,0.55)',
 };
 
-function setupCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D {
-  const ctx = c.getContext('2d')!;
+function setupCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D | null {
   const r = c.getBoundingClientRect();
+  // Hidden HUD/panel (zero size): nothing to draw — avoids negative arc radii.
+  if (r.width < 8 || r.height < 8) return null;
+  const ctx = c.getContext('2d')!;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.max(1, Math.round(r.width * dpr));
   const h = Math.max(1, Math.round(r.height * dpr));
@@ -352,6 +354,7 @@ export class Hud {
   private drawHeading(d: HudData): void {
     const c = this.headingCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const pxPerDeg = w / 90;
@@ -400,6 +403,7 @@ export class Hud {
   private drawDepth(d: HudData): void {
     const c = this.depthCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const pxPerM = h / 24;
@@ -466,6 +470,7 @@ export class Hud {
   private drawAttitude(d: HudData): void {
     const c = this.attCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const cx = w / 2;
@@ -539,6 +544,7 @@ export class Hud {
   private drawNav(d: HudData): void {
     const c = this.navCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     // Auto range to keep the target visible.

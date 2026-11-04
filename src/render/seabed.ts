@@ -39,8 +39,8 @@ const ROCKS: Record<GraphicsQuality, number> = { low: 260, medium: 650, high: 11
 const COBBLES: Record<GraphicsQuality, number> = { low: 120, medium: 380, high: 800 };
 const LIFE: Record<GraphicsQuality, number> = { low: 150, medium: 450, high: 900 };
 const SHELLS: Record<GraphicsQuality, number> = { low: 150, medium: 500, high: 1000 };
-/** Terrain and rocks are split into CHUNKS × CHUNKS tiles for frustum/visibility culling. */
-const CHUNKS = 4;
+/** Terrain and rocks are split into N × N tiles for frustum/visibility culling. */
+const CHUNKS_Q: Record<GraphicsQuality, number> = { low: 2, medium: 4, high: 4 };
 
 /** An object hidden when the camera is further than the water lets one see. */
 export interface Cullable {
@@ -208,7 +208,7 @@ function terrainMaterial(quality: GraphicsQuality): MeshStandardMaterial {
   return mat;
 }
 
-/** Height-mapped terrain tile with analytic normals (seamless across tiles). */
+/** Height-mapped terrain tile; normals from a bordered height grid (seamless across tiles). */
 function terrainTile(x0: number, z0: number, w: number, d: number, sx: number, sz: number): BufferGeometry {
   const geo = new PlaneGeometry(w, d, sx, sz);
   geo.rotateX(-Math.PI / 2);
@@ -216,19 +216,29 @@ function terrainTile(x0: number, z0: number, w: number, d: number, sx: number, s
   const pos = geo.attributes.position as BufferAttribute;
   const nrm = geo.attributes.normal as BufferAttribute;
   const colors = new Float32Array(pos.count * 3);
-  const e = Math.max(0.3, (w / sx) * 0.5);
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    pos.setY(i, terrainHeight(x, z));
-    const n = terrainNormal(x, z, e);
-    nrm.setXYZ(i, n[0], n[1], n[2]);
+  const dx = w / sx;
+  const dz = d / sz;
+  // Heights on the grid plus a one-cell border, so edge normals match the neighbour tile.
+  const gw = sx + 3;
+  const hgt = new Float32Array(gw * (sz + 3));
+  for (let j = -1; j <= sz + 1; j++)
+    for (let i = -1; i <= sx + 1; i++) hgt[(j + 1) * gw + (i + 1)] = terrainHeight(x0 + i * dx, z0 + j * dz);
+  const H = (i: number, j: number) => hgt[(j + 1) * gw + (i + 1)];
+  const n = new Vector3();
+  for (let k = 0; k < pos.count; k++) {
+    const x = pos.getX(k);
+    const z = pos.getZ(k);
+    const i = Math.round((x - x0) / dx);
+    const j = Math.round((z - z0) / dz);
+    pos.setY(k, H(i, j));
+    n.set(-(H(i + 1, j) - H(i - 1, j)) / (2 * dx), 1, -(H(i, j + 1) - H(i, j - 1)) / (2 * dz)).normalize();
+    nrm.setXYZ(k, n.x, n.y, n.z);
     // Subtle colour variation: darker silt patches, lighter shell sand.
     const a = fbm(x / 14, z / 14, 3);
     const m = fbm(x / 3.5 + 40, z / 3.5, 2);
-    colors[i * 3] = 0.78 + a * 0.12 + m * 0.05;
-    colors[i * 3 + 1] = 0.76 + a * 0.1 + m * 0.04;
-    colors[i * 3 + 2] = 0.68 + a * 0.08;
+    colors[k * 3] = 0.78 + a * 0.12 + m * 0.05;
+    colors[k * 3 + 1] = 0.76 + a * 0.1 + m * 0.04;
+    colors[k * 3 + 2] = 0.68 + a * 0.08;
   }
   geo.setAttribute('color', new BufferAttribute(colors, 3));
   geo.computeBoundingBox();
@@ -242,39 +252,59 @@ function terrainTile(x0: number, z0: number, w: number, d: number, sx: number, s
  * with growth and silt on top. A matching depth material keeps the shadows.
  */
 function rockMaterials(): { mat: MeshStandardMaterial; depth: MeshDepthMaterial } {
-  const displace = /* glsl */ `
-    {
-      vec3 iSeed = vec3(0.0);
+  // Shape function of a unit rock (seeded by the instance position) and its
+  // smooth normal by finite differences, so a low-poly base reads as a rounded,
+  // irregular boulder or slab.
+  const shapeGlsl = /* glsl */ `
+    vec3 rockSeed() {
       #ifdef USE_INSTANCING
-        iSeed = instanceMatrix[3].xyz;
+        return instanceMatrix[3].xyz;
+      #else
+        return vec3(0.0);
       #endif
-      float n1 = wNoise(position * 1.3 + iSeed * 0.37);
-      float n2 = wNoise(position * 3.7 + iSeed * 0.11);
-      float slab = step(0.6, fract(iSeed.x * 0.173 + iSeed.z * 0.311));
-      transformed *= 0.72 + 0.5 * n1 + 0.14 * n2;
-      // Some are angular slabs, all have a flattened base.
-      transformed.y *= mix(1.0, 0.55, slab);
-      transformed.y = max(transformed.y, -0.3);
+    }
+    vec3 rockShape(vec3 p, vec3 seed) {
+      float n1 = wNoise(p * 1.3 + seed * 0.37);
+      float n2 = wNoise(p * 3.7 + seed * 0.11);
+      float slab = step(0.6, fract(seed.x * 0.173 + seed.z * 0.311));
+      float n3 = wNoise(p * 7.9 - seed * 0.23);
+      vec3 q = p * (0.7 + 0.45 * n1 + 0.22 * n2 + 0.07 * n3);
+      q.y *= mix(0.75, 0.42, slab);
+      q.y = max(q.y, -0.3 + 0.05 * n2);
+      return q;
+    }`;
+  const normalGlsl = /* glsl */ `
+    {
+      vec3 rs = rockSeed();
+      vec3 pn = normalize(position);
+      vec3 t1 = normalize(cross(pn, abs(pn.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+      vec3 t2 = cross(pn, t1);
+      vec3 c0 = rockShape(position, rs);
+      vec3 c1 = rockShape(position + t1 * 0.08, rs) - c0;
+      vec3 c2 = rockShape(position + t2 * 0.08, rs) - c0;
+      vec3 rn = normalize(cross(c1, c2));
+      objectNormal = dot(rn, pn) < 0.0 ? -rn : rn;
     }`;
   const mat = fouledMaterial(
-    { color: 0x7a766b, roughness: 0.95, flatShading: true },
-    { amount: 0.35, sediment: 0.85, scale: 2.2, chips: 0, relief: 0.8, growth: new Color(0.3, 0.3, 0.22) },
+    { color: 0x7a766b, roughness: 0.95 },
+    { amount: 0.35, sediment: 0.85, scale: 2.2, chips: 0, relief: 1, growth: new Color(0.3, 0.3, 0.22) },
   );
   const base = mat.onBeforeCompile;
   mat.onBeforeCompile = (shader, renderer) => {
     base.call(mat, shader, renderer);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\n${NOISE_GLSL}`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${displace}`);
+      .replace('#include <common>', `#include <common>\n${NOISE_GLSL}\n${shapeGlsl}`)
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>\n${normalGlsl}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\ntransformed = rockShape(position, rockSeed());`);
   };
-  mat.customProgramCacheKey = () => 'rock-v2';
+  mat.customProgramCacheKey = () => 'rock-v3';
   const depth = new MeshDepthMaterial({ depthPacking: RGBADepthPacking });
   depth.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\n${NOISE_GLSL}`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${displace}`);
+      .replace('#include <common>', `#include <common>\n${NOISE_GLSL}\n${shapeGlsl}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\ntransformed = rockShape(position, rockSeed());`);
   };
-  depth.customProgramCacheKey = () => 'rock-depth-v2';
+  depth.customProgramCacheKey = () => 'rock-depth-v3';
   return { mat, depth };
 }
 
@@ -291,6 +321,7 @@ export function createSeabed(quality: GraphicsQuality): SeabedBuild {
   const w = b.maxX - b.minX;
   const d = b.maxZ - b.minZ;
   const res = RES[quality];
+  const CHUNKS = CHUNKS_Q[quality];
   const resZ = Math.round((res * d) / w);
   const tileW = w / CHUNKS;
   const tileD = d / CHUNKS;
@@ -318,7 +349,6 @@ export function createSeabed(quality: GraphicsQuality): SeabedBuild {
   // --- Rocks: boulders, cobble patches, a rock berm over the pipeline -------------------
   const r = rng(1337);
   const rockGeo = new IcosahedronGeometry(1, quality === 'high' ? 2 : 1);
-  rockGeo.scale(1, 0.7, 1);
   const { mat: rockMat, depth: rockDepth } = rockMaterials();
   const chunks: RockInstance[][] = Array.from({ length: CHUNKS * CHUNKS }, () => []);
   const q = new Quaternion();
@@ -391,9 +421,11 @@ export function createSeabed(quality: GraphicsQuality): SeabedBuild {
     });
     rocks.computeBoundingBox();
     rocks.computeBoundingSphere();
-    rocks.castShadow = true;
+    // Rocks receive but do not cast lamp shadows: each chunk inside a lamp
+    // frustum would be re-rendered whole in every shadow pass.
+    rocks.castShadow = false;
     rocks.receiveShadow = true;
-    rocks.customDepthMaterial = rockDepth;
+    rocks.customDepthMaterial = rockDepth; // used if casting is re-enabled
     rocks.name = 'rocks';
     group.add(rocks);
     cullables.push({ object: rocks, box: rocks.boundingBox!.clone().expandByScalar(0.5) });
@@ -425,35 +457,27 @@ export function createSeabed(quality: GraphicsQuality): SeabedBuild {
   life.receiveShadow = true;
   group.add(life);
 
-  // --- Shells and shell hash around the site (scale cue at 1–3 m).
+  // --- Shells around the site (scale cue at 1–3 m), merged with the debris below.
   const nShell = SHELLS[quality];
-  const shellGeo = new SphereGeometry(1, 7, 3, 0, Math.PI * 2, 0, Math.PI / 2);
-  const shells = new InstancedMesh(shellGeo, new MeshStandardMaterial({ roughness: 0.55, color: 0xffffff }), nShell);
-  const shellCols = [new Color(0.92, 0.88, 0.8), new Color(0.85, 0.72, 0.62), new Color(0.75, 0.7, 0.66), new Color(0.95, 0.93, 0.9)];
+  const shellGeo = new SphereGeometry(1, 6, 2, 0, Math.PI * 2, 0, Math.PI / 2);
+  const shellCols = [new Color(0.74, 0.7, 0.62), new Color(0.68, 0.56, 0.48), new Color(0.6, 0.56, 0.52), new Color(0.78, 0.76, 0.72)];
+  const shells: { geo: BufferGeometry; color: Color; m: Matrix4 }[] = [];
   for (let i = 0; i < nShell; i++) {
     const a = r() * Math.PI * 2;
     const rad = Math.sqrt(r()) * 48;
     const x = SITE_CENTER.x + Math.cos(a) * rad;
     const z = SITE_CENTER.z + Math.sin(a) * rad;
-    const sc = 0.025 + r() * 0.045;
+    const sc = 0.02 + r() * 0.035;
     const n = terrainNormal(x, z);
     q.setFromUnitVectors(up, new Vector3(n[0] + (r() - 0.5) * 0.6, 1, n[2] + (r() - 0.5) * 0.6).normalize());
     if (r() < 0.4) q.multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI)); // upside down
     p.set(x, terrainHeight(x, z) + 0.004, z);
     s.set(sc, sc * 0.35, sc * 0.9);
-    m.compose(p, q, s);
-    shells.setMatrixAt(i, m);
-    shells.setColorAt(i, shellCols[Math.floor(r() * shellCols.length)]);
+    shells.push({ geo: shellGeo, color: shellCols[Math.floor(r() * shellCols.length)], m: new Matrix4().compose(p, q, s) });
   }
-  shells.computeBoundingBox();
-  shells.computeBoundingSphere();
-  shells.receiveShadow = true;
-  shells.name = 'shells';
-  group.add(shells);
-  cullables.push({ object: shells, box: shells.boundingBox!.clone() });
 
   // --- Dropped objects / debris: scale cues near the site.
-  const debris = createDebris(quality);
+  const debris = createDebris(quality, shells);
   group.add(debris);
   debris.geometry.computeBoundingBox();
   cullables.push({ object: debris, box: debris.geometry.boundingBox!.clone() });
@@ -463,7 +487,7 @@ export function createSeabed(quality: GraphicsQuality): SeabedBuild {
 }
 
 /** Old anchor chain, a drum, a scaffold tube, a fender tyre and a beam offcut. */
-function createDebris(quality: GraphicsQuality): Mesh {
+function createDebris(quality: GraphicsQuality, extra: { geo: BufferGeometry; color: Color; m: Matrix4 }[]): Mesh {
   const parts: BufferGeometry[] = [];
   const put = (geo: BufferGeometry, color: Color, m: Matrix4) => {
     const g = geo.index ? geo.toNonIndexed() : geo;
@@ -476,7 +500,7 @@ function createDebris(quality: GraphicsQuality): Mesh {
     parts.push(g);
   };
   const ground = (x: number, z: number) => terrainHeight(x, z);
-  const rust = new Color(0.36, 0.22, 0.13);
+  const rust = new Color(0.17, 0.13, 0.1);
   // Anchor chain (~11 m of 76 mm studless chain) lying in a lazy S.
   const seg = quality === 'low' ? 6 : 9;
   const link = new TorusGeometry(0.1, 0.034, 5, seg);
@@ -518,6 +542,7 @@ function createDebris(quality: GraphicsQuality): Mesh {
   put(new BoxGeometry(2.2, 0.02, 0.2), rust, new Matrix4().makeTranslation(0, 0.1, 0).premultiply(ib));
   put(new BoxGeometry(2.2, 0.02, 0.2), rust, new Matrix4().makeTranslation(0, -0.1, 0).premultiply(ib));
   put(new BoxGeometry(2.2, 0.2, 0.015), rust, ib.clone());
+  for (const e of extra) put(e.geo.clone(), e.color, e.m);
   const merged = mergeGeometries(parts, false)!;
   parts.forEach((g) => g.dispose());
   const mat: Material = fouledMaterial(
@@ -526,7 +551,7 @@ function createDebris(quality: GraphicsQuality): Mesh {
   );
   const mesh = new Mesh(merged, mat);
   mesh.name = 'debris';
-  mesh.castShadow = quality !== 'low';
+  mesh.castShadow = false; // small, low objects: not worth a shadow-pass draw
   mesh.receiveShadow = true;
   return mesh;
 }

@@ -23,9 +23,9 @@ import type { CameraFx } from '../config/settings';
 import { OPTICS, waterOptics, type WaterOptics } from './optics';
 import { CAMERA_GLSL, createCameraUniforms, type CameraUniforms } from './lens';
 
-/** Size of the metering grid (cells) used for auto exposure. */
-const METER_W = 32;
-const METER_H = 18;
+/** Metering grid (samples) used for auto exposure. */
+const METER_W = 24;
+const METER_H = 14;
 /** Adaptation time constant of the auto exposure (s). */
 const ADAPT_TAU = 0.7;
 
@@ -82,24 +82,18 @@ const WATER_GLSL = /* glsl */ `
       vec3 ext = uExt + vec3(uTurbidity * nearBottom);
       vec3 T = exp(-ext * min(dist, 400.0));
       col = col * T + ambient * (1.0 - T);
-      // Local sediment plume (soft sphere): extinction + its own in-scatter.
+      // Local sediment plume: Gaussian blob, optical depth integrated along
+      // the ray up to the visible surface (soft everywhere, no hard edge).
       if (uSiltDensity > 0.0) {
         vec3 camPos = uCamWorld[3].xyz;
         vec3 oc = camPos - uSilt.xyz;
-        float b = dot(oc, dirWorld);
-        float c = dot(oc, oc) - uSilt.w * uSilt.w;
-        float h = b * b - c;
-        if (h > 0.0) {
-          float sq = sqrt(h);
-          float t0 = max(-b - sq, 0.0);
-          float t1 = min(-b + sq, dist);
-          float len = max(t1 - t0, 0.0);
-          // Density falls towards the edge of the cloud.
-          float core = 1.0 - clamp((dot(oc, oc) - b * b) / (uSilt.w * uSilt.w), 0.0, 1.0);
-          float od = uSiltDensity * len * (0.35 + 0.65 * core);
-          vec3 Ts = exp(-od * vec3(0.9, 1.0, 1.12));
-          col = col * Ts + uSiltColor * (1.0 - Ts);
-        }
+        float tc = -dot(oc, dirWorld);
+        float d2 = max(dot(oc, oc) - tc * tc, 0.0);
+        float sig = uSilt.w * 0.6;
+        float frac = smoothstep(tc - 1.6 * sig, tc + 1.6 * sig, min(dist, 400.0)) - smoothstep(tc - 1.6 * sig, tc + 1.6 * sig, 0.0);
+        float od = uSiltDensity * 1.77 * sig * exp(-d2 / (sig * sig)) * frac;
+        vec3 Ts = exp(-od * vec3(0.9, 1.0, 1.12));
+        col = col * Ts + uSiltColor * (1.0 - Ts);
       }
       // Camera white balance tuned for the vehicle lamps at ~2.5 m
       // (subsea cameras are balanced for their own lighting).
@@ -127,9 +121,7 @@ export class UnderwaterPass {
   /** Uniforms of the camera model, shared with the effects drawn after the composite. */
   readonly cameraUniforms: CameraUniforms = createCameraUniforms();
   private readonly material: ShaderMaterial;
-  private readonly meterMat: ShaderMaterial;
   private readonly adaptMat: ShaderMaterial;
-  private readonly meterTarget: WebGLRenderTarget;
   private readonly adaptTargets: [WebGLRenderTarget, WebGLRenderTarget];
   private adaptIndex = 0;
   private readonly quad: Mesh;
@@ -149,7 +141,6 @@ export class UnderwaterPass {
     this.target.depthTexture = new DepthTexture(width, height, UnsignedIntType);
 
     const small = { type: FloatType, depthBuffer: false, minFilter: NearestFilter, magFilter: NearestFilter } as const;
-    this.meterTarget = new WebGLRenderTarget(METER_W, METER_H, small);
     this.adaptTargets = [new WebGLRenderTarget(1, 1, small), new WebGLRenderTarget(1, 1, small)];
     this.cameraUniforms.tExposure.value = this.adaptTargets[0].texture;
 
@@ -231,37 +222,14 @@ export class UnderwaterPass {
       toneMapped: true,
     });
 
-    // Metering: each cell averages the log-luminance of 4 taps of the composite.
-    this.meterMat = new ShaderMaterial({
-      uniforms: { ...waterUniforms },
+    // Metering + adaptation in one 1×1 pass: centre-weighted mean log-luminance
+    // of the composite on a coarse grid, blended with the previous value.
+    this.adaptMat = new ShaderMaterial({
+      uniforms: { ...waterUniforms, tPrev: { value: null }, uBlend: { value: 1 } },
       vertexShader: VERTEX,
       fragmentShader: /* glsl */ `
         precision highp float;
         ${WATER_GLSL}
-        varying vec2 vUv;
-        void main() {
-          vec2 cell = vec2(1.0 / ${METER_W.toFixed(1)}, 1.0 / ${METER_H.toFixed(1)});
-          float s = 0.0;
-          for (int i = 0; i < 4; i++) {
-            vec2 o = vec2(float(i % 2) - 0.5, float(i / 2) - 0.5) * cell * 0.5;
-            vec3 c = sceneRadiance(clamp(vUv + o, 0.001, 0.999));
-            float l = dot(min(c, vec3(20.0)), vec3(0.2126, 0.7152, 0.0722));
-            s += log(l + 1e-3);
-          }
-          gl_FragColor = vec4(s * 0.25, 0.0, 0.0, 1.0);
-        }
-      `,
-      depthTest: false,
-      depthWrite: false,
-    });
-
-    // Adaptation: centre-weighted mean of the grid, blended with the previous value.
-    this.adaptMat = new ShaderMaterial({
-      uniforms: { tMeter: { value: this.meterTarget.texture }, tPrev: { value: null }, uBlend: { value: 1 } },
-      vertexShader: VERTEX,
-      fragmentShader: /* glsl */ `
-        precision highp float;
-        uniform sampler2D tMeter;
         uniform sampler2D tPrev;
         uniform float uBlend;
         void main() {
@@ -269,9 +237,12 @@ export class UnderwaterPass {
           float wsum = 0.0;
           for (int y = 0; y < ${METER_H}; y++) {
             for (int x = 0; x < ${METER_W}; x++) {
-              vec2 p = (vec2(float(x), float(y)) + 0.5) / vec2(${METER_W.toFixed(1)}, ${METER_H.toFixed(1)}) - 0.5;
+              vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(${METER_W.toFixed(1)}, ${METER_H.toFixed(1)});
+              vec2 p = uv - 0.5;
               float w = 1.0 - 1.2 * dot(p, p);
-              sum += texelFetch(tMeter, ivec2(x, y), 0).r * w;
+              vec3 c = sceneRadiance(uv);
+              float l = dot(min(c, vec3(20.0)), vec3(0.2126, 0.7152, 0.0722));
+              sum += log(l + 1e-3) * w;
               wsum += w;
             }
           }
@@ -345,6 +316,9 @@ export class UnderwaterPass {
     u.uKd.value.set(...w.kd);
     (u.uScatter.value as Color).copy(w.scatter);
     u.uTurbidity.value = w.nearBottom;
+    // Above-water haze follows the sky brightness (grey overcast, dark at night).
+    const sky = (1 - w.overcast) + w.overcast * w.irradiance * 1.6 + 0.004;
+    (u.uAirFog.value as Color).setRGB(0.62, 0.71, 0.78).lerp(new Color(0.6, 0.62, 0.64), w.overcast).multiplyScalar(sky);
   }
 
   /** Local sediment plume (density 0 disables it). */
@@ -379,9 +353,6 @@ export class UnderwaterPass {
     renderer.clear();
     renderer.render(scene, camera);
     if (this.autoExposure) {
-      this.quad.material = this.meterMat;
-      renderer.setRenderTarget(this.meterTarget);
-      renderer.render(this.scene, this.ortho);
       const prev = this.adaptTargets[this.adaptIndex];
       this.adaptIndex = 1 - this.adaptIndex;
       const next = this.adaptTargets[this.adaptIndex];
@@ -409,10 +380,8 @@ export class UnderwaterPass {
 
   dispose(): void {
     this.target.dispose();
-    this.meterTarget.dispose();
     this.adaptTargets.forEach((t) => t.dispose());
     this.material.dispose();
-    this.meterMat.dispose();
     this.adaptMat.dispose();
     this.quad.geometry.dispose();
   }

@@ -14,21 +14,9 @@ import { Hud, type HudData } from './ui/hud';
 import { Menus } from './ui/menus';
 import { AudioEngine } from './audio/audio';
 import { SITE_BASE_DEPTH, terrainHeight } from './sim/terrain';
-import { LAUNCH_POINT } from './sim/site';
 import type { Objective } from './mission/types';
 import { MISSIONS, missionById } from './mission/catalog';
 import { MissionMarkers } from './render/markers';
-import type { EnvironmentConditions } from './sim/conditions';
-import type { CameraFx } from './config/settings';
-
-/** Optional v2 render hooks (provided by World / UnderwaterPass when available). */
-interface WorldV2 {
-  setConditions?(c: EnvironmentConditions): void;
-  setSeabedDisturbance?(amount: number, position: Vector3): void;
-}
-interface PassV2 {
-  setCameraFx?(fx: CameraFx, operational: boolean): void;
-}
 
 type AppState = 'menu' | 'running' | 'paused' | 'report';
 
@@ -63,6 +51,7 @@ export class App {
   frameStats = { calls: 0, triangles: 0 };
   private readonly bufSize = new Vector2();
   private markers = new MissionMarkers();
+  private readonly tetherPts: Vector3[] = [];
   /** Fine control latched by a device button (SpaceMouse/gamepad); Shift held also enables it. */
   private fineLatched = false;
 
@@ -165,7 +154,7 @@ export class App {
     this.rig.mouseSensitivity = s.mouseSensitivity;
     this.rig.invertTilt = s.invert.camTilt;
     this.sim.setConditionChoice({ current: s.current, visibility: s.visibility, light: s.light, sea: s.sea });
-    (this.world as WorldV2).setConditions?.(this.sim.conditions);
+    this.world.setConditions(this.sim.conditions);
     this.audio.setVolume(s.volume);
   }
 
@@ -174,8 +163,9 @@ export class App {
     if (missionId !== this.store.get().mission) this.store.update({ mission: missionId });
     const def = missionById(missionId);
     this.sim.reset(this.store.get().defaultMode, def);
-    (this.world as WorldV2).setConditions?.(this.sim.conditions);
+    this.world.setConditions(this.sim.conditions);
     this.fineLatched = false;
+    this.pass.resetAdaptation();
     this.rig.setMode(def.start === 'crane' ? 'external' : 'operational');
     this.rig.tilt = def.start === 'crane' ? -10 : -22;
     this.reportShown = false;
@@ -211,7 +201,7 @@ export class App {
     this.state = 'menu';
     this.hud.show(false);
     this.sim.reset(this.store.get().defaultMode, missionById('inspection'));
-    (this.world as WorldV2).setConditions?.(this.sim.conditions);
+    this.world.setConditions(this.sim.conditions);
     this.menus.show('main');
     this.audio.suspend(true);
   }
@@ -286,6 +276,7 @@ export class App {
       }
       case 'toggleCamera': {
         const m = this.rig.toggle();
+        this.pass.resetAdaptation();
         sim.mission.notifyCameraToggled();
         this.hud.toast(t('msg.camera', { c: t(m === 'operational' ? 'hud.cam.op' : 'hud.cam.ext') }));
         break;
@@ -396,7 +387,7 @@ export class App {
       }
     }
     this.markers.update(this.state === 'menu' ? [] : sim.mission.markers());
-    (this.world as WorldV2).setSeabedDisturbance?.((sim.rov as unknown as { seabedDisturbance?: number }).seabedDisturbance ?? 0, sim.rov.position);
+    this.world.setSeabedDisturbance(sim.rov.seabedDisturbance, sim.rov.position);
 
     // Environment & effects.
     const camDepth = -cam.position.y;
@@ -418,17 +409,11 @@ export class App {
       lightLevel: sim.effectiveLight,
     });
     this.world.vessel.setWire(sim.wireEnd() ? this.tmp.copy(rov.tetherPoint.getWorldPosition(new Vector3())) : null);
-    this.world.updateTether(
-      dt,
-      sim.crane === 'released' ? new Vector3(LAUNCH_POINT.x, 1.5, LAUNCH_POINT.z) : null,
-      sim.rov.waterVelocity,
-    );
+    this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     const opCam = this.rig.mode === 'operational';
     const fx = this.store.get().cameraFx;
-    const passV2 = this.pass as PassV2;
-    if (passV2.setCameraFx) passV2.setCameraFx(fx, opCam);
-    else this.pass.setNoise(opCam ? 0.035 * fx.noise * 2.5 : 0.012, opCam ? 0.55 * fx.vignette * 2 : 0.25);
+    this.pass.setCameraFx(fx, opCam);
     // Camera white balance follows the artificial lighting once sunlight has faded.
     const wb = Math.min(1, Math.max(0, (camDepth - 25) / 40)) * (sim.effectiveLight > 0 ? 1 : 0.35);
     this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wb });

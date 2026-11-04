@@ -11,6 +11,7 @@ import {
   Matrix4,
   Mesh,
   MeshStandardMaterial,
+  Object3D,
   PlaneGeometry,
   Quaternion,
   TorusGeometry,
@@ -32,13 +33,22 @@ import {
   type V3,
 } from '../sim/site';
 import { terrainHeight } from '../sim/terrain';
-import { fouledMaterial, makeGratingTexture, makeLabelTexture, makeTagAtlas } from './materials';
+import { fouledMaterial, makeGratingTexture, makeTagAtlas, type TagEntry } from './materials';
 import type { GraphicsQuality } from '../config/settings';
 
 type MatKey = 'paint' | 'steel' | 'pipe' | 'handle' | 'anode' | 'dark' | 'concrete';
 
-/** Valve / equipment tags: one atlas, one merged mesh for the whole site. */
-const TAGS = ['V-101', 'V-102', 'V-103', 'V-104', 'V-105', 'V-106', 'V-107', 'V-108', 'XV-1', 'XV-2', 'XV-3', 'V-301', 'P-1', 'P-2', 'P-3', 'P-4'];
+/**
+ * Every plate of the site (valve tags, ID boards, inspection markers) comes
+ * from one atlas and is merged into one mesh: a single draw call.
+ */
+const BOARD_YELLOW = '#e8b320';
+const TAGS: TagEntry[] = [
+  ...['V-101', 'V-102', 'V-103', 'V-104', 'V-105', 'V-106', 'V-107', 'V-108', 'XV-1', 'XV-2', 'XV-3', 'V-301', 'P-1', 'P-2', 'P-3', 'P-4'].map((text) => ({ text })),
+  { text: 'MF-01', aspect: 2.75, bg: BOARD_YELLOW },
+  { text: 'ANM-03', aspect: 2.8, bg: BOARD_YELLOW },
+  ...INSPECTION_POINTS.map((ip) => ({ text: ip.id, bg: '#f2f2ee' })),
+];
 const TAG_W = 0.24;
 const TAG_H = 0.12;
 
@@ -47,10 +57,10 @@ class TagSet {
   readonly parts: BufferGeometry[] = [];
   constructor(private readonly uv: (i: number) => { u0: number; u1: number; v0: number; v1: number }) {}
   /** Plate facing local +Z of `m`. */
-  add(label: string, m: Matrix4): void {
-    const i = TAGS.indexOf(label);
+  add(label: string, m: Matrix4, w = TAG_W, h = TAG_H): void {
+    const i = TAGS.findIndex((t) => t.text === label);
     if (i < 0) return;
-    const g = new PlaneGeometry(TAG_W, TAG_H);
+    const g = new PlaneGeometry(w, h);
     const r = this.uv(i);
     const uv = g.attributes.uv as BufferAttribute;
     for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) ? r.u1 : r.u0, uv.getY(k) ? r.v1 : r.v0);
@@ -270,9 +280,7 @@ function buildManifold(materials: Record<MatKey, Material>, quality: GraphicsQua
   g.add(grate);
 
   // Identification board.
-  const tag = new Mesh(new PlaneGeometry(2.2, 0.8), new MeshStandardMaterial({ map: makeLabelTexture('MF-01', { w: 512, h: 186 }), roughness: 0.6 }));
-  tag.position.set(-1.8, 3.2, hw + 0.2);
-  g.add(tag);
+  tags.add('MF-01', new Matrix4().makeTranslation(-1.8, 3.2, hw + 0.2).premultiply(local), 2.2, 0.8);
 
   g.position.set(MANIFOLD.position.x, MANIFOLD.position.y, MANIFOLD.position.z);
   g.rotation.y = MANIFOLD.yaw;
@@ -315,7 +323,6 @@ function buildTree(materials: Record<MatKey, Material>, tags: TagSet): Group {
   b.box('dark', 1.6, 0.9, 0.1, 0, 1.6, -h - 0.05);
   for (let i = 0; i < 3; i++) b.cyl('handle', 0.06, 0.25, -0.5 + i * 0.5, 1.65, -h - 0.2, RX(HALF), 10);
   // Anodes and grab handles on the guide frame.
-  for (const x of [-h, h]) for (const z of [-h, h]) anode(b, x, 1.4, z, new Vector3(Math.sign(x), 0, 0));
   for (const z of [-h, h]) dHandle(b, new Matrix4().makeTranslation(0.9, 2.2, z + Math.sign(z) * 0.12).multiply(new Matrix4().makeRotationY(z > 0 ? 0 : Math.PI)));
   b.build(materials, g);
   const treeM = new Matrix4().compose(
@@ -326,9 +333,7 @@ function buildTree(materials: Record<MatKey, Material>, tags: TagSet): Group {
   // Valve tags on the panel face (local −Z) above the handles.
   const back = new Matrix4().makeRotationY(Math.PI);
   for (let i = 0; i < 3; i++) tags.add(`XV-${i + 1}`, new Matrix4().makeTranslation(-0.5 + i * 0.5, 1.95, -h - 0.112).multiply(back).premultiply(treeM));
-  const tag = new Mesh(new PlaneGeometry(1.4, 0.5), new MeshStandardMaterial({ map: makeLabelTexture('ANM-03', { w: 384, h: 136 }), roughness: 0.6 }));
-  tag.position.set(0, 3.1, h + 0.13);
-  g.add(tag);
+  tags.add('ANM-03', new Matrix4().makeTranslation(0, 3.1, h + 0.13).premultiply(treeM), 1.4, 0.5);
   // The local frame of the hub must match the site data (world-space jumper start).
   g.position.set(TREE.position.x, TREE.position.y, TREE.position.z);
   g.rotation.y = TREE.yaw;
@@ -389,32 +394,27 @@ function buildPipes(materials: Record<MatKey, Material>, quality: GraphicsQualit
   }
   valve(plet, 0, 0.8, 0, 1);
   tags.add('V-301', new Matrix4().makeTranslation(PLET.position.x, PLET.position.y + 0.8, PLET.position.z + 0.285));
-  for (const x of [-L / 2, L / 2]) anode(plet, x, 0.9, -W / 2, new Vector3(Math.sign(x), 0, 0));
   plet.cyl('pipe', PIPELINE_RADIUS, L, 0, 0.6, 0, RZ(HALF), radial);
   const pletGroup = new Group();
   plet.build(materials, pletGroup);
   pletGroup.position.set(PLET.position.x, PLET.position.y, PLET.position.z);
   g.add(pletGroup);
   concreteMattresses(b, pipeline.curve, quality);
+  buildMarkers(b, tags);
   b.build(materials, g);
   return g;
 }
 
 /** Numbered inspection tags fixed on the structures, as used in real inspection campaigns. */
-function buildMarkers(): Group {
-  const g = new Group();
-  g.name = 'inspection-markers';
+function buildMarkers(b: Builder, tags: TagSet): void {
+  const plate = new Object3D();
   INSPECTION_POINTS.forEach((ip) => {
-    const tex = makeLabelTexture(ip.id, { w: 256, h: 128, bg: '#f2f2ee', fg: '#111' });
-    const plate = new Mesh(new PlaneGeometry(0.5, 0.25), new MeshStandardMaterial({ map: tex, roughness: 0.5, side: DoubleSide }));
     if (ip.id === 'IP-02') {
       // Tag on a small stake on the seabed beside the free span (off the line of sight).
       const side = new Vector3(-ip.approach.z, 0, ip.approach.x).normalize();
       const base = new Vector3(ip.target.x + ip.approach.x * 1.2 + side.x * 1.6, 0, ip.target.z + ip.approach.z * 1.2 + side.z * 1.6);
       base.y = terrainHeight(base.x, base.z);
-      const stake = new Mesh(new CylinderGeometry(0.03, 0.03, 0.9, 6), new MeshStandardMaterial({ color: 0xd9a21b, roughness: 0.6 }));
-      stake.position.copy(base).add(new Vector3(0, 0.45, 0));
-      g.add(stake);
+      b.cyl('paint', 0.03, 0.9, base.x, base.y + 0.45, base.z, undefined, 6);
       plate.position.copy(base).add(new Vector3(0, 0.9, 0));
       const viewer = new Vector3(ip.target.x + ip.approach.x * 6, 0, ip.target.z + ip.approach.z * 6);
       plate.lookAt(viewer.x, plate.position.y, viewer.z);
@@ -424,9 +424,9 @@ function buildMarkers(): Group {
       plate.position.set(ip.target.x + ip.approach.x * 0.3 + side.x * 0.75, ip.target.y + 0.75, ip.target.z + ip.approach.z * 0.3 + side.z * 0.75);
       plate.lookAt(ip.target.x + ip.approach.x * 6, plate.position.y, ip.target.z + ip.approach.z * 6);
     }
-    g.add(plate);
+    plate.updateMatrix();
+    tags.add(ip.id, plate.matrix.clone(), 0.5, 0.25);
   });
-  return g;
 }
 
 /**
@@ -470,15 +470,14 @@ export function createStructures(quality: GraphicsQuality): Group {
   const root = new Group();
   root.name = 'structures';
   const materials = makeMaterials();
-  const atlas = makeTagAtlas(TAGS, { cols: 4, cellW: 160, cellH: 80 });
+  const atlas = makeTagAtlas(TAGS, { cols: 4, cellW: 256, cellH: 128 });
   const tags = new TagSet(atlas.uv);
   root.add(buildManifold(materials, quality, tags));
   root.add(buildTree(materials, tags));
   root.add(buildPipes(materials, quality, tags));
-  root.add(buildMarkers());
   const tagGeo = mergeGeometries(tags.parts, false);
   if (tagGeo) {
-    const tagMesh = new Mesh(tagGeo, new MeshStandardMaterial({ map: atlas.texture, roughness: 0.55, metalness: 0.1, side: DoubleSide }));
+    const tagMesh = new Mesh(tagGeo, new MeshStandardMaterial({ map: atlas.texture, roughness: 0.55, metalness: 0.1 }));
     tagMesh.name = 'valve-tags';
     tagMesh.receiveShadow = true;
     root.add(tagMesh);

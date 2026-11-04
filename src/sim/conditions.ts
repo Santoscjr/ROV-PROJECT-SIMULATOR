@@ -61,7 +61,7 @@ const CURRENT: Record<CurrentLevel, EnvironmentConditions['current']> = {
 const WATER: Record<VisibilityLevel, EnvironmentConditions['water']> = {
   clear: { turbidity: 0, particleDensity: 0.6, nearBottomTurbidity: 0.02 },
   normal: { turbidity: 0.035, particleDensity: 1, nearBottomTurbidity: 0.035 },
-  turbid: { turbidity: 0.2, particleDensity: 2.2, nearBottomTurbidity: 0.12 },
+  turbid: { turbidity: 0.2, particleDensity: 2.2, nearBottomTurbidity: 0.08 },
 };
 
 const LIGHT: Record<LightLevel, EnvironmentConditions['light']> = {

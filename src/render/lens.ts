@@ -27,8 +27,10 @@ export function createCameraUniforms(): CameraUniforms {
     uAspect: { value: 16 / 9 },
     uLensRc2: { value: 0.25 * ((16 / 9) ** 2 + 1) },
     tExposure: { value: null },
-    uExposure: { value: new Vector3(0, 1, 0.05) },
-    uExpRange: { value: new Vector3(0.55, 2.2, 0.62) },
+    // Key: mean scene luminance that needs no gain (typical lamp-lit work scene at ~120 m).
+    uExposure: { value: new Vector3(0, 1, Math.exp(-4.9)) },
+    // Partial adaptation within about −0.25…+0.45 EV: smooths transitions, never blinds or fools the pilot.
+    uExpRange: { value: new Vector3(0.85, 1.35, 0.5) },
   };
 }
 

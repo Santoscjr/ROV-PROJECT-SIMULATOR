@@ -160,8 +160,10 @@ export class World {
 
   /** Sediment stirred up by thrusters / contact (0..1) at `position` (the vehicle). */
   setSeabedDisturbance(amount: number, position: Vector3): void {
-    this.disturbance = Math.min(1, Math.max(0, Number.isFinite(amount) ? amount : 0));
     const g = terrainHeight(position.x, position.z);
+    // Safety: nothing is stirred up from high above the seabed.
+    const fade = Math.min(1, Math.max(0, (8 - (position.y - g)) / 2));
+    this.disturbance = Math.min(1, Math.max(0, Number.isFinite(amount) ? amount : 0)) * fade;
     this.disturbancePos.set(position.x, g + 0.25, position.z);
     this.effects.setSeabedDisturbance(this.disturbance, this.disturbancePos);
   }
@@ -197,7 +199,7 @@ export class World {
     this.cull(opts.camPos);
     const dt = this.lastTime < 0 ? 0 : Math.min(0.25, Math.max(0, opts.time - this.lastTime));
     this.lastTime = opts.time;
-    this.updatePlume(dt, tr);
+    this.updatePlume(dt);
 
     // Ambient level for the particles (in-scattered sunlight).
     const veil = irr * (1 + 2.2 * o.extraTurbidity);
@@ -214,7 +216,7 @@ export class World {
   }
 
   /** Smoothed sediment cloud for the composite (local extinction + in-scatter). */
-  private updatePlume(dt: number, sunTr: Color): void {
+  private updatePlume(dt: number): void {
     const target = this.disturbance;
     // Builds up within ~1.5 s, settles over ~10 s.
     const tau = target > this.plume ? 1.5 : 10;
@@ -228,9 +230,10 @@ export class World {
       this.pass.setSilt(this.plumePos, 1, 0, this.siltColor.setRGB(0, 0, 0));
       return;
     }
-    const radius = 1.2 + 2.2 * this.plume + Math.min(3, this.plumeAge * 0.25);
-    const center = this.tmpCenter.copy(this.plumePos).add(this.tmpOff.set(0, 0.3 + this.plume * 0.5, 0));
-    // In-scatter of the cloud: water ambient + lamp light reaching it.
+    const radius = 0.8 + 1.6 * this.plume + Math.min(2, this.plumeAge * 0.2);
+    const center = this.tmpCenter.copy(this.plumePos).add(this.tmpOff.set(0, 0.1 + this.plume * 0.4, 0));
+    // In-scatter of the cloud: water ambient + lamp light reaching it, seen
+    // through ~1.5 m of water (the composite's white balance then applies).
     const o = this.optics;
     const amb = o.scatter;
     const e = Math.exp(-o.kd[2] * Math.max(0, -center.y));
@@ -238,26 +241,32 @@ export class World {
     for (const l of this.lamps) {
       if (!l.visible) continue;
       l.getWorldPosition(this.tmpL);
-      const dist = Math.max(0.8, this.tmpL.distanceTo(center));
+      const dist = Math.max(1, this.tmpL.distanceTo(center));
+      // Mostly spill light: the cloud sits below/around the beams.
       lamp += (l.intensity * Math.exp(-o.ext[1] * dist)) / (dist * dist);
     }
-    lamp *= 0.035;
+    lamp *= 0.006;
+    const path = 1.5;
     this.siltColor.setRGB(
-      0.55 * (amb.r * e * 0.6 + lamp * 0.95 + sunTr.r * 0.01),
-      0.52 * (amb.g * e * 0.6 + lamp),
-      0.44 * (amb.b * e * 0.6 + lamp * 1.02),
+      0.5 * (amb.r * e * 0.6 + lamp) * Math.exp(-o.ext[0] * path),
+      0.47 * (amb.g * e * 0.6 + lamp) * Math.exp(-o.ext[1] * path),
+      0.4 * (amb.b * e * 0.6 + lamp) * Math.exp(-o.ext[2] * path),
     );
-    this.pass.setSilt(center, radius, 0.55 * this.plume, this.siltColor);
+    this.pass.setSilt(center, radius, 0.6 * this.plume, this.siltColor);
   }
 
   private readonly tmpCenter = new Vector3();
   private readonly tmpOff = new Vector3();
   private readonly tmpL = new Vector3();
 
-  /** Umbilical from the vessel's launch point to the vehicle, sagging with the current. */
-  updateTether(dt: number, from: Vector3 | null, current: Vector3): void {
+  /**
+   * Umbilical drawn along the shape computed by the physics tether model
+   * (anchor → vehicle). The last point is snapped to the visual termination
+   * with a short straight run out of the bend restrictor.
+   */
+  updateTether(dt: number, path: readonly Vector3[] | null): void {
     this.tetherTimer -= dt;
-    if (!from) {
+    if (!path || path.length < 2) {
       this.tether.visible = false;
       return;
     }
@@ -265,22 +274,10 @@ export class World {
     if (this.tetherTimer > 0) return;
     this.tetherTimer = 1 / 20;
     const end = this.rov.tetherPoint.getWorldPosition(new Vector3());
-    const pts: Vector3[] = [];
-    const n = 14;
-    const span = from.distanceTo(end);
-    for (let i = 0; i <= n; i++) {
-      const s = i / n;
-      const p = new Vector3().lerpVectors(from, end, s);
-      // Bow with the current and slight catenary sag.
-      const bow = Math.sin(s * Math.PI) * Math.min(25, span * 0.18);
-      p.addScaledVector(current, bow * 3);
-      p.y -= Math.sin(s * Math.PI) * Math.min(6, span * 0.05);
-      pts.push(p);
-    }
-    // Keep the near end straight out of the termination.
-    pts.splice(n, 0, end.clone().add(new Vector3(0, 1.2, 0)));
+    const pts = path.slice(0, -1).map((p) => p.clone());
+    pts.push(end.clone().add(new Vector3(0, 1.0, 0)), end);
     this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), 80, 0.03, 5);
+    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), Math.max(40, pts.length * 5), 0.03, 5);
   }
 
   dispose(): void {

@@ -109,7 +109,7 @@ export function createSeaSurface(): Mesh & { material: ShaderMaterial } {
       vec2 wave(vec2 p, vec2 d, float f, float a, float s) {
         // Longer swell for a higher sea: lower frequencies scale up most.
         float ph = dot(p, d) * f + uTime * s * uSpeed;
-        return d * cos(ph) * a * f * mix(1.0, uAmp, smoothstep(1.0, 0.15, f));
+        return d * cos(ph) * a * f * mix(sqrt(uAmp), uAmp, smoothstep(1.0, 0.15, f));
       }
       vec3 normalAt(vec2 p) {
         vec2 g = vec2(0.0);
@@ -134,9 +134,12 @@ export function createSeaSurface(): Mesh & { material: ShaderMaterial } {
           vec3 col = mix(deep, sky * light, fres);
           float spec = pow(max(dot(r, uSunDir), 0.0), 220.0) * 6.0 * (1.0 - uOvercast);
           col += vec3(1.0, 0.95, 0.85) * spec;
-          // Whitecaps in a higher sea.
-          float crest = smoothstep(0.55, 0.9, 1.0 - n.y) * smoothstep(1.3, 2.5, uAmp);
-          col = mix(col, vec3(0.85) * light, crest * 0.6);
+          // Whitecaps in a higher sea: steep wave faces, broken into patches.
+          float slope = length(n.xz);
+          vec2 fp = vWPos.xz * 0.15 + vec2(uTime * 0.3, -uTime * 0.2);
+          float patchy = smoothstep(0.55, 0.9, fract(sin(dot(floor(fp), vec2(12.9898, 78.233))) * 43758.5453));
+          float crest = smoothstep(0.36, 0.55, slope) * smoothstep(1.3, 2.5, uAmp) * (0.4 + 0.6 * patchy);
+          col = mix(col, vec3(0.86, 0.88, 0.88) * light, crest * 0.5 * smoothstep(400.0, 60.0, dist));
           // Foam near the vessel hull.
           float a = mix(0.9, 0.98, fres);
           gl_FragColor = vec4(col, a);

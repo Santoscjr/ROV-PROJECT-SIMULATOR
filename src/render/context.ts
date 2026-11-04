@@ -24,8 +24,8 @@ import type { GraphicsQuality } from '../config/settings';
  * only (no colliders); their positions are exported for the physics if needed.
  */
 export const CONTEXT_LAYOUT = {
-  riserBase: { x: -24, z: -66, size: { x: 4, y: 2.2, z: 3 } },
-  wellhead2: { x: 58, z: -112, size: { x: 5, y: 4, z: 5 } },
+  riserBase: { x: -14, z: -72, size: { x: 4, y: 2.2, z: 3 } },
+  wellhead2: { x: 52, z: -106, size: { x: 5, y: 4, z: 5 } },
   riserRadius: 0.18,
   mooringRadius: 0.11,
 };
@@ -62,16 +62,16 @@ export function createContext(quality: GraphicsQuality): Mesh {
   const riser = new CatmullRomCurve3(
     [
       [rb.x - 1, rbY + 1.8, rb.z],
-      [rb.x - 4, rbY + 2.5, rb.z - 1],
-      [-36, -106, -70],
-      [-48, -92, -73],
-      [-60, -80, -77],
-      [-70, -74, -80],
-      [-80, -76, -83],
-      [-92, -70, -86],
-      [-115, -45, -92],
-      [-150, -12, -100],
-      [-175, 0, -104],
+      [rb.x - 3, rbY + 3, rb.z + 3],
+      [-20, -104, -60],
+      [-23, -92, -50],
+      [-25, -82, -41],
+      [-27, -77, -32],
+      [-29, -79, -24],
+      [-31, -72, -16],
+      [-40, -46, 0],
+      [-60, -16, 20],
+      [-76, 0, 30],
     ].map(([x, y, z]) => new Vector3(x, y, z)),
   );
   put(new TubeGeometry(riser, quality === 'low' ? 60 : 110, CONTEXT_LAYOUT.riserRadius, radial, false), black);

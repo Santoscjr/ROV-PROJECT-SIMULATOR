@@ -53,17 +53,20 @@ const LIGHTS_GLSL = /* glsl */ `
   uniform float uLCos[${MAX_LIGHTS}];
   uniform float uLInt[${MAX_LIGHTS}];
   uniform vec3 uExt;
-  vec3 artificial(vec3 p) {
+  // Lamp light at p. 'spill' is the fraction reaching outside the cone
+  // (light scattered by the water around the beam).
+  vec3 artificialS(vec3 p, float spill) {
     vec3 sum = vec3(0.0);
     for (int i = 0; i < ${MAX_LIGHTS}; i++) {
       vec3 d = p - uLPos[i];
       float dist = length(d);
       float c = dot(d / max(dist, 1e-3), uLDir[i]);
-      float cone = smoothstep(uLCos[i], uLCos[i] + 0.12, c);
+      float cone = mix(spill, 1.0, smoothstep(uLCos[i], uLCos[i] + 0.12, c));
       sum += uLInt[i] * cone * exp(-uExt * dist) / (dist * dist + 0.6);
     }
     return sum;
   }
+  vec3 artificial(vec3 p) { return artificialS(p, 0.0); }
 `;
 
 /**
@@ -92,6 +95,8 @@ export class WaterEffects {
   private siltCursor = 0;
   private siltAcc = 0;
   private siltAmount = 0;
+  /** Time of the last puff emitted (the plume draw is skipped once all have faded). */
+  private siltLastEmit = -1e9;
   private readonly siltPos = new Vector3();
   private lastTime = -1;
 
@@ -248,7 +253,7 @@ export class WaterEffects {
           gl_Position = lensClip(projectionMatrix * mv);
           float worldSize = 0.5 + 2.0 * sqrt(t) * (0.6 + seed);
           gl_PointSize = clamp(worldSize * uProjScale / max(vDist, 0.2), 1.0, 320.0);
-          vAlpha = strength * smoothstep(0.0, 0.12, t) * pow(1.0 - t, 1.4) * 0.32;
+          vAlpha = strength * smoothstep(0.0, 0.12, t) * pow(1.0 - t, 1.4) * 0.3;
         }`,
       fragmentShader: /* glsl */ `
         ${CAMERA_GLSL}
@@ -267,10 +272,10 @@ export class WaterEffects {
           float r = dot(c, c) * 4.0;
           if (r > 1.0) discard;
           // Lumpy, soft-edged puff; fades where it meets the seabed/structures.
-          float lump = 0.75 + 0.25 * sin(c.x * 9.0 + vSeed * 31.0) * sin(c.y * 8.0 - vSeed * 17.0);
+          float lump = 0.88 + 0.12 * sin(c.x * 9.0 + vSeed * 31.0) * sin(c.y * 8.0 - vSeed * 17.0);
           float a = vAlpha * pow(1.0 - r, 1.6) * lump * clamp((sceneZ - vDist + 0.3) / 0.8, 0.0, 1.0);
           vec3 albedo = vec3(0.55, 0.52, 0.44);
-          vec3 light = artificial(vWorld) * 0.8 + uAmbient * 0.5;
+          vec3 light = artificialS(vWorld, 0.18) * 0.8 + uAmbient * 0.5;
           vec3 col = albedo * light * exp(-uExt * vDist) * cameraExposure();
           gl_FragColor = vec4(col, 1.0);
           #include <tonemapping_fragment>
@@ -395,13 +400,19 @@ export class WaterEffects {
           } else if (!insideAt(co, rd, 0.5 * (t0 + t1))) discard;
           if (s1 <= s0) discard;
 
-          // Single scattering, jittered march.
+          // Single scattering with equiangular sampling about the lamp (the
+          // 1/r² peak is integrated exactly; little noise with few samples).
           const int N = 12;
-          float dt = (s1 - s0) / float(N);
-          float j = hash(gl_FragCoord.xy + fract(uTime * 3.1) * 61.0);
+          float D = -dot(co, rd);                     // closest approach to the lamp
+          float hh = max(length(co + rd * D), 0.03);  // its distance
+          float ta = atan((s0 - D) / hh);
+          float tb = atan((s1 - D) / hh);
+          // Interleaved gradient noise: low-discrepancy jitter, barely visible.
+          float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
           vec3 sum = vec3(0.0);
           for (int i = 0; i < N; i++) {
-            float t = s0 + (float(i) + j) * dt;
+            float th = mix(ta, tb, (float(i) + j) / float(N));
+            float t = D + hh * tan(th);
             vec3 q = co + rd * t;
             float dl = length(q);
             vec3 ldir = q / max(dl, 1e-3);
@@ -411,8 +422,10 @@ export class WaterEffects {
             float g = 0.6;
             float hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * mu, 1.5);
             float phase = 0.35 + 0.65 * hg * 0.25;
-            sum += cone * phase * exp(-uExt * (dl + t)) / (dl * dl + 0.25);
+            // Integrand cone·phase·T/(r²+0.25), divided by the pdf ∝ 1/r².
+            sum += cone * phase * exp(-uExt * (dl + t)) * (dl * dl / (dl * dl + 0.25));
           }
+          float dt = (tb - ta) / (hh * float(N));
           vec3 col = vec3(0.95, 0.97, 1.0) * sum * dt * uBInt * uScattering;
           gl_FragColor = vec4(col * cameraExposure(), 1.0);
           #include <tonemapping_fragment>
@@ -424,7 +437,8 @@ export class WaterEffects {
   /** Water optics from the environmental conditions. */
   setWater(w: WaterOptics): void {
     (this.shared.uExt.value as Vector3).set(...w.ext);
-    this.shared.uScattering.value = w.scattering;
+    // Visual weight of the lamp haze grows faster than b (multiple scattering, veiling glare).
+    this.shared.uScattering.value = Math.pow(w.scattering, 1.6);
     const n = Math.min(this.snowMax, Math.round(this.snowBase * w.particleDensity));
     this.particles.geometry.setDrawRange(0, n);
     this.shared.uSnowBright.value = 0.85 + 0.15 * Math.min(2.5, w.scattering);
@@ -457,6 +471,7 @@ export class WaterEffects {
       this.siltBirth[i] = time - Math.random() * dt;
       strength.setX(i, 0.5 + 0.5 * this.siltAmount);
     }
+    this.siltLastEmit = time;
     geo.getAttribute('position').needsUpdate = true;
     geo.getAttribute('birth').needsUpdate = true;
     strength.needsUpdate = true;
@@ -505,11 +520,11 @@ export class WaterEffects {
         (u.uBPos.value as Vector3).copy(lp[i]);
         (u.uBDir.value as Vector3).copy(ld[i]);
         (u.uBCos.value as Vector2).set(Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)));
-        u.uBInt.value = l.intensity * 0.0045;
+        u.uBInt.value = l.intensity * 0.0013;
       }
     });
     this.particles.visible = opts.underwater;
-    this.silt.visible = opts.underwater;
+    this.silt.visible = opts.underwater && opts.time - this.siltLastEmit < 15;
     this.emitSilt(dt, opts.time);
   }
 
