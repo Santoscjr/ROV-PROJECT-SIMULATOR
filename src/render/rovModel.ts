@@ -9,6 +9,8 @@
  * Draw-call budget: all static geometry is merged per material (8 meshes),
  * plus 8 propellers, the pilot camera tilt head (2 meshes) and one mesh per
  * manipulator joint (7 + 5) → 30 draw calls in every quality level.
+ * Surface detail (chipped paint, grime, brushed metal, foam pores) comes from
+ * the shared procedural textures in rovTextures.ts.
  */
 import * as THREE from 'three';
 import { THRUSTERS } from '../physics/rovParams';
@@ -17,8 +19,6 @@ import {
   DUCT_RI,
   Detail,
   GeoSet,
-  LABEL_V0,
-  STRIPE_V1,
   MAT_KEYS,
   MatKey,
   PILOT_DOME_R,
@@ -28,7 +28,11 @@ import {
   TQ,
   V3,
   beam,
+  boltRect,
+  bolts,
+  box,
   buildArm,
+  clamps,
   createMaterials,
   cyl,
   detailFor,
@@ -44,6 +48,7 @@ import {
   sub,
   thrusterStatic,
 } from './rovModelParts';
+import { ATLAS_NAME, ATLAS_STRIPES, AtlasRect, Placard, atlasPlacard, createRovTextures } from './rovTextures';
 
 export type Quality = 'low' | 'medium' | 'high';
 
@@ -92,12 +97,15 @@ const FOAM_Y0 = 0.06;
 const FOAM_Y1 = 0.7;
 const FOAM_HW = 0.725; // foam half width incl. bevel
 const MAX_REV_S = 25;
+const THRUSTER_LABELS: Placard[] = ['H1', 'H2', 'H3', 'H4', 'V1', 'V2', 'V3', 'V4'];
 
 export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture | null } = {}): RovModel {
-  const d = detailFor(opts.quality ?? 'high');
-  const { mats, dome: domeMat, textures } = createMaterials(opts.envMap ?? null);
+  const quality = opts.quality ?? 'high';
+  const d = detailFor(quality);
+  const tex = createRovTextures(quality);
+  const { mats, dome: domeMat } = createMaterials(opts.envMap ?? null, tex);
   const sets = Object.fromEntries(MAT_KEYS.map((k) => [k, new GeoSet()])) as Record<MatKey, GeoSet>;
-  const add: Adder = (k, g, m, c) => sets[k].add(g, m, c);
+  const add: Adder = (k, g, m, c, w) => sets[k].add(g, m, c, w);
 
   const root = new THREE.Group();
   root.name = 'WC-150';
@@ -106,16 +114,18 @@ export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture
   buildFoam(add, d);
   const propellers = buildThrusters(add, d, root, mats.metal);
   buildSystems(add, d);
+  buildHarness(add, d);
   const lightMounts = buildLights(add, d, root);
   buildSensors(add, d);
   const tetherPoint = buildTopside(add, d, root);
 
   // Pilot camera pan/tilt
   const pan = new THREE.Vector3(1.16, -0.03, 0);
-  add('paint', cyl(0.056, 0.056, 0.075, d.radial), T(pan.x, pan.y, 0), 0x2f3338);
+  add('paint', cyl(0.056, 0.056, 0.075, d.radial), T(pan.x, pan.y, 0), 0x2f3338, 0.3);
   add('paint', cyl(0.06, 0.06, 0.012, d.radial), T(pan.x, pan.y - 0.04, 0), 0x1b1d20);
   add('frame', rbox(0.08, 0.025, 0.21, 0.008, d.round), T(pan.x, pan.y - 0.055, 0));
   for (const s of [1, -1]) add('frame', rbox(0.06, 0.13, 0.016, 0.006, d.round), T(pan.x, pan.y - 0.12, s * 0.097));
+  bolts(add, T(pan.x, pan.y - 0.0425, 0), [[0, -0.075], [0, 0.075]], d, 0.008);
   const cameraTilt = new THREE.Object3D();
   cameraTilt.name = 'pilot-camera-tilt';
   cameraTilt.position.set(pan.x, pan.y - 0.15, 0);
@@ -136,17 +146,16 @@ export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture
     arm.base.position.set(1.0, -0.6, s * 0.3);
     root.add(arm.base);
     add('frame', rbox(0.16, 0.17, 0.16, 0.015, d.round), T(1.0, -0.69, s * 0.3));
+    bolts(add, T(1.0, -0.605, s * 0.3), boltRect(0.12, 0.12, 2, 2), d);
     beam(add, 'frame', [1.0, -0.72, s * 0.3], [XF, -0.62, s * 0.3], 0.06, 0.06, d.round);
   }
 
   // Merge static buckets
-  const staticMeshes: THREE.Mesh[] = [];
   for (const k of MAT_KEYS) {
     if (sets[k].empty) continue;
     const mesh = new THREE.Mesh(sets[k].build(), mats[k]);
     mesh.name = `rov-static-${k}`;
     if (k === 'label') mesh.renderOrder = 1;
-    staticMeshes.push(mesh);
     root.add(mesh);
   }
   root.traverse((o) => {
@@ -168,8 +177,7 @@ export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture
 
   const setLightLevel = (level: number) => {
     const l = Math.max(0, Math.min(1, level));
-    mats.lens.emissiveIntensity = l * 6;
-    mats.lens.color.setScalar(0.55 + 0.45 * l);
+    mats.lens.emissiveIntensity = l * 9;
   };
   setLightLevel(0);
 
@@ -182,7 +190,7 @@ export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture
     geos.forEach((g) => g.dispose());
     for (const k of MAT_KEYS) mats[k].dispose();
     domeMat.dispose();
-    textures.forEach((t) => t.dispose());
+    tex.all.forEach((t) => t.dispose());
   };
 
   return {
@@ -201,6 +209,15 @@ export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture
 
 // ---------------------------------------------------------------------------
 
+/** U-shaped grab handle: arc of radius r in the local XY plane bulging +Y, feet at ±r on X. */
+function handle(add: Adder, m: THREE.Matrix4, r: number, d: Detail): void {
+  add('metal', new THREE.TorusGeometry(r, 0.011, 6, Math.max(8, d.small + 4), Math.PI), m, 0xc9ced3, 0.3);
+  for (const s of [1, -1]) {
+    add('metal', rbox(0.045, 0.01, 0.04, 0.003, 1), mul(m, T(s * r, 0, 0)), 0x7c838a);
+    bolts(add, mul(m, T(s * r, 0.005, 0, 0, 0, 0)), [[s * 0.012, 0]], d, 0.006);
+  }
+}
+
 function buildFrame(add: Adder, d: Detail): void {
   const R = d.round;
   for (const s of [-1, 1]) {
@@ -218,6 +235,8 @@ function buildFrame(add: Adder, d: Detail): void {
     add('rubber', rbox(2.1, 0.055, 0.03, 0.01, R), T(0, TOPY, s * (SZ + 0.045)));
     add('rubber', rbox(0.8, 0.05, 0.03, 0.01, R), T(0, -0.36, s * (SZ + 0.04)));
     add('rubber', rbox(1.9, 0.035, 0.1, 0.012, R), T(0, SKY - 0.062, z));
+    // Bolts through the rubbing strip
+    for (let k = -3; k <= 3; k++) bolts(add, T(k * 0.3, TOPY, s * (SZ + 0.06), s * Math.PI / 2), [[0, 0]], d, 0.009);
     // Corner bumpers
     for (const x of [XF, -XF]) {
       add('rubber', rbox(0.1, 0.16, 0.1, 0.03, R), T(x, TOPY + 0.0, z));
@@ -233,10 +252,13 @@ function buildFrame(add: Adder, d: Detail): void {
   }
   // Tool skid platform
   add('frame', rbox(1.5, 0.025, 1.0, 0.008, R), T(-0.1, -0.69, 0));
+  bolts(add, T(-0.1, -0.6775, 0), boltRect(1.42, 0.92, 6, 4), d);
   for (const x of [-0.75, 0.55]) for (const z of [-0.45, 0.45]) beam(add, 'frame', [x, -0.7, z], [x, SKY, z], 0.04, 0.04, R);
+  // Aft grab handles (bulging aft from the aft top cross member)
+  for (const z of [-0.3, 0.3]) handle(add, T(-XF - 0.035, TOPY, z, Math.PI / 2, 0, Math.PI / 2), 0.07, d);
   // Anodes
   const anode = (x: number, y: number, z: number, ry = 0) => {
-    add('metal', rbox(0.15, 0.045, 0.05, 0.01, R), T(x, y, z, 0, ry, 0), 0xa9aeb3);
+    add('metal', rbox(0.15, 0.045, 0.05, 0.01, R), T(x, y, z, 0, ry, 0), 0x9ea3a7, 0.6);
     add('metal', rbox(0.03, 0.02, 0.015, 0.003, 1), T(x - 0.06, y - 0.03, z, 0, ry, 0), 0x6d7378);
     add('metal', rbox(0.03, 0.02, 0.015, 0.003, 1), T(x + 0.06, y - 0.03, z, 0, ry, 0), 0x6d7378);
   };
@@ -291,6 +313,23 @@ function shearFoam(g: THREE.BufferGeometry): void {
   }
 }
 
+/** Foam wear: x = worn bevelled edges (top/bottom chamfers, well rims), y = side grime mask. */
+function foamWear(g: THREE.BufferGeometry, k: number): void {
+  const nor = g.attributes.normal as THREE.BufferAttribute;
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const w = new Float32Array(nor.count * 2);
+  for (let i = 0; i < nor.count; i++) {
+    const ny = Math.abs(nor.getY(i));
+    const bev = 4 * ny * (1 - ny);
+    const t = Math.min(1, Math.max(0, (bev - 0.3) / 0.45));
+    // lower edge sits on the frame and wears more than the upper one
+    const low = pos.getY(i) < FOAM_Y0 + 0.08 ? 1.15 : 1;
+    w[i * 2] = t * t * (3 - 2 * t) * low * k;
+    w[i * 2 + 1] = (1 - ny) * (0.6 + 0.4 * Math.min(1, (FOAM_Y1 - pos.getY(i)) / 0.5));
+  }
+  g.setAttribute('wear', new THREE.Float32BufferAttribute(w, 2));
+}
+
 function foamBlock(add: Adder, d: Detail, x0: number, x1: number, holes: [number, number][], rOut: number, rIn: [number, number]): void {
   const bev = 0.03;
   const zH = FOAM_HW - bev;
@@ -325,39 +364,75 @@ function foamBlock(add: Adder, d: Detail, x0: number, x1: number, holes: [number
   g.rotateX(-Math.PI / 2);
   g.translate(0, FOAM_Y0 + bev, 0);
   shearFoam(g);
+  foamWear(g, d.bevel > 1 ? 1 : 0.7);
   add('foam', g);
 }
 
-/** Decal quad. Normal +Z rotated by ry; vRange selects atlas region. */
-function decal(add: Adder, w: number, h: number, m: THREE.Matrix4, v0: number, v1: number): void {
+/** Decal quad (normal = local +Z of `m`) mapped to an atlas rectangle. */
+function decal(add: Adder, w: number, h: number, m: THREE.Matrix4, r: AtlasRect): void {
   const g = new THREE.PlaneGeometry(w, h);
   const uv = g.attributes.uv as THREE.BufferAttribute;
-  for (let i = 0; i < uv.count; i++) uv.setY(i, v0 + uv.getY(i) * (v1 - v0));
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, r[0] + uv.getX(i) * (r[1] - r[0]), r[2] + uv.getY(i) * (r[3] - r[2]));
   add('label', g, m);
+}
+
+/** Decal lying on a horizontal surface at height y; text reads from the +Z side (or −Z if flip). */
+function topDecal(add: Adder, w: number, h: number, x: number, y: number, z: number, r: AtlasRect, flip = false): void {
+  decal(add, w, h, T(x, y + 0.003, z, -Math.PI / 2, 0, flip ? Math.PI : 0), r);
+}
+
+/** Retaining strap over a foam block at station x (stainless band with buckles). */
+function foamStrap(add: Adder, d: Detail, x: number): void {
+  const top = foamTop(x);
+  const hw = FOAM_HW + 0.004;
+  const col = 0x3b4046;
+  add('metal', box(0.05, 0.005, 2 * (hw - 0.03)), T(x, top + 0.003, 0), col, 0.05);
+  for (const s of [-1, 1]) {
+    add('metal', box(0.05, top - 0.03 - (TOPY + 0.03), 0.005), T(x, (top - 0.03 + TOPY + 0.03) / 2, s * hw), col, 0.05);
+    add('metal', box(0.05, 0.005, 0.045), T(x, top - 0.011, s * (hw - 0.013), s * Math.PI / 4), col, 0.05);
+    add('metal', rbox(0.07, 0.055, 0.016, 0.004, 1), T(x, 0.13, s * (hw + 0.007)), 0xaeb4b9, 0.25);
+    bolts(add, T(x, 0.13, s * (hw + 0.015), s * Math.PI / 2), [[-0.022, 0], [0.022, 0]], d, 0.007);
+  }
 }
 
 function buildFoam(add: Adder, d: Detail): void {
   foamBlock(add, d, 0.31, XF + 0.04, [[0.7, 0.5], [0.7, -0.5]], 0.14, [0.04, 0]);
   foamBlock(add, d, -0.29, 0.29, [], 0.04, [0, 0]);
   foamBlock(add, d, -XF - 0.04, -0.31, [[-0.7, 0.5], [-0.7, -0.5]], 0.14, [0, 0.04]);
+  foamStrap(add, d, 0.42);
+  foamStrap(add, d, -0.38);
   // Thruster guard grilles across the vertical thruster wells
   for (const x of [0.7, -0.7]) {
     for (const zc of [0.5, -0.5]) {
-      for (const dz of [-0.08, 0, 0.08]) {
+      for (const dz of [-0.12, -0.06, 0, 0.06, 0.12]) {
         const half = Math.sqrt(0.2 * 0.2 - dz * dz) + 0.02;
-        add('frame', rbox(half * 2, 0.02, 0.014, 0.004, 1), T(x, FOAM_Y1 - 0.03, zc + dz));
+        add('frame', box(half * 2, 0.018, 0.012), T(x, FOAM_Y1 - 0.03, zc + dz));
       }
+      add('frame', box(0.012, 0.022, 0.44), T(x, FOAM_Y1 - 0.042, zc));
     }
   }
   // Name decals on both sides of the forward block, hazard stripes elsewhere
   const zS = FOAM_HW + 0.002;
-  decal(add, 0.66, 0.226, T(0.72, 0.4, zS), LABEL_V0, 1);
-  decal(add, 0.66, 0.226, T(0.72, 0.4, -zS, 0, Math.PI, 0), LABEL_V0, 1);
+  decal(add, 0.58, 0.192, T(0.77, 0.4, zS), ATLAS_NAME);
+  decal(add, 0.58, 0.192, T(0.77, 0.4, -zS, 0, Math.PI, 0), ATLAS_NAME);
   for (const s of [1, -1]) {
-    decal(add, 0.5, 0.06, T(-0.74, FOAM_Y1 - 0.09, s * zS, 0, s > 0 ? 0 : Math.PI, 0), 0, STRIPE_V1);
-    decal(add, 0.4, 0.06, T(-XF - 0.042, FOAM_Y1 - 0.2, s * 0.36, 0, -Math.PI / 2, 0), 0, STRIPE_V1);
+    decal(add, 0.5, 0.06, T(-0.74, FOAM_Y1 - 0.09, s * zS, 0, s > 0 ? 0 : Math.PI, 0), ATLAS_STRIPES);
+    decal(add, 0.4, 0.06, T(-XF - 0.042, FOAM_Y1 - 0.2, s * 0.36, 0, -Math.PI / 2, 0), ATLAS_STRIPES);
+    topDecal(add, 0.22, 0.11, 0, FOAM_Y1, s * 0.2, atlasPlacard('LIFT POINT'), s < 0);
   }
-  decal(add, 1.0, 0.06, T(XF + 0.042, FOAM_Y1 - 0.25, 0, 0, Math.PI / 2, 0), 0, STRIPE_V1);
+  decal(add, 1.0, 0.06, T(XF + 0.042, FOAM_Y1 - 0.25, 0, 0, Math.PI / 2, 0), ATLAS_STRIPES);
+  decal(add, 0.3, 0.15, T(XF + 0.042, 0.28, 0, 0, Math.PI / 2, 0), atlasPlacard('WC-150'));
+  decal(add, 0.2, 0.1, T(-XF - 0.042, 0.4, 0, 0, -Math.PI / 2, 0), atlasPlacard('CAUTION'));
+  topDecal(add, 0.2, 0.1, 0.58, FOAM_Y1, 0, atlasPlacard('NO STEP'));
+  topDecal(add, 0.2, 0.1, -0.83, FOAM_Y1, 0, atlasPlacard('NO STEP'));
+  // Thruster IDs: H on the foam sides above each horizontal thruster, V beside each well
+  THRUSTERS.forEach((t, i) => {
+    const [x, , z] = t.position;
+    const s = Math.sign(z);
+    const r = atlasPlacard(THRUSTER_LABELS[i]);
+    if (Math.abs(t.direction[1]) < 0.7) decal(add, 0.1, 0.05, T(x, 0.17, s * zS, 0, s > 0 ? 0 : Math.PI, 0), r);
+    else topDecal(add, 0.1, 0.05, x, FOAM_Y1, z - s * 0.26, r, s < 0);
+  });
 }
 
 function thrusterBasis(i: number): { pos: THREE.Vector3; q: THREE.Quaternion; dir: THREE.Vector3; up: THREE.Vector3; podSign: 1 | -1 } {
@@ -383,8 +458,9 @@ function buildThrusters(add: Adder, d: Detail, root: THREE.Group, propMat: THREE
   const R = d.round;
   for (let i = 0; i < THRUSTERS.length; i++) {
     const { pos, q, dir, up, podSign } = thrusterBasis(i);
+    const vertical = Math.abs(dir.y) > 0.7;
     const m = TQ(pos, q);
-    thrusterStatic(sub(add, m), podSign, d);
+    thrusterStatic(sub(add, m), podSign, d, !vertical);
 
     const holder = new THREE.Object3D();
     holder.name = `thruster-${THRUSTERS[i].id}`;
@@ -399,7 +475,7 @@ function buildThrusters(add: Adder, d: Detail, root: THREE.Group, propMat: THREE
 
     // Lug positions in body frame
     const lug = (s: number) => pos.clone().addScaledVector(up, s * (DUCT_RI + 0.12)).addScaledVector(dir, -0.05);
-    if (Math.abs(dir.y) < 0.7) {
+    if (!vertical) {
       const top = lug(1);
       const bot = lug(-1);
       beam(add, 'frame', [top.x, top.y - 0.02, top.z], [top.x, TOPY, top.z], 0.05, 0.05, R);
@@ -409,10 +485,11 @@ function buildThrusters(add: Adder, d: Detail, root: THREE.Group, propMat: THREE
     const podEnd = pos.clone().addScaledVector(dir, podSign * (POD_END + 0.03));
     const out = podEnd.clone().addScaledVector(dir, podSign * 0.12);
     const side = Math.sign(pos.z);
-    const jb = new THREE.Vector3(0.25 + (pos.x > 0 ? 0.06 : -0.06), -0.25, side * (0.36 + (Math.abs(dir.y) > 0.7 ? 0.03 : -0.03)));
+    const jb = new THREE.Vector3(0.25 + (pos.x > 0 ? 0.06 : -0.06), -0.25, side * (0.36 + (vertical ? 0.03 : -0.03)));
     const mid = out.clone().lerp(jb, 0.5);
     mid.y = Math.min(mid.y, -0.15) - 0.05;
-    hose(add, 'rubber', [podEnd.toArray() as V3, out.toArray() as V3, mid.toArray() as V3, [jb.x, jb.y + 0.05, jb.z], jb.toArray() as V3], 0.011, d);
+    const c = hose(add, 'rubber', [podEnd.toArray() as V3, out.toArray() as V3, mid.toArray() as V3, [jb.x, jb.y + 0.05, jb.z], jb.toArray() as V3], 0.011, d);
+    clamps(add, c, 0.011, [0.12], d);
   }
   return props;
 }
@@ -431,40 +508,69 @@ function buildSystems(add: Adder, d: Detail): void {
     add('metal', cyl(0.113, 0.113, 0.04, d.radial), mul(T(c.x, c.y, c.z), toX, T(0, -0.5, 0)), 0x8f969d);
     for (const x of [-0.45, 0.3]) {
       add('frame', rbox(0.05, 0.12, 0.26, 0.01, R), T(x, -0.06, s * 0.29));
+      add('metal', box(0.03, 0.006, 0.23), T(x, -0.02, s * 0.29), 0x3b4046);
     }
     for (const k of [0, 1, 2]) {
       add('metal', cyl(0.014, 0.014, 0.04, d.small), mul(T(c.x + 0.69, c.y + (k - 1) * 0.04, c.z), toX), 0xb7a06a);
     }
-    // Junction boxes
-    add('paint', rbox(0.24, 0.13, 0.13, 0.02, R), T(0.25, -0.33, s * 0.36), 0x2b3036);
-    add('paint', rbox(0.25, 0.015, 0.14, 0.004, 1), T(0.25, -0.26, s * 0.36), 0x484f57);
-    for (const x of [0.19, 0.31]) add('metal', cyl(0.014, 0.014, 0.03, d.small), T(x, -0.24, s * 0.36), 0xb7a06a);
+    // Junction boxes with bolted lids and HV placard
+    add('paint', rbox(0.24, 0.13, 0.13, 0.02, R), T(0.25, -0.33, s * 0.36), 0x2b3036, 0.25);
+    add('paint', rbox(0.25, 0.018, 0.14, 0.005, R), T(0.25, -0.257, s * 0.36), 0x4d555d);
+    bolts(add, T(0.25, -0.248, s * 0.36), boltRect(0.22, 0.11, 4, 3), d, 0.007);
+    for (const x of [0.19, 0.31]) add('metal', cyl(0.014, 0.014, 0.03, d.small), T(x, -0.235, s * 0.36), 0xb7a06a);
+    decal(add, 0.15, 0.075, T(0.25, -0.335, s * 0.427, 0, s > 0 ? 0 : Math.PI, 0), atlasPlacard('DANGER HV'));
     // Compensators
     const cx = -0.72;
     const cz = s * 0.22;
-    add('paint', cyl(0.075, 0.075, 0.26, d.radial), T(cx, -0.42, cz), 0xd8b024);
+    add('paint', cyl(0.075, 0.075, 0.26, d.radial), T(cx, -0.42, cz), 0xd8b024, 0.3);
     add('paint', cyl(0.08, 0.08, 0.025, d.radial), T(cx, -0.28, cz), 0x24272b);
     add('paint', cyl(0.08, 0.08, 0.025, d.radial), T(cx, -0.56, cz), 0x24272b);
     add('metal', cyl(0.012, 0.012, 0.05, d.small), T(cx, -0.25, cz), 0xd0d5da);
     hose(add, 'rubber', [[cx, -0.23, cz], [cx + 0.05, -0.18, cz], [-0.4, -0.3, s * 0.05], [-0.35, -0.42, 0]], 0.012, d);
-    // Hydraulic hoses to the manipulator bases
-    hose(add, 'rubber', [[0.24, -0.47, s * 0.06], [0.42, -0.62, s * 0.12], [0.75, -0.66, s * 0.27], [0.93, -0.66, s * 0.27]], 0.014, d);
+    // Hydraulic hoses to the manipulator bases, clamped to the skid plate
+    const h1 = hose(add, 'rubber', [[0.24, -0.47, s * 0.06], [0.42, -0.62, s * 0.12], [0.75, -0.66, s * 0.27], [0.93, -0.66, s * 0.27]], 0.014, d);
     hose(add, 'rubber', [[0.24, -0.5, s * 0.1], [0.45, -0.64, s * 0.17], [0.75, -0.7, s * 0.33], [0.93, -0.71, s * 0.33]], 0.012, d);
+    clamps(add, h1, 0.014, [0.55, 0.85], d);
   }
   // Hydraulic power unit: electric motor + pump + manifold
-  add('paint', lathe([[0, -0.38], [0.12, -0.38], [0.155, -0.36], [0.16, -0.32], [0.16, 0.12], [0.15, 0.14], [0, 0.14]], d.radial), mul(T(-0.17, -0.42, 0), toX), 0x3b5163);
-  for (let k = 0; k < 7; k++) add('paint', cyl(0.165, 0.165, 0.012, d.radial), mul(T(-0.17, -0.42, 0), toX, T(0, -0.3 + k * 0.055, 0)), 0x34495a);
+  add('paint', lathe([[0, -0.38], [0.12, -0.38], [0.155, -0.36], [0.16, -0.32], [0.16, 0.12], [0.15, 0.14], [0, 0.14]], d.radial), mul(T(-0.17, -0.42, 0), toX), 0x3b5163, 0.3);
+  for (let k = 0; k < 7; k++) add('paint', cyl(0.165, 0.165, 0.012, d.radial), mul(T(-0.17, -0.42, 0), toX, T(0, -0.3 + k * 0.055, 0)), 0x34495a, 0.3);
   add('paint', cyl(0.11, 0.12, 0.14, d.radial), mul(T(0.04, -0.42, 0), toX), 0x5b6670);
   add('paint', rbox(0.12, 0.2, 0.22, 0.015, R), T(0.17, -0.42, 0), 0x6f7a84);
+  bolts(add, T(0.23, -0.42, 0, 0, 0, -Math.PI / 2), boltRect(0.17, 0.19, 2, 3), d, 0.008);
   for (const z of [-0.06, 0, 0.06]) add('metal', cyl(0.015, 0.015, 0.04, d.small), mul(T(0.24, -0.4, z), toX), 0xd0d5da);
+  decal(add, 0.12, 0.06, T(0.232, -0.355, 0, 0, Math.PI / 2, 0), atlasPlacard('HYD 210 BAR'));
   add('frame', rbox(0.7, 0.03, 0.3, 0.008, R), T(-0.12, -0.6, 0));
   // Tool skid: valve packs + manifold
-  add('paint', rbox(0.34, 0.1, 0.18, 0.015, R), T(-0.35, -0.625, 0.32), 0x2b3036);
-  add('paint', rbox(0.34, 0.1, 0.18, 0.015, R), T(-0.35, -0.625, -0.32), 0x2b3036);
+  add('paint', rbox(0.34, 0.1, 0.18, 0.015, R), T(-0.35, -0.625, 0.32), 0x2b3036, 0.25);
+  add('paint', rbox(0.34, 0.1, 0.18, 0.015, R), T(-0.35, -0.625, -0.32), 0x2b3036, 0.25);
   for (const s of [-1, 1]) {
     for (let k = 0; k < 4; k++) add('metal', cyl(0.018, 0.018, 0.05, d.small), T(-0.47 + k * 0.08, -0.555, s * 0.32), 0xc0a45a);
   }
-  add('paint', rbox(0.3, 0.09, 0.26, 0.015, R), T(-0.72, -0.63, 0), 0xc9661c);
+  add('paint', rbox(0.3, 0.09, 0.26, 0.015, R), T(-0.72, -0.63, 0), 0xc9661c, 0.35);
+  bolts(add, T(-0.72, -0.585, 0), boltRect(0.26, 0.22, 3, 3), d, 0.008);
+}
+
+/** Signal / power harnesses routed under the top rails, clamped to the frame. */
+function buildHarness(add: Adder, d: Detail): void {
+  for (const s of [-1, 1]) {
+    const z = s * 0.64;
+    const toLight = hose(add, 'rubber', [
+      [0.31, -0.24, s * 0.36], [0.31, -0.12, s * 0.5], [0.5, -0.055, z], [0.95, -0.055, z], [1.08, -0.2, s * 0.6], [1.12, -0.48, s * 0.56],
+    ], 0.009, d, 0x262626);
+    const toCam = hose(add, 'rubber', [
+      [0.19, -0.24, s * 0.36], [0.22, -0.11, s * 0.52], [0.5, -0.035, z - s * 0.02], [0.95, -0.035, z - s * 0.02], [1.08, -0.05, s * 0.48], [1.11, -0.05, s * 0.44],
+    ], 0.008, d, 0x262626);
+    clamps(add, toLight, 0.009, [0.35, 0.5, 0.65], d);
+    clamps(add, toCam, 0.008, [0.4, 0.6], d);
+    // Bracket tabs on the top rail holding the clamps
+    if (d.bolts) for (const x of [0.6, 0.85]) add('frame', box(0.02, 0.05, 0.06), T(x, -0.02, s * 0.67));
+  }
+  // Rear camera / aft harness on the port side
+  const aft = hose(add, 'rubber', [
+    [0.19, -0.24, -0.36], [0.1, -0.1, -0.55], [-0.4, -0.05, -0.64], [-0.95, -0.05, -0.64], [-1.1, -0.1, -0.25], [-1.12, -0.1, 0],
+  ], 0.009, d, 0x262626);
+  clamps(add, aft, 0.009, [0.3, 0.45, 0.6], d);
 }
 
 function buildLights(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D[] {
@@ -482,6 +588,10 @@ function buildLights(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D[]
     lightHead(sub(add, m), d);
     beam(add, 'frame', s.stem[0], s.stem[1], 0.04, 0.04, d.round);
     add('frame', rbox(0.06, 0.05, 0.03, 0.006, 1), T(s.stem[1][0] + 0.0, s.stem[1][1], s.stem[1][2]));
+    if (i < 2) {
+      add('frame', rbox(0.09, 0.012, 0.09, 0.004, 1), T(1.01, foamTop(1.01) - 0.012, s.p[2], 0, 0, -0.46));
+      bolts(add, T(1.01, foamTop(1.01) - 0.006, s.p[2], 0, 0, -0.46), boltRect(0.06, 0.06, 2, 2), d, 0.006);
+    }
     const mount = new THREE.Object3D();
     mount.name = `light-${names[i]}`;
     mount.position.set(...s.p);
@@ -504,13 +614,21 @@ function buildSensors(add: Adder, d: Detail): void {
   // Rear camera
   smallCamera(sub(add, T(-XF - 0.08, -0.1, 0, 0, Math.PI, -0.1)), d);
   add('frame', rbox(0.1, 0.03, 0.06, 0.008, 1), T(-XF - 0.04, -0.06, 0));
-  // Scanning / multibeam sonar on top of the forward foam
-  add('metal', rbox(0.2, 0.02, 0.2, 0.006, R), T(0.8, FOAM_Y1 + 0.01, 0), 0x7d848b);
-  add('paint', cyl(0.06, 0.065, 0.16, d.radial), T(0.8, FOAM_Y1 + 0.1, 0), 0x2b2f34);
-  add('paint', cyl(0.067, 0.067, 0.02, d.radial), T(0.8, FOAM_Y1 + 0.04, 0), 0xd9a21b);
-  add('glass', new THREE.SphereGeometry(0.06, d.radial, d.radial >> 2, 0, Math.PI * 2, 0, Math.PI / 2), T(0.8, FOAM_Y1 + 0.18, 0));
+  // Scanning / multibeam sonar on top of the forward foam, with a tubular guard
+  const sx = 0.8;
+  add('metal', rbox(0.2, 0.02, 0.2, 0.006, R), T(sx, FOAM_Y1 + 0.01, 0), 0x7d848b);
+  bolts(add, T(sx, FOAM_Y1 + 0.02, 0), boltRect(0.16, 0.16, 2, 2), d, 0.008);
+  add('paint', cyl(0.06, 0.065, 0.16, d.radial), T(sx, FOAM_Y1 + 0.1, 0), 0x2b2f34, 0.3);
+  add('paint', cyl(0.067, 0.067, 0.02, d.radial), T(sx, FOAM_Y1 + 0.04, 0), 0xd9a21b);
+  add('glass', new THREE.SphereGeometry(0.06, d.radial, d.radial >> 2, 0, Math.PI * 2, 0, Math.PI / 2), T(sx, FOAM_Y1 + 0.18, 0));
+  for (const dx of [-0.08, 0.08]) {
+    add('frame', new THREE.TorusGeometry(0.25, 0.011, 6, Math.max(12, d.radial >> 1), Math.PI), T(sx + dx, FOAM_Y1 + 0.005, 0, 0, Math.PI / 2, 0));
+    for (const s of [-1, 1]) add('frame', rbox(0.05, 0.012, 0.05, 0.004, 1), T(sx + dx, FOAM_Y1 + 0.006, s * 0.25));
+  }
+  add('frame', box(0.17, 0.016, 0.022), T(sx, FOAM_Y1 + 0.255, 0));
+  topDecal(add, 0.12, 0.06, sx, FOAM_Y1, 0.16, atlasPlacard('SONAR'));
   // DVL (4 angled transducers) and altimeter below the tool skid plate
-  add('paint', cyl(0.095, 0.095, 0.1, d.radial), T(0.75, -0.75, 0), 0x2d3238);
+  add('paint', cyl(0.095, 0.095, 0.1, d.radial), T(0.75, -0.75, 0), 0x2d3238, 0.3);
   add('paint', cyl(0.1, 0.1, 0.02, d.radial), T(0.75, -0.705, 0), 0xd9a21b);
   for (let k = 0; k < 4; k++) {
     const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
@@ -524,20 +642,36 @@ function buildSensors(add: Adder, d: Detail): void {
 function buildTopside(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D {
   const R = d.round;
   // Latch bullet / lift point
-  add('metal', cyl(0.12, 0.13, 0.03, d.radial), T(0, FOAM_Y1 + 0.015, 0), 0x6d747b);
+  add('metal', cyl(0.12, 0.13, 0.03, d.radial), T(0, FOAM_Y1 + 0.015, 0), 0x6d747b, 0.35);
+  if (d.bolts) {
+    const ring: [number, number][] = [];
+    for (let k = 0; k < 8; k++) ring.push([Math.cos((k / 8) * Math.PI * 2) * 0.1, Math.sin((k / 8) * Math.PI * 2) * 0.1]);
+    bolts(add, T(0, FOAM_Y1 + 0.03, 0), ring, d, 0.009);
+  }
   const bullet: [number, number][] = [
     [0, 0], [0.075, 0], [0.075, 0.06], [0.045, 0.085], [0.045, 0.12], [0.072, 0.14], [0.072, 0.165], [0.03, 0.225], [0, 0.232],
   ];
-  add('metal', lathe(bullet, d.radial), T(0, FOAM_Y1 + 0.03, 0), 0xc4c9ce);
-  // Padeyes
+  add('metal', lathe(bullet, d.radial), T(0, FOAM_Y1 + 0.03, 0), 0xc4c9ce, 0.4);
+  // Padeyes with shackles, and top grab handles
   for (const s of [-1, 1]) {
-    add('metal', rbox(0.16, 0.02, 0.1, 0.006, R), T(0, FOAM_Y1 + 0.01, s * 0.4), 0x6d747b);
-    add('metal', new THREE.TorusGeometry(0.045, 0.013, d.small >> 1, d.small + 4), T(0, FOAM_Y1 + 0.07, s * 0.4), 0xc4c9ce);
+    const z = s * 0.4;
+    add('metal', rbox(0.16, 0.02, 0.1, 0.006, R), T(0, FOAM_Y1 + 0.01, z), 0x6d747b, 0.3);
+    bolts(add, T(0, FOAM_Y1 + 0.02, z), boltRect(0.13, 0.07, 2, 2), d, 0.008);
+    add('metal', rbox(0.1, 0.08, 0.025, 0.01, R), T(0, FOAM_Y1 + 0.06, z), 0x7c838a, 0.4);
+    add('metal', cyl(0.009, 0.009, 0.075, d.small), T(0, FOAM_Y1 + 0.075, z, Math.PI / 2), 0xb9bec3);
+    add('metal', new THREE.TorusGeometry(0.032, 0.008, 6, Math.max(8, d.small), Math.PI), T(0, FOAM_Y1 + 0.075, z, 0, Math.PI / 2, 0), 0xc9a54a, 0.3);
+    handle(add, T(0, FOAM_Y1 + 0.004, s * 0.6), 0.075, d);
   }
   // Umbilical termination + bend restrictor (tilted aft)
-  const tx = -0.42;
-  add('paint', cyl(0.085, 0.095, 0.08, d.radial), T(tx, FOAM_Y1 + 0.04, 0), 0x2b3036);
+  const tx = -0.6;
+  add('paint', cyl(0.085, 0.095, 0.08, d.radial), T(tx, FOAM_Y1 + 0.04, 0), 0x2b3036, 0.3);
   add('metal', cyl(0.1, 0.1, 0.015, d.radial), T(tx, FOAM_Y1 + 0.085, 0), 0x8f969d);
+  if (d.bolts) {
+    const ring: [number, number][] = [];
+    for (let k = 0; k < 6; k++) ring.push([Math.cos((k / 6) * Math.PI * 2) * 0.085, Math.sin((k / 6) * Math.PI * 2) * 0.085]);
+    bolts(add, T(tx, FOAM_Y1 + 0.0925, 0), ring, d, 0.007);
+  }
+  topDecal(add, 0.14, 0.07, tx, FOAM_Y1, 0.17, atlasPlacard('TETHER'));
   const tilt = 0.32;
   const base = mul(T(tx, FOAM_Y1 + 0.09, 0, 0, 0, tilt));
   const L = 0.3;
