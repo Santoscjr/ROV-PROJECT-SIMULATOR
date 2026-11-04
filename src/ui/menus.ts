@@ -159,6 +159,7 @@ export class Menus {
               <dt>${t('menu.site')}</dt><dd>${t('menu.siteDesc')}</dd>
             </dl>
             <p class="disclaimer">${t('menu.disclaimer')}</p>
+            <p class="muted small version">v${typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'}</p>
           </section>
         </div>
       </div>`;

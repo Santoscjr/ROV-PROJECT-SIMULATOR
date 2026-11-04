@@ -339,7 +339,7 @@ export const ptBR: Record<string, string> = {
   'hint.train.back': 'Segure S para recuar. Recuar é mais lento: os propulsores rendem menos em ré.',
   'hint.train.sway': 'Segure D para deslocar para boreste (direita) sem girar. O rumo deve ficar estável.',
   'hint.train.heading': 'Use E para girar à direita até 090° (leste) no indicador de RUMO. Solte perto do valor: em STABILIZE o rumo é mantido.',
-  'hint.train.depth': 'Ative DEPTH HOLD (3) e use F para descer até 100 m. Solte para manter — observe o SP (setpoint) na fita de profundidade.',
+  'hint.train.depth': 'Ative DEPTH HOLD (3) e use F para descer 3 m até a profundidade indicada. Solte para manter — observe o SP (setpoint) na fita de profundidade.',
   'hint.train.track': 'Avance (W) mantendo 090°. A corrente tende a desviar o veículo: corrija com Q/E ou deixe o STABILIZE compensar.',
   'hint.train.station': 'Solte todos os comandos e mantenha o veículo parado. Pequenas correções com controle fino (Shift).',
   'hint.train.gate': 'Os portais têm luzes âmbar. Use o painel NAVEGAÇÃO e o altímetro para passar pelo centro.',

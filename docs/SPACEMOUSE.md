@@ -2,7 +2,34 @@
 
 O simulador pode ler um mouse 3D 3Dconnexion (foco: **SpaceMouse Pro**) direto pelo navegador via **WebHID**.
 É opcional: sem o dispositivo, teclado e gamepad continuam funcionando.
-Página de diagnóstico: `spacemouse.html` (link "Voltar ao simulador" no topo).
+
+## Uso dentro do simulador (v2.0)
+
+- **Primeira vez:** clique em **Conectar** no menu principal (quadro "Dispositivos de controle") ou em **Configurações → SpaceMouse**. O navegador pede a permissão uma única vez, porque a especificação exige um gesto do usuário.
+- **Próximas vezes:** ao abrir o simulador, o dispositivo já autorizado é reaberto automaticamente (`navigator.hid.getDevices()`), sem prompt. Se for desplugado e plugado de novo, ele reconecta sozinho.
+- **Estado:** aparece no menu principal (verde = conectado), na linha ENTRADA do HUD e no painel de configurações. O painel também mostra o nome, VID/PID e a taxa de relatórios.
+- **Configurações** (aplicadas na hora e salvas em `localStorage["rov.spacemouse.v1"]`):
+  - calibração do repouso;
+  - zona morta, sensibilidade e curva de resposta (linear / suave / precisão, com expoente ajustável);
+  - mapeamento de cada eixo físico para um comando do ROV ou "nenhum", com inversão por eixo;
+  - ação de cada botão.
+- **Diagnóstico:** `spacemouse.html` continua disponível pelo link no painel. Não é preciso rodá-lo antes de cada operação.
+
+### Política de combinação de entradas
+
+Em cada eixo vale o dispositivo com a **maior deflexão** naquele instante. Teclado e SpaceMouse nunca se somam nem se anulam. Você pode, por exemplo, transladar com o SpaceMouse e ajustar o tilt da câmera no teclado. O mouse comum controla só a câmera.
+
+### Segurança
+
+- **Desconexão:** o dispositivo deixa de produzir comandos no mesmo quadro (`poll()` não retorna eixos). Os propulsores voltam a obedecer só às outras entradas. Um aviso aparece no HUD sem interromper a operação, e o controle fino travado por botão é desligado.
+- **Watchdog:** os dispositivos 3Dconnexion enviam relatórios continuamente enquanto a tampa está defletida. Se os relatórios pararem por mais de 600 ms com valores diferentes de zero, os eixos são zerados e aparece o aviso "sem dados".
+- **Perda de foco:** quando a janela perde o foco, os eixos são zerados.
+- **Controle fino:** o botão Shift do SpaceMouse alterna o controle fino (35 % do ganho); a tecla Shift do teclado ativa enquanto segurada.
+
+O comportamento acima foi testado com WebHID simulado (`tests/spacemouseIntegration.test.ts`). **A validação com o SpaceMouse Pro real é feita pelo usuário.** Pontos a confirmar no hardware:
+- se o fluxo contínuo de relatórios durante a deflexão é compatível com o watchdog de 600 ms;
+- o sentido de cada eixo;
+- a reconexão automática depois de reabrir o navegador.
 
 ## Como funciona
 

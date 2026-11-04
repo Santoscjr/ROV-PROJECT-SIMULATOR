@@ -141,7 +141,7 @@ export class Hud {
         <div class="geom" data-k="geom"></div>
         <div class="progress" data-k="progressBox"><i data-k="progress"></i></div>
         <div class="warning" data-k="warning"></div>
-        <div class="hint" data-k="hint"></div>
+        <div class="mhint" data-k="hint"></div>
       </div>
       <div class="panel thrust">
         <div class="ptitle"><span>${t('hud.thrust')}</span><span data-k="fine"></span></div>

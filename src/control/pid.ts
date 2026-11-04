@@ -23,17 +23,25 @@ export class Pid {
    * @param error setpoint − measurement
    * @param measurement current measurement (for the derivative term)
    * @param rate optional measured derivative (overrides finite difference)
+   * @param integrate integration gain in [0, 1]: 0 freezes the integrator
+   *   (conditional-integration anti-windup), fractions slow it down (used
+   *   while a mode's authority is ramping in).
    */
-  update(error: number, measurement: number, dt: number, rate?: number): number {
+  update(error: number, measurement: number, dt: number, rate?: number, integrate = 1): number {
     const g = this.gains;
     const d = rate ?? (this.lastMeasurement === null ? 0 : (measurement - this.lastMeasurement) / dt);
     this.lastMeasurement = measurement;
-    this.integral = clamp(this.integral + g.ki * error * dt, -g.iLimit, g.iLimit);
+    if (integrate > 0) this.integral = clamp(this.integral + g.ki * error * dt * integrate, -g.iLimit, g.iLimit);
     return clamp(g.kp * error + this.integral - g.kd * d, -g.outLimit, g.outLimit);
   }
 
   get integralTerm(): number {
     return this.integral;
+  }
+
+  /** Preset the integral contribution (bumpless transfer). */
+  setIntegral(value: number): void {
+    this.integral = clamp(value, -this.gains.iLimit, this.gains.iLimit);
   }
 }
 

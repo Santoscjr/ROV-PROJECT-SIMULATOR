@@ -177,7 +177,7 @@ export class App {
     (this.world as WorldV2).setConditions?.(this.sim.conditions);
     this.fineLatched = false;
     this.rig.setMode(def.start === 'crane' ? 'external' : 'operational');
-    this.rig.tilt = -10;
+    this.rig.tilt = def.start === 'crane' ? -10 : -22;
     this.reportShown = false;
     this.state = 'running';
     this.menus.show(null);

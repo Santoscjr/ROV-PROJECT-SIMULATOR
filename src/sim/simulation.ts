@@ -1,5 +1,6 @@
 import { Vector3 } from 'three';
 import { RovPhysics, type ImpactEvent, type PhysicsEnvironment } from '../physics/rovPhysics';
+import { Tether } from '../physics/tether';
 import { RovController, PILOT_MODES, type PilotMode } from '../control/rovController';
 import type { MissionDefinition, MissionInput, OperationMission } from '../mission/types';
 import { missionById } from '../mission/catalog';
@@ -32,6 +33,8 @@ export class Simulation {
   mission!: OperationMission;
   missionDef: MissionDefinition = missionById('inspection');
   readonly env: PhysicsEnvironment;
+  /** Umbilical from the vessel (launch point) to the vehicle. */
+  readonly tether: Tether;
   /** Pilot's choice of conditions (Settings). */
   conditionChoice: ConditionChoice = { ...DEFAULT_CONDITIONS };
   /** Effective conditions = pilot's choice + mission overrides. */
@@ -62,6 +65,8 @@ export class Simulation {
       terrainHeight,
       colliders: COLLIDERS,
     };
+    this.tether = new Tether(this.env.current, {}, terrainHeight);
+    this.env.tether = this.tether;
     this.reset(defaultMode);
   }
 
@@ -97,6 +102,8 @@ export class Simulation {
       this.wasSubmerged = true;
     }
     this.lightLevel = 0.8;
+    this.tether.reset(this.launchPoint, this.rov.position);
+    this.tether.enabled = this.crane === 'released';
     this.controller.reset();
   }
 
@@ -170,6 +177,8 @@ export class Simulation {
     }
     rov.kinematicTarget.copy(this.craneHook);
 
+    this.tether.enabled = this.crane === 'released';
+
     // Pilot → controller → thrusters (thrusters also run on deck for the pre-dive check).
     this.controller.update(this.command, dt);
     rov.step(dt, this.env);
@@ -214,7 +223,6 @@ export class Simulation {
 
   /** Umbilical length paid out (m), straight-line approximation with slack. */
   tetherOut(): number {
-    if (this.crane !== 'released') return 0;
-    return this.rov.position.distanceTo(this.launchPoint) * 1.15;
+    return this.crane === 'released' ? this.tether.payout : 0;
   }
 }

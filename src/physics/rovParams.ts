@@ -23,23 +23,37 @@ export interface ThrusterSpec {
   maxForward: number;
   /** Max reverse thrust (N) — propellers are less efficient in reverse. */
   maxReverse: number;
-  /** First-order response time constant (s). */
+  /**
+   * Motor/propeller speed first-order time constant (s). Since v2.0 this is
+   * the time constant of the propeller *speed* n, not of the force: thrust
+   * follows n|n|, so the force response is slower at the start (S-shaped).
+   */
   timeConstant: number;
+  /** Propeller speed slew limit, fraction of rated speed per second (default 2.5 /s). */
+  slewRate?: number;
+  /** Hydraulic/electric power drawn at rated speed (W, default 15 kW). */
+  maxPower?: number;
+  /**
+   * Advance-loss reference speed (m/s, default 8): thrust is reduced by the
+   * factor (1 − u_a / (|n|·advanceSpeed)) where u_a is the inflow speed along
+   * the thrust axis. Equivalent to a linear K_T(J) = K_T0·(1 − J/J0) curve.
+   */
+  advanceSpeed?: number;
 }
 
 const S = Math.SQRT1_2;
 
 export const THRUSTERS: ThrusterSpec[] = [
   // Horizontal vectored thrusters (45°)
-  { id: 'H-FP', position: [0.95, -0.3, -0.62], direction: [S, 0, S], maxForward: 1000, maxReverse: 800, timeConstant: 0.3 },
-  { id: 'H-FS', position: [0.95, -0.3, 0.62], direction: [S, 0, -S], maxForward: 1000, maxReverse: 800, timeConstant: 0.3 },
-  { id: 'H-AP', position: [-0.95, -0.3, -0.62], direction: [S, 0, -S], maxForward: 1000, maxReverse: 800, timeConstant: 0.3 },
-  { id: 'H-AS', position: [-0.95, -0.3, 0.62], direction: [S, 0, S], maxForward: 1000, maxReverse: 800, timeConstant: 0.3 },
+  { id: 'H-FP', position: [0.95, -0.3, -0.62], direction: [S, 0, S], maxForward: 1000, maxReverse: 800, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
+  { id: 'H-FS', position: [0.95, -0.3, 0.62], direction: [S, 0, -S], maxForward: 1000, maxReverse: 800, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
+  { id: 'H-AP', position: [-0.95, -0.3, -0.62], direction: [S, 0, -S], maxForward: 1000, maxReverse: 800, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
+  { id: 'H-AS', position: [-0.95, -0.3, 0.62], direction: [S, 0, S], maxForward: 1000, maxReverse: 800, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
   // Vertical thrusters
-  { id: 'V-FP', position: [0.7, 0.15, -0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.3 },
-  { id: 'V-FS', position: [0.7, 0.15, 0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.3 },
-  { id: 'V-AP', position: [-0.7, 0.15, -0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.3 },
-  { id: 'V-AS', position: [-0.7, 0.15, 0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.3 },
+  { id: 'V-FP', position: [0.7, 0.15, -0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
+  { id: 'V-FS', position: [0.7, 0.15, 0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
+  { id: 'V-AP', position: [-0.7, 0.15, -0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
+  { id: 'V-AS', position: [-0.7, 0.15, 0.5], direction: [0, 1, 0], maxForward: 900, maxReverse: 750, timeConstant: 0.15, slewRate: 2.5, maxPower: 15000, advanceSpeed: 8 },
 ];
 
 export interface RovParams {
@@ -75,6 +89,14 @@ export interface RovParams {
   collisionRadius: number;
   gravity: number;
   thrusters: ThrusterSpec[];
+  /**
+   * Total power available to the thrusters (W) — the HPU / power-can limit
+   * shared by all of them. When the commanded set would exceed it, every
+   * command is scaled by the same factor (wrench direction preserved).
+   */
+  powerBudget?: number;
+  /** Umbilical termination point in body frame (m), where the tether force acts. */
+  tetherAttach?: Vec3Tuple;
 }
 
 export const DEFAULT_ROV_PARAMS: RovParams = {
@@ -96,4 +118,12 @@ export const DEFAULT_ROV_PARAMS: RovParams = {
   collisionRadius: 1.15,
   gravity: 9.81,
   thrusters: THRUSTERS,
+  // Fictitious "150 hp" class: ~112 kW electric → ~85 kW hydraulic, of which
+  // ~66 kW reaches the thruster valve pack (the rest: tooling circuit
+  // stand-by, valve and line losses). 8 × 15 kW at rated speed = 120 kW.
+  // Effect: heave alone (60 kW) is unrestricted, full surge (≈74 kW) is
+  // trimmed to ≈93 % thrust and surge + heave together to ≈88 %.
+  // Plausible orders of magnitude only.
+  powerBudget: 66000,
+  tetherAttach: [0, 1.1, 0],
 };

@@ -479,7 +479,7 @@
 }
 
 /* v2: hints, power, input & density */
-.hud .hint {
+.hud .mhint {
   margin: 8px 10px 0;
   padding: 6px 8px;
   font-size: 12px;
@@ -529,7 +529,7 @@
 }
 
 .hud[data-density='compact'] .thrust,
-.hud[data-density='compact'] .hint,
+.hud[data-density='compact'] .mhint,
 .hud[data-density='minimal'] .panel {
   display: none;
 }

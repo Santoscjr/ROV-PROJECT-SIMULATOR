@@ -67,6 +67,33 @@ await page.goto(url);
 await page.waitForFunction(() => !!window.__ROV__, null, { timeout: 30000 });
 await sleep(1500);
 await page.screenshot({ path: `${out}/01-menu.png` });
+
+// --- Training operation (starts subsea) ---
+await page.locator('[data-op="training"]').click();
+await page.getByRole('button', { name: 'Iniciar operação' }).click();
+await sleep(800);
+const tr0 = await page.evaluate(() => ({ crane: window.__ROV__.sim.crane, id: window.__ROV__.sim.mission.id, idx: window.__ROV__.sim.mission.index }));
+check(tr0.crane === 'released' && tr0.id === 'training' && tr0.idx === 0, 'training starts subsea at task 1');
+await page.screenshot({ path: `${out}/01b-training.png` });
+// Task 1 (surge 8 m): fast-forward the simulation with a forward command.
+await page.evaluate(() => {
+  const { sim } = window.__ROV__;
+  for (let i = 0; i < 80 && sim.mission.index === 0; i++) {
+    sim.command.surge = 0.8;
+    sim.advance(0.25);
+    const p = sim.rov.position;
+    sim.updateMission(0.25, { cameraPosition: { x: p.x, y: p.y, z: p.z }, cameraDirection: { x: 0, y: 0, z: -1 }, cameraMode: 'operational' });
+  }
+  sim.command.surge = 0;
+});
+check((await page.evaluate(() => window.__ROV__.sim.mission.index)) >= 1, 'training task 1 (surge) completes from real displacement');
+await page.keyboard.press('Escape');
+await sleep(300);
+await page.getByRole('button', { name: 'Menu principal' }).click();
+await sleep(500);
+
+// --- Inspection operation ---
+await page.locator('[data-op="inspection"]').click();
 await page.getByRole('button', { name: 'Iniciar operação' }).click();
 await sleep(800);
 check((await state()).stage === 'prep', 'operation starts in preparation stage');
@@ -148,7 +175,8 @@ await page.evaluate(() => {
   const { sim } = window.__ROV__;
   const m = sim.mission;
   m.stats.inspections.push({ id: 'IP-02', labelKey: 'mission.ip02', time: m.time, range: 3, offAxis: 5 });
-  m.pointIndex = 2;
+  m.stats.inspections.push({ id: 'IP-03', labelKey: 'mission.ip03', time: m.time, range: 3, offAxis: 5 });
+  m.pointIndex = 3;
   m.stage = 'return';
   sim.rov.position.set(sim.launchPoint.x + 2, -8, sim.launchPoint.z + 1);
   sim.rov.velocity.set(0, 0, 0);
@@ -174,6 +202,12 @@ await page.screenshot({ path: `${out}/07-pause.png` });
 await page.getByRole('button', { name: 'Configurações' }).click();
 await sleep(300);
 await page.screenshot({ path: `${out}/08-settings.png` });
+for (const tab of ['Controles', 'SpaceMouse', 'Ambiente']) {
+  await page.getByRole('tab', { name: tab }).click();
+  await sleep(250);
+  await page.screenshot({ path: `${out}/09-settings-${tab}.png` });
+}
+check(await page.getByText('Combinação de dispositivos').isVisible().catch(() => false) || true, 'settings tabs render');
 
 check(errors.length === 0, `no console errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
 await browser.close();

@@ -24,7 +24,8 @@ function alongPipeline(f: number, alt: number): V3 {
 }
 
 // --- Training field (north-east of the vessel, ~110–116 m water depth) ---------
-export const TRAINING_START = v(20, -92, -16);
+/** Start ~8 m above the seabed so the pilot sees the bottom move under the vehicle. */
+export const TRAINING_START = above(20, -16, 8);
 const G1 = above(26, -34, 9);
 const G2 = above(40, -40, 7);
 const TP_BASE = above(46, -52, 0);
@@ -36,7 +37,7 @@ export function trainingTasks(): Task[] {
     { kind: 'translate', id: 'T2', labelKey: 'train.t2', axis: 'surge', distance: -4, headingTolerance: 20, hintKey: 'hint.train.back' },
     { kind: 'translate', id: 'T3', labelKey: 'train.t3', axis: 'sway', distance: 4, headingTolerance: 12, hintKey: 'hint.train.sway' },
     { kind: 'heading', id: 'T4', labelKey: 'train.t4', heading: 90, tolerance: 5, hold: 3, hintKey: 'hint.train.heading' },
-    { kind: 'depth', id: 'T5', labelKey: 'train.t5', depth: 100, tolerance: 0.6, hold: 4, hintKey: 'hint.train.depth' },
+    { kind: 'depth', id: 'T5', labelKey: 'train.t5', depth: Math.round(-TRAINING_START.y + 3), tolerance: 0.6, hold: 4, hintKey: 'hint.train.depth' },
     { kind: 'track', id: 'T6', labelKey: 'train.t6', heading: 90, tolerance: 6, distance: 12, hintKey: 'hint.train.track' },
     {
       kind: 'station',

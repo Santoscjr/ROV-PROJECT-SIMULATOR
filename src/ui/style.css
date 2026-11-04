@@ -725,3 +725,10 @@ a.link {
     grid-template-columns: 1fr;
   }
 }
+
+.version {
+  margin-top: auto;
+  padding-top: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+}
