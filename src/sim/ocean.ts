@@ -8,9 +8,10 @@
  * any specific field.
  */
 
-export type CurrentLevel = 'off' | 'low' | 'normal' | 'strong';
+import { resolveConditions, type CurrentLevel, type EnvironmentConditions } from './conditions';
 
-const LEVEL_SCALE: Record<CurrentLevel, number> = { off: 0, low: 0.5, normal: 1, strong: 1.8 };
+export type { CurrentLevel };
+export type CurrentParams = EnvironmentConditions['current'];
 
 export interface CurrentSample {
   /** World velocity of the water (m/s), +Y up. */
@@ -24,18 +25,20 @@ export interface CurrentSample {
  * @param altitude metres above seabed (may be large)
  * @param t simulation time (s)
  */
-export function currentAt(depth: number, altitude: number, t: number, level: CurrentLevel): CurrentSample {
-  const k = LEVEL_SCALE[level];
+export function currentAt(depth: number, altitude: number, t: number, cur: CurrentParams | CurrentLevel): CurrentSample {
+  const c = typeof cur === 'string' ? resolveConditions({ current: cur, visibility: 'normal', light: 'day', sea: 'calm' }).current : cur;
+  const k = c.speedScale;
   if (k === 0 || depth < 0) return { x: 0, y: 0, z: 0 };
   const surface = 0.32;
   const deep = 0.14;
   let speed = deep + (surface - deep) * Math.exp(-depth / 40);
   // Bottom boundary layer.
   if (altitude < 8) speed *= 0.55 + 0.45 * Math.max(0, altitude) / 8;
-  // Slow fluctuations (periods of ~40–90 s).
-  speed *= 1 + 0.18 * Math.sin(t * 0.071 + depth * 0.05) + 0.08 * Math.sin(t * 0.157 + 1.3);
+  // Slow fluctuations (periods of ~40–90 s) plus shorter eddies when gusty.
+  const g = c.gustiness;
+  speed *= 1 + g * Math.sin(t * 0.071 + depth * 0.05) + g * 0.45 * Math.sin(t * 0.157 + 1.3) + g * 0.3 * Math.sin(t * 0.61 + depth * 0.3);
   // Direction: towards ~070° at the surface veering to ~110° at depth.
-  const headingDeg = 70 + 40 * (1 - Math.exp(-depth / 60)) + 6 * Math.sin(t * 0.05);
+  const headingDeg = 70 + c.headingOffsetDeg + 40 * (1 - Math.exp(-depth / 60)) + (6 + 20 * g) * Math.sin(t * 0.05);
   const h = (headingDeg * Math.PI) / 180;
   // heading 0 = north (-Z), 90 = east (+X)
   return { x: Math.sin(h) * speed * k, y: 0, z: -Math.cos(h) * speed * k };

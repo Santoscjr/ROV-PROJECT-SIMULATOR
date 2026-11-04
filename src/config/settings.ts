@@ -1,4 +1,4 @@
-import type { CurrentLevel } from '../sim/ocean';
+import type { CurrentLevel, LightLevel, SeaState, VisibilityLevel } from '../sim/conditions';
 import type { PilotMode } from '../control/rovController';
 
 export type GraphicsQuality = 'low' | 'medium' | 'high';
@@ -77,6 +77,23 @@ export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
   },
 };
 
+export interface CameraFx {
+  /** Barrel distortion of the wide-angle subsea lens, 0–1. */
+  distortion: number;
+  /** Sensor noise, 0–1. */
+  noise: number;
+  /** Vignetting, 0–1. */
+  vignette: number;
+  /** Automatic exposure (camera gain follows scene brightness). */
+  autoExposure: boolean;
+  /** Exposure bias in EV, −1.5 … +1.5. */
+  exposureBias: number;
+  /** Contrast, 0.8 … 1.3. */
+  contrast: number;
+}
+
+export const DEFAULT_CAMERA_FX: CameraFx = { distortion: 0.35, noise: 0.4, vignette: 0.5, autoExposure: true, exposureBias: 0, contrast: 1.05 };
+
 export interface Settings {
   graphics: GraphicsQuality;
   /** Global pilot gain applied to translation/yaw commands (0.2–1). */
@@ -90,6 +107,11 @@ export interface Settings {
   bindings: KeyBindings;
   defaultMode: PilotMode;
   current: CurrentLevel;
+  visibility: VisibilityLevel;
+  light: LightLevel;
+  sea: SeaState;
+  /** Operational-camera image processing (all subtle by default). */
+  cameraFx: CameraFx;
   volume: number;
   showFps: boolean;
 }
@@ -105,6 +127,10 @@ export const DEFAULT_SETTINGS: Settings = {
   bindings: structuredClone(KEYBOARD_PRESETS.wasd),
   defaultMode: 'stabilize',
   current: 'normal',
+  visibility: 'normal',
+  light: 'day',
+  sea: 'calm',
+  cameraFx: { ...DEFAULT_CAMERA_FX },
   volume: 0.7,
   showFps: false,
 };
@@ -113,6 +139,9 @@ const STORAGE_KEY = 'rov.settings.v1';
 const QUALITIES: GraphicsQuality[] = ['low', 'medium', 'high'];
 const MODES: PilotMode[] = ['manual', 'stabilize', 'depthHold'];
 const CURRENTS: CurrentLevel[] = ['off', 'low', 'normal', 'strong'];
+const VISIBILITIES: VisibilityLevel[] = ['clear', 'normal', 'turbid'];
+const LIGHTS: LightLevel[] = ['day', 'overcast', 'night'];
+const SEAS: SeaState[] = ['calm', 'moderate'];
 
 const num = (v: unknown, lo: number, hi: number, d: number) =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
@@ -148,8 +177,25 @@ export function sanitizeSettings(raw: unknown): Settings {
     bindings,
     defaultMode: pick(r.defaultMode, MODES, d.defaultMode),
     current: pick(r.current, CURRENTS, d.current),
+    visibility: pick(r.visibility, VISIBILITIES, d.visibility),
+    light: pick(r.light, LIGHTS, d.light),
+    sea: pick(r.sea, SEAS, d.sea),
+    cameraFx: sanitizeCameraFx(r.cameraFx),
     volume: num(r.volume, 0, 1, d.volume),
     showFps: r.showFps === true,
+  };
+}
+
+function sanitizeCameraFx(raw: unknown): CameraFx {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const d = DEFAULT_CAMERA_FX;
+  return {
+    distortion: num(r.distortion, 0, 1, d.distortion),
+    noise: num(r.noise, 0, 1, d.noise),
+    vignette: num(r.vignette, 0, 1, d.vignette),
+    autoExposure: typeof r.autoExposure === 'boolean' ? r.autoExposure : d.autoExposure,
+    exposureBias: num(r.exposureBias, -1.5, 1.5, d.exposureBias),
+    contrast: num(r.contrast, 0.8, 1.3, d.contrast),
   };
 }
 

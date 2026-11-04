@@ -46,6 +46,8 @@ export class App {
   private reportShown = false;
   private readonly tmp = new Vector3();
   private readonly camDir = new Vector3();
+  /** Draw calls / triangles of the last frame (all passes). */
+  frameStats = { calls: 0, triangles: 0 };
   private readonly bufSize = new Vector2();
 
   constructor(container: HTMLElement) {
@@ -403,10 +405,14 @@ export class App {
     });
 
     // Render: scene → underwater composite → particles/beams.
+    const info = this.renderer.info;
+    info.autoReset = false;
+    info.reset();
     this.pass.render(this.renderer, this.world.scene, cam);
     this.renderer.autoClear = false;
     this.renderer.render(this.world.effects.scene, cam);
     this.renderer.autoClear = true;
+    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles };
 
     // Audio & HUD.
     const load = levels.reduce((s, l) => s + Math.abs(l), 0) / levels.length;
