@@ -60,6 +60,7 @@ export class UnderwaterPass {
         uNoise: { value: 0.02 },
         uVignette: { value: 0.35 },
         uWet: { value: 0 },
+        uWhiteBalance: { value: 1 },
         uRes: { value: new Vector2(width, height) },
         uAirFog: { value: new Color(0.62, 0.71, 0.78) },
       },
@@ -84,6 +85,7 @@ export class UnderwaterPass {
         uniform float uNoise;
         uniform float uVignette;
         uniform float uWet;
+        uniform float uWhiteBalance;
         uniform vec2 uRes;
         uniform vec3 uAirFog;
         varying vec2 vUv;
@@ -124,6 +126,10 @@ export class UnderwaterPass {
             vec3 ext = uExt + vec3(uTurbidity * nearBottom);
             vec3 T = exp(-ext * min(dist, 400.0));
             col = col * T + ambient * (1.0 - T);
+            // Camera white balance tuned for the vehicle lamps at ~2.5 m
+            // (subsea cameras are balanced for their own lighting).
+            vec3 wb = exp((uExt - vec3(uExt.b)) * 2.5);
+            col *= mix(vec3(1.0), wb / max(max(wb.r, wb.g), wb.b) * 1.6, uWhiteBalance);
           } else {
             // Light atmospheric haze above water.
             float f = 1.0 - exp(-max(dist - 50.0, 0.0) * 0.0018);
@@ -164,7 +170,7 @@ export class UnderwaterPass {
     this.material.uniforms.uVignette.value = vignette;
   }
 
-  update(camera: PerspectiveCamera, params: { camDepth: number; seabedDepth: number; time: number; wet: number }): void {
+  update(camera: PerspectiveCamera, params: { camDepth: number; seabedDepth: number; time: number; wet: number; whiteBalance?: number }): void {
     const u = this.material.uniforms;
     this.invProj.copy(camera.projectionMatrixInverse);
     u.uInvProj.value.copy(this.invProj);
@@ -176,6 +182,7 @@ export class UnderwaterPass {
     u.uSeabedDepth.value = params.seabedDepth;
     u.uTime.value = params.time;
     u.uWet.value = params.wet;
+    u.uWhiteBalance.value = params.whiteBalance ?? 0;
   }
 
   render(renderer: WebGLRenderer, scene: Scene, camera: Camera): void {

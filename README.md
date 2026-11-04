@@ -2,7 +2,7 @@
 
 Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no navegador (Three.js + TypeScript, site estático).
 
-**Acesse:** https://santoscjr.github.io/rov-project-simulator/
+**Acesse:** https://santoscjr.github.io/ROV-PROJECT-SIMULATOR/
 
 O operador prepara o veículo no convés, autoriza o lançamento pelo guindaste e desce até ~120 m de lâmina d’água. Em seguida inspeciona dois pontos de um sistema submarino de produção (conexão do jumper no manifold e vão livre do duto de exportação) e retorna ao ponto de recuperação. Ao final, a operação gera um relatório.
 

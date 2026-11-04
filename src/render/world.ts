@@ -27,7 +27,7 @@ import type { UnderwaterPass } from './underwaterPass';
 
 const LAMP_ANGLE = (34 * Math.PI) / 180;
 /** Luminous intensity of each lamp at 100 % (cd, scene units). */
-const LAMP_CD = 30;
+const LAMP_CD = 55;
 
 /**
  * Everything that is drawn. Rebuilt when the graphics quality changes; the

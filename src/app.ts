@@ -388,7 +388,9 @@ export class App {
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     const opCam = this.rig.mode === 'operational';
     this.pass.setNoise(opCam ? 0.035 : 0.012, opCam ? 0.55 : 0.25);
-    this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet });
+    // Camera white balance follows the artificial lighting once sunlight has faded.
+    const wb = Math.min(1, Math.max(0, (camDepth - 25) / 40)) * (sim.effectiveLight > 0 ? 1 : 0.35);
+    this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wb });
     const size = this.renderer.getDrawingBufferSize(this.bufSize);
     this.world.effects.update(cam, {
       time: this.time,

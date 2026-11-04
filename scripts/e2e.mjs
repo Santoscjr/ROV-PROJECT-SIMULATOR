@@ -143,14 +143,37 @@ await page.keyboard.press('KeyC');
 await sleep(1200);
 await page.screenshot({ path: `${out}/05-inspection-ext.png` });
 
+// Return & recovery: mark IP-02 done, bring the vehicle under the crane at 8 m.
+await page.evaluate(() => {
+  const { sim } = window.__ROV__;
+  const m = sim.mission;
+  m.stats.inspections.push({ id: 'IP-02', labelKey: 'mission.ip02', time: m.time, range: 3, offAxis: 5 });
+  m.pointIndex = 2;
+  m.stage = 'return';
+  sim.rov.position.set(sim.launchPoint.x + 2, -8, sim.launchPoint.z + 1);
+  sim.rov.velocity.set(0, 0, 0);
+});
+await sleep(1500);
+check((await state()).stage === 'recovery', 'under the crane & shallow → recovery');
+await page.evaluate(() => {
+  const { sim } = window.__ROV__;
+  for (let i = 0; i < 400 && sim.crane !== 'onDeck'; i++) sim.advance(0.25);
+});
+await page.waitForFunction(() => document.body.innerText.includes('Relatório de operação'), null, { timeout: 60000 }).catch(() => {});
+check(await page.getByText('Relatório de operação').isVisible(), 'operation report shown after recovery');
+await page.screenshot({ path: `${out}/06-report.png` });
+await page.getByRole('button', { name: 'Nova operação' }).click();
+await sleep(500);
+check((await state()).stage === 'prep' && (await state()).crane === 'hanging', 'restart returns to preparation');
+
 // Pause menu.
 await page.keyboard.press('Escape');
 await sleep(300);
 check(await page.getByText('Operação em pausa').isVisible(), 'pause menu opens with Esc');
-await page.screenshot({ path: `${out}/06-pause.png` });
+await page.screenshot({ path: `${out}/07-pause.png` });
 await page.getByRole('button', { name: 'Configurações' }).click();
 await sleep(300);
-await page.screenshot({ path: `${out}/07-settings.png` });
+await page.screenshot({ path: `${out}/08-settings.png` });
 
 check(errors.length === 0, `no console errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
 await browser.close();

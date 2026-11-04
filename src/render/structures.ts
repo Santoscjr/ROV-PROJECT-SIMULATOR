@@ -327,21 +327,22 @@ function buildMarkers(): Group {
   INSPECTION_POINTS.forEach((ip) => {
     const tex = makeLabelTexture(ip.id, { w: 256, h: 128, bg: '#f2f2ee', fg: '#111' });
     const plate = new Mesh(new PlaneGeometry(0.5, 0.25), new MeshStandardMaterial({ map: tex, roughness: 0.5, side: DoubleSide }));
-    const look = new Vector3(ip.target.x + ip.approach.x, ip.target.y + ip.approach.y, ip.target.z + ip.approach.z);
     if (ip.id === 'IP-02') {
-      // Tag on a small stake on the seabed beside the free span.
-      const base = new Vector3(ip.target.x + ip.approach.x * 1.6, 0, ip.target.z + ip.approach.z * 1.6);
+      // Tag on a small stake on the seabed beside the free span (off the line of sight).
+      const side = new Vector3(-ip.approach.z, 0, ip.approach.x).normalize();
+      const base = new Vector3(ip.target.x + ip.approach.x * 1.2 + side.x * 1.6, 0, ip.target.z + ip.approach.z * 1.2 + side.z * 1.6);
       base.y = terrainHeight(base.x, base.z);
       const stake = new Mesh(new CylinderGeometry(0.03, 0.03, 0.9, 6), new MeshStandardMaterial({ color: 0xd9a21b, roughness: 0.6 }));
       stake.position.copy(base).add(new Vector3(0, 0.45, 0));
       g.add(stake);
       plate.position.copy(base).add(new Vector3(0, 0.9, 0));
-      plate.lookAt(new Vector3(look.x, plate.position.y, look.z));
+      const viewer = new Vector3(ip.target.x + ip.approach.x * 6, 0, ip.target.z + ip.approach.z * 6);
+      plate.lookAt(viewer.x, plate.position.y, viewer.z);
     } else {
       // Tag above and beside the hub so it does not hide the connection.
       const side = new Vector3(-ip.approach.z, 0, ip.approach.x).normalize();
       plate.position.set(ip.target.x + ip.approach.x * 0.3 + side.x * 0.75, ip.target.y + 0.75, ip.target.z + ip.approach.z * 0.3 + side.z * 0.75);
-      plate.lookAt(look.x, plate.position.y, look.z);
+      plate.lookAt(ip.target.x + ip.approach.x * 6, plate.position.y, ip.target.z + ip.approach.z * 6);
     }
     g.add(plate);
   });
