@@ -380,4 +380,6 @@ export const ptBR: Record<string, string> = {
   'adv.s1': 'Estação junto ao PLET',
   'adv.inspect': 'Válvula do PLET',
   'adv.w0': 'Retorno ao manifold',
+  'hud.limit': 'LIMITE',
+  'hud.tetherMax': 'COMPR. MÁX.',
 };

@@ -44,6 +44,10 @@ export interface HudData {
   powerFraction: number | null;
   /** Per-thruster load 0..1 of max power (optional). */
   thrusterLoads: number[] | null;
+  /** Fraction of the demanded wrench actually delivered (1 = not saturated). */
+  saturation: number;
+  /** Umbilical at maximum paid-out length (winch limit). */
+  tetherAtMax: boolean;
   checklist: { lights: boolean; thrusters: boolean; camera: boolean } | null;
   holdProgress: number | null;
   range: number | null;
@@ -144,7 +148,7 @@ export class Hud {
         <div class="mhint" data-k="hint"></div>
       </div>
       <div class="panel thrust">
-        <div class="ptitle"><span>${t('hud.thrust')}</span><span data-k="fine"></span></div>
+        <div class="ptitle"><span>${t('hud.thrust')}</span><span><span data-k="limit" class="lim"></span> <span data-k="fine"></span></span></div>
         <div class="bars" data-k="bars"></div>
         <div class="power" data-k="powerBox"><span>${t('hud.power')}</span><div class="h"><i data-k="power"></i></div><b data-k="powerTxt"></b></div>
         <div class="ptitle" style="padding-top:8px"><span>${t('hud.command')}</span><span data-k="srcs"></span></div>
@@ -275,6 +279,12 @@ export class Hud {
     e.contact.style.color = COLORS.warn;
     e.fine.textContent = d.fine ? t('hud.fine') : '';
     e.fine.style.color = COLORS.accent;
+    e.limit.textContent = d.saturation < 0.95 ? t('hud.limit') : '';
+    e.limit.style.color = COLORS.warn;
+    if (d.tetherAtMax) {
+      e.tether.textContent += ` · ${t('hud.tetherMax')}`;
+      e.tether.className = 'v warn';
+    } else e.tether.className = 'v';
 
     // Mission
     e.stageIdx.textContent = `${Math.min(d.stepIndex + 1, d.steps.length)}/${d.steps.length}`;

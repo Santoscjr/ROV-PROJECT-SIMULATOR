@@ -495,6 +495,8 @@ export class App {
       thrusterIds: rov.params.thrusters.map((x) => x.id),
       thrusterLevels: rov.params.thrusters.map((_, i) => rov.thrusters.level(i)),
       thrusterLoads: typeof bank.load === 'function' ? rov.params.thrusters.map((_, i) => bank.load!(i)) : null,
+      saturation: st.saturation ?? 1,
+      tetherAtMax: sim.crane === 'released' && sim.tether.atMaxLength,
       powerFraction: typeof bank.powerFraction === 'number' ? bank.powerFraction : null,
       command: this.input.raw,
       sources: this.input.sources,
