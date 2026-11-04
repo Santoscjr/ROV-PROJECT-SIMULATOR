@@ -2,6 +2,7 @@ import { Quaternion, Vector3 } from 'three';
 import { DEFAULT_ROV_PARAMS, type RovParams } from './rovParams';
 import { ThrusterBank, type Wrench } from './thrusters';
 import { colliderBounds, rayDownToCollider, sphereCollider } from './collision';
+import type { TetherForceProvider } from './tether';
 import type { Collider } from '../sim/site';
 
 /**
@@ -14,7 +15,11 @@ import type { Collider } from '../sim/site';
  *  - linear + quadratic diagonal damping on the velocity relative to the water;
  *  - drag acts at a centre of pressure offset from the CG (weathervaning, squat);
  *  - buoyancy scales with the submerged fraction near the surface;
- *  - contacts are resolved by projection with an inelastic velocity response.
+ *  - contacts are resolved by projection with an inelastic velocity response
+ *    and Coulomb friction (velocity-level, see resolveContacts);
+ *  - optional umbilical force (env.tether) applied at the termination point;
+ *  - thruster inflow (advance loss) uses the velocity relative to the water
+ *    at each thruster (v + ω × r − current).
  */
 
 export interface ImpactEvent {
@@ -29,7 +34,20 @@ export interface PhysicsEnvironment {
   current(position: Vector3, out: Vector3): Vector3;
   terrainHeight(x: number, z: number): number;
   colliders: readonly Collider[];
+  /** Optional umbilical; its force acts at `params.tetherAttach` (body). */
+  tether?: TetherForceProvider;
 }
+
+/** Seabed contact friction coefficient (skids on silt/sand, approximate). */
+const MU_SEABED = 0.35;
+/** Hull against steel structures. */
+const MU_STRUCTURE = 0.2;
+/** Normal speed (m/s) above which a contact bounces (restitution) and counts as an impact. */
+const IMPACT_SPEED = 0.25;
+/** Thruster jet reach for seabed disturbance (m, vertical distance thruster → seabed). */
+const WASH_REACH = 3.5;
+/** Horizontal jets only scour when the thruster is within this height of the seabed (m). */
+const WASH_REACH_HORIZONTAL = 1.2;
 
 const _v = new Vector3();
 const _w = new Vector3();
@@ -37,6 +55,9 @@ const _f = new Vector3();
 const _t = new Vector3();
 const _tmp = new Vector3();
 const _tmp2 = new Vector3();
+const _ta = new Vector3();
+const _tv = new Vector3();
+const _tf = new Vector3();
 const _qInv = new Quaternion();
 const _dq = new Quaternion();
 
@@ -80,13 +101,28 @@ export class RovPhysics {
   thrustersEnabled = true;
   /** Number of contacts in the last step (for UI / audio). */
   contactCount = 0;
+  /**
+   * Silt disturbance by thruster wash / skid contact near the seabed, 0..1,
+   * smoothed (fast rise, slow decay). For the renderer (plume, turbidity).
+   */
+  seabedDisturbance = 0;
+  /** Seabed point under the vehicle where the disturbance originates (world). */
+  readonly seabedDisturbancePoint = new Vector3();
+  /** Last umbilical force on the vehicle (world, N); zero without env.tether. */
+  readonly tetherForce = new Vector3();
+  /** Umbilical termination in body frame (m). */
+  readonly tetherAttach = new Vector3();
   private readonly impacts: ImpactEvent[] = [];
+  private slideSpeed = 0;
+  private impactKick = 0;
   private lastImpactTime = -10;
   private readonly kinematicVel = new Vector3();
 
   constructor(params: RovParams = DEFAULT_ROV_PARAMS) {
     this.params = params;
-    this.thrusters = new ThrusterBank(params.thrusters);
+    this.thrusters = new ThrusterBank(params.thrusters, params.powerBudget);
+    const ta = params.tetherAttach ?? [0, 1.1, 0];
+    this.tetherAttach.set(ta[0], ta[1], ta[2]);
   }
 
   reset(position: Vector3, yaw: number): void {
@@ -99,6 +135,10 @@ export class RovPhysics {
     this.impacts.length = 0;
     this.lastImpactTime = -10;
     this.contactCount = 0;
+    this.seabedDisturbance = 0;
+    this.slideSpeed = 0;
+    this.impactKick = 0;
+    this.tetherForce.set(0, 0, 0);
   }
 
   /** Drain impact events produced since the last call. */
@@ -115,10 +155,13 @@ export class RovPhysics {
 
   step(dt: number, env: PhysicsEnvironment): void {
     this.time += dt;
-    this.thrusters.step(dt, this.thrustersEnabled);
 
     if (this.kinematic) {
+      this.thrusters.inflow.fill(0);
+      this.thrusters.step(dt, this.thrustersEnabled);
       this.stepKinematic(dt);
+      this.stepTether(dt, env, false);
+      this.updateSeabedDisturbance(dt, env);
       return;
     }
 
@@ -137,6 +180,18 @@ export class RovPhysics {
     env.current(this.position, this.waterVelocity);
     const cBody = _tmp.copy(this.waterVelocity).applyQuaternion(_qInv);
     const vr = _v.copy(v).sub(cBody);
+
+    // Thruster inflow (advance loss): (vr + ω × r)·d at each thruster.
+    const inflow = this.thrusters.inflow;
+    for (let i = 0; i < p.thrusters.length; i++) {
+      const spec = p.thrusters[i];
+      const [px, py, pz] = spec.position;
+      const ux = vr.x + w.y * pz - w.z * py;
+      const uy = vr.y + w.z * px - w.x * pz;
+      const uz = vr.z + w.x * py - w.y * px;
+      inflow[i] = (ux * spec.direction[0] + uy * spec.direction[1] + uz * spec.direction[2]) * sub;
+    }
+    this.thrusters.step(dt, this.thrustersEnabled);
 
     // --- Forces (body frame) ---
     const F = _f.set(0, 0, 0);
@@ -192,6 +247,16 @@ export class RovPhysics {
     T.y += bz * buoyBody.x - bx * buoyBody.z;
     T.z += bx * buoyBody.y - by * buoyBody.x;
 
+    // Umbilical at the termination point.
+    if (this.stepTether(dt, env, true)) {
+      const fb = _tf.copy(this.tetherForce).applyQuaternion(_qInv);
+      const r = this.tetherAttach;
+      F.add(fb);
+      T.x += r.y * fb.z - r.z * fb.y;
+      T.y += r.z * fb.x - r.x * fb.z;
+      T.z += r.x * fb.y - r.y * fb.x;
+    }
+
     // --- Integrate (semi-implicit Euler) ---
     const mx = p.mass + p.addedMass[0] * sub;
     const my = p.mass + p.addedMass[1] * sub;
@@ -224,7 +289,68 @@ export class RovPhysics {
       q.multiply(_dq).normalize();
     }
 
-    this.resolveContacts(env);
+    this.resolveContacts(env, dt);
+    this.updateSeabedDisturbance(dt, env);
+  }
+
+  /** Steps env.tether (if any). Returns true when a force should be applied. */
+  private stepTether(dt: number, env: PhysicsEnvironment, apply: boolean): boolean {
+    if (!env.tether) {
+      this.tetherForce.set(0, 0, 0);
+      return false;
+    }
+    const q = this.orientation;
+    const r = this.tetherAttach;
+    const w = this.angularVelocity;
+    const attach = _ta.copy(r).applyQuaternion(q).add(this.position);
+    // Velocity of the attach point: q·(v + ω × r)
+    const vel = _tv
+      .set(w.y * r.z - w.z * r.y, w.z * r.x - w.x * r.z, w.x * r.y - w.y * r.x)
+      .add(this.velocity)
+      .applyQuaternion(q);
+    env.tether.step(dt, attach, vel, this.tetherForce);
+    if (!apply) return false;
+    return this.tetherForce.lengthSq() > 0;
+  }
+
+  /**
+   * Seabed disturbance from the thruster jets pointing at the bottom (jet =
+   * opposite to thrust), with a quadratic fall-off up to WASH_REACH, plus a
+   * weaker scouring term from horizontal jets very close to the bottom and
+   * from skids sliding / impacting the seabed. Uses one terrain sample.
+   */
+  private updateSeabedDisturbance(dt: number, env: PhysicsEnvironment): void {
+    const pos = this.position;
+    const ground = env.terrainHeight(pos.x, pos.z);
+    this.seabedDisturbancePoint.set(pos.x, ground, pos.z);
+    const hCg = pos.y - ground;
+    let raw = 0;
+    if (hCg < WASH_REACH + 2 && pos.y < 0) {
+      const q = this.orientation;
+      const specs = this.params.thrusters;
+      const force = this.thrusters.force;
+      for (let i = 0; i < specs.length; i++) {
+        const f = force[i];
+        const spec = specs[i];
+        const frac = f >= 0 ? f / spec.maxForward : -f / spec.maxReverse;
+        if (frac < 0.01) continue;
+        const jet = _tmp.set(spec.direction[0], spec.direction[1], spec.direction[2]).applyQuaternion(q);
+        if (f > 0) jet.negate(); // the jet leaves opposite to the thrust
+        const h = hCg + _tmp2.set(spec.position[0], spec.position[1], spec.position[2]).applyQuaternion(q).y;
+        const down = Math.max(0, -jet.y);
+        const fv = Math.max(0, 1 - Math.max(0, h) / WASH_REACH);
+        const fh = Math.max(0, 1 - Math.max(0, h) / WASH_REACH_HORIZONTAL);
+        raw += frac * (down * fv * fv + 0.3 * Math.sqrt(Math.max(0, 1 - down * down)) * fh * fh);
+      }
+      raw *= 0.5; // two vertical thrusters at full right above the bottom ≈ 1
+    }
+    raw += Math.min(0.6, this.slideSpeed * 1.5);
+    raw = Math.min(1, raw);
+    const tau = raw > this.seabedDisturbance ? 0.25 : 2.0;
+    this.seabedDisturbance += (raw - this.seabedDisturbance) * (1 - Math.exp(-dt / tau));
+    if (this.impactKick > this.seabedDisturbance) this.seabedDisturbance = this.impactKick;
+    this.impactKick = 0;
+    this.slideSpeed = 0;
   }
 
   private stepKinematic(dt: number): void {
@@ -239,27 +365,45 @@ export class RovPhysics {
     this.submerged = Math.min(1, Math.max(0, (this.params.size[1] / 2 - this.position.y) / this.params.size[1]));
   }
 
-  private resolveContacts(env: PhysicsEnvironment): void {
+  private resolveContacts(env: PhysicsEnvironment, dt = 1 / 120): void {
     const q = this.orientation;
     _qInv.copy(q).invert();
     this.contactCount = 0;
     const vWorld = this.worldVelocity(_w);
+    const p = this.params;
+    // Coulomb friction at velocity level: the normal velocity removed in one
+    // step equals N·dt/m_n, so a tangential change of μ·N·dt/m_t is
+    // μ·|Δv_n|·m_n/m_t (heave vs. mean horizontal mass incl. added mass).
+    const mN = p.mass + p.addedMass[1];
+    const mT = p.mass + 0.5 * (p.addedMass[0] + p.addedMass[2]);
+    const massRatio = mN / mT;
 
     const applyContact = (normal: Vector3, depth: number, kind: ImpactEvent['kind']) => {
       this.contactCount++;
       this.position.addScaledVector(normal, depth);
       const vn = vWorld.dot(normal);
       if (vn < 0) {
-        if (-vn > 0.25 && this.time - this.lastImpactTime > 0.6) {
+        if (-vn > IMPACT_SPEED && this.time - this.lastImpactTime > 0.6) {
           this.impacts.push({ speed: -vn, kind, time: this.time });
           this.lastImpactTime = this.time;
+          if (kind === 'seabed') this.impactKick = Math.max(this.impactKick, Math.min(1, -vn / 0.8));
         }
-        // Remove normal component (slightly inelastic bounce) + friction on tangential.
-        vWorld.addScaledVector(normal, -vn * 1.15);
-        const friction = kind === 'seabed' ? 0.12 : 0.06;
+        // Remove the normal component; only real impacts bounce (no resting jitter).
+        const restitution = -vn > IMPACT_SPEED ? 0.15 : 0;
+        const dvn = -vn * (1 + restitution);
+        vWorld.addScaledVector(normal, dvn);
+        const mu = kind === 'seabed' ? MU_SEABED : MU_STRUCTURE;
         _tmp2.copy(normal).multiplyScalar(vWorld.dot(normal));
         const tangential = _tmp.subVectors(vWorld, _tmp2);
-        vWorld.sub(tangential.multiplyScalar(friction));
+        const vt = tangential.length();
+        if (vt > 1e-9) {
+          const dvt = Math.min(vt, mu * dvn * massRatio);
+          vWorld.addScaledVector(tangential, -dvt / vt);
+          if (kind === 'seabed') this.slideSpeed = Math.max(this.slideSpeed, vt - dvt);
+        }
+      } else if (kind === 'seabed') {
+        _tmp2.copy(normal).multiplyScalar(vn);
+        this.slideSpeed = Math.max(this.slideSpeed, _tmp.subVectors(vWorld, _tmp2).length());
       }
     };
 
@@ -272,7 +416,8 @@ export class RovPhysics {
     }
     if (deepest > 0) {
       applyContact(new Vector3(0, 1, 0), deepest, 'seabed');
-      this.angularVelocity.multiplyScalar(0.96);
+      // Skid friction also brakes rotation (≈ 0.96 per step at 120 Hz).
+      this.angularVelocity.multiplyScalar(Math.pow(0.96, dt * 120));
     }
 
     // Structures.

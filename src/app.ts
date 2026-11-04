@@ -14,8 +14,9 @@ import { Hud, type HudData } from './ui/hud';
 import { Menus } from './ui/menus';
 import { AudioEngine } from './audio/audio';
 import { SITE_BASE_DEPTH, terrainHeight } from './sim/terrain';
-import { INSPECTION_POINTS, LAUNCH_POINT } from './sim/site';
-import type { Objective } from './mission/mission';
+import type { Objective } from './mission/types';
+import { MISSIONS, missionById } from './mission/catalog';
+import { MissionMarkers } from './render/markers';
 
 type AppState = 'menu' | 'running' | 'paused' | 'report';
 
@@ -46,7 +47,13 @@ export class App {
   private reportShown = false;
   private readonly tmp = new Vector3();
   private readonly camDir = new Vector3();
+  /** Draw calls / triangles of the last frame (all passes). */
+  frameStats = { calls: 0, triangles: 0 };
   private readonly bufSize = new Vector2();
+  private markers = new MissionMarkers();
+  private readonly tetherPts: Vector3[] = [];
+  /** Fine control latched by a device button (SpaceMouse/gamepad); Shift held also enables it. */
+  private fineLatched = false;
 
   constructor(container: HTMLElement) {
     const canvas = document.createElement('canvas');
@@ -64,6 +71,7 @@ export class App {
     this.rig = new CameraRig(window.innerWidth / window.innerHeight);
     this.pass = this.makePass(s);
     this.world = new World(this.renderer, s.graphics, this.pass);
+    this.world.scene.add(this.markers.group);
     this.configureRenderer(s);
 
     this.keyboard = new KeyboardDevice(s.bindings);
@@ -71,25 +79,37 @@ export class App {
     this.input.add(this.gamepad);
     this.spacemouse = SpaceMouseDevice.isSupported() ? new SpaceMouseDevice() : null;
     if (this.spacemouse) {
-      this.input.add(this.spacemouse);
-      this.spacemouse.on('connect', () => this.hud.toast(t('msg.spacemouseConnected', { name: this.spacemouse!.label }), 'ok'));
-      this.spacemouse.on('disconnect', () => this.hud.toast(t('msg.spacemouseDisconnected'), 'warn'));
-      void this.spacemouse.reconnectGranted().catch(() => undefined);
+      const sm = this.spacemouse;
+      this.input.add(sm);
+      sm.on('connect', () => {
+        this.hud?.toast(t('msg.spacemouseConnected', { name: sm.label }), 'ok');
+        this.menus?.refreshDevices();
+      });
+      sm.on('disconnect', () => {
+        // Safety: the device's commands vanish immediately (poll() returns no axes
+        // when disconnected); the keyboard keeps working. Drop a latched fine mode.
+        this.fineLatched = false;
+        this.hud?.toast(t('msg.spacemouseDisconnected'), 'warn', 5000);
+        this.menus?.refreshDevices();
+      });
+      sm.on('stale', () => this.hud?.toast(t('msg.spacemouseStale'), 'warn'));
+      sm.on('error', () => this.menus?.refreshDevices());
+      // Previously authorised devices reopen without any prompt (browser permission kept).
+      void sm.reconnectGranted().catch(() => undefined);
     }
-    window.addEventListener('gamepadconnected', () => this.hud.toast(t('msg.gamepadConnected'), 'ok'));
+    window.addEventListener('gamepadconnected', () => {
+      this.hud?.toast(t('msg.gamepadConnected'), 'ok');
+      this.menus?.refreshDevices();
+    });
+    window.addEventListener('blur', () => this.spacemouse?.releaseAxes());
 
     this.hud = new Hud(container);
-    this.menus = new Menus(container, this.store, {
-      start: () => this.start(),
+    this.menus = new Menus(container, this.store, MISSIONS, {
+      start: (id) => this.start(id),
       resume: () => this.resume(),
       restart: () => this.restart(),
       mainMenu: () => this.toMainMenu(),
-      connectSpaceMouse: async () => {
-        if (!this.spacemouse) return null;
-        const ok = await this.spacemouse.requestAndOpen();
-        return ok ? this.spacemouse.label : null;
-      },
-      spaceMouseSupported: () => !!this.spacemouse,
+      spaceMouse: () => this.spacemouse,
     });
 
     this.applySettings(s);
@@ -123,6 +143,8 @@ export class App {
       this.configureRenderer(s);
       this.pass = this.makePass(s);
       this.world = new World(this.renderer, s.graphics, this.pass);
+      this.markers = new MissionMarkers();
+      this.world.scene.add(this.markers.group);
       this.resize();
     }
     this.keyboard.setBindings(s.bindings);
@@ -131,15 +153,21 @@ export class App {
     this.input.shaping = { sensitivity: s.sensitivity, invert: s.invert, fineGain: 0.35 };
     this.rig.mouseSensitivity = s.mouseSensitivity;
     this.rig.invertTilt = s.invert.camTilt;
-    this.sim.currentLevel = s.current;
+    this.sim.setConditionChoice({ current: s.current, visibility: s.visibility, light: s.light, sea: s.sea });
+    this.world.setConditions(this.sim.conditions);
     this.audio.setVolume(s.volume);
   }
 
-  private start(): void {
+  private start(missionId = this.store.get().mission): void {
     this.audio.init();
-    this.sim.reset(this.store.get().defaultMode);
-    this.rig.setMode('external');
-    this.rig.tilt = -10;
+    if (missionId !== this.store.get().mission) this.store.update({ mission: missionId });
+    const def = missionById(missionId);
+    this.sim.reset(this.store.get().defaultMode, def);
+    this.world.setConditions(this.sim.conditions);
+    this.fineLatched = false;
+    this.pass.resetAdaptation();
+    this.rig.setMode(def.start === 'crane' ? 'external' : 'operational');
+    this.rig.tilt = def.start === 'crane' ? -10 : -22;
     this.reportShown = false;
     this.state = 'running';
     this.menus.show(null);
@@ -148,7 +176,7 @@ export class App {
   }
 
   private restart(): void {
-    this.start();
+    this.start(this.sim.missionDef.id);
   }
 
   private pause(): void {
@@ -172,7 +200,8 @@ export class App {
   private toMainMenu(): void {
     this.state = 'menu';
     this.hud.show(false);
-    this.sim.reset(this.store.get().defaultMode);
+    this.sim.reset(this.store.get().defaultMode, missionById('inspection'));
+    this.world.setConditions(this.sim.conditions);
     this.menus.show('main');
     this.audio.suspend(true);
   }
@@ -247,6 +276,7 @@ export class App {
       }
       case 'toggleCamera': {
         const m = this.rig.toggle();
+        this.pass.resetAdaptation();
         sim.mission.notifyCameraToggled();
         this.hud.toast(t('msg.camera', { c: t(m === 'operational' ? 'hud.cam.op' : 'hud.cam.ext') }));
         break;
@@ -266,17 +296,17 @@ export class App {
         break;
       }
       case 'fineControl':
-        this.input.fine = !this.input.fine;
+        this.fineLatched = !this.fineLatched;
+        this.hud.toast(t(this.fineLatched ? 'msg.fineOn' : 'msg.fineOff'));
+        break;
+      case 'toggleHud':
+        this.hud.toast(t('msg.hud.' + this.hud.cycleDensity()));
         break;
       case 'confirm': {
-        const stage = sim.mission.stage;
-        const idx = sim.mission.pointIndex;
-        if (sim.mission.confirm()) {
+        const res = sim.mission.confirm();
+        if (res) {
           this.audio.click();
-          if (stage === 'inspection') {
-            const p = INSPECTION_POINTS[idx];
-            this.hud.toast(t('mission.recorded', { label: t(p.labelKey) }), 'ok', 4000);
-          }
+          this.hud.toast(this.objectiveText(res), 'ok', 4000);
         }
         break;
       }
@@ -297,8 +327,9 @@ export class App {
     this.fps += (1 / Math.max(dt, 1e-3) - this.fps) * 0.05;
 
     const actions = this.input.poll();
-    this.input.fine = this.keyboard.held('fineControl') || (this.input.fine && this.input.sources.surge === 'spacemouse');
     for (const a of actions) this.handleAction(a);
+    // Fine control: Shift held, or latched by a device button.
+    this.input.fine = this.keyboard.held('fineControl') || this.fineLatched;
 
     const sim = this.sim;
     const running = this.state === 'running';
@@ -348,17 +379,15 @@ export class App {
         cameraDirection: { x: this.camDir.x, y: this.camDir.y, z: this.camDir.z },
         cameraMode: this.rig.mode,
       });
-      if (sim.mission.stage === 'complete' && !this.reportShown) {
+      if (sim.mission.complete && !this.reportShown) {
         this.reportShown = true;
         this.state = 'report';
         this.hud.show(false);
-        this.menus.showReport(sim.mission.stats, {
-          totalPoints: INSPECTION_POINTS.length,
-          condition: sim.mission.condition(),
-          completed: true,
-        });
+        this.menus.showReport(sim.missionDef, sim.mission, this.conditionsLabel());
       }
     }
+    this.markers.update(this.state === 'menu' ? [] : sim.mission.markers());
+    this.world.setSeabedDisturbance(sim.rov.seabedDisturbance, sim.rov.position);
 
     // Environment & effects.
     const camDepth = -cam.position.y;
@@ -380,14 +409,11 @@ export class App {
       lightLevel: sim.effectiveLight,
     });
     this.world.vessel.setWire(sim.wireEnd() ? this.tmp.copy(rov.tetherPoint.getWorldPosition(new Vector3())) : null);
-    this.world.updateTether(
-      dt,
-      sim.crane === 'released' ? new Vector3(LAUNCH_POINT.x, 1.5, LAUNCH_POINT.z) : null,
-      sim.rov.waterVelocity,
-    );
+    this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     const opCam = this.rig.mode === 'operational';
-    this.pass.setNoise(opCam ? 0.035 : 0.012, opCam ? 0.55 : 0.25);
+    const fx = this.store.get().cameraFx;
+    this.pass.setCameraFx(fx, opCam);
     // Camera white balance follows the artificial lighting once sunlight has faded.
     const wb = Math.min(1, Math.max(0, (camDepth - 25) / 40)) * (sim.effectiveLight > 0 ? 1 : 0.35);
     this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wb });
@@ -403,10 +429,14 @@ export class App {
     });
 
     // Render: scene → underwater composite → particles/beams.
+    const info = this.renderer.info;
+    info.autoReset = false;
+    info.reset();
     this.pass.render(this.renderer, this.world.scene, cam);
     this.renderer.autoClear = false;
     this.renderer.render(this.world.effects.scene, cam);
     this.renderer.autoClear = true;
+    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles };
 
     // Audio & HUD.
     const load = levels.reduce((s, l) => s + Math.abs(l), 0) / levels.length;
@@ -420,6 +450,11 @@ export class App {
     return t(o.key, params);
   }
 
+  private conditionsLabel(): string {
+    const c = this.sim.conditions.choice;
+    return [`${t('settings.current')}: ${t('settings.current.' + c.current)}`, `${t('settings.visibility')}: ${t('settings.visibility.' + c.visibility)}`, `${t('settings.light')}: ${t('settings.light.' + c.light)}`, `${t('settings.sea')}: ${t('settings.sea.' + c.sea)}`].join(' · ');
+  }
+
   private hudData(): HudData {
     const sim = this.sim;
     const rov = sim.rov;
@@ -427,7 +462,11 @@ export class App {
     const st = sim.controller.status();
     const vw = rov.worldVelocity(new Vector3());
     const alt = sim.altitude;
-    const p = m.currentPoint;
+    const geom = m.targetGeometry();
+    const bank = rov.thrusters as unknown as { load?(i: number): number; powerFraction?: number };
+    const showHints = this.store.get().showHints;
+    const hint = showHints ? m.hint(null) : null;
+    const navLabel = m.navTargetLabel();
     return {
       depth: rov.depth,
       depthSetpoint: st.depthSetpoint,
@@ -440,7 +479,13 @@ export class App {
       dvl: alt !== null && alt < 90 && rov.depth > 1 ? { surge: rov.velocity.x, sway: rov.velocity.z } : null,
       thrusterIds: rov.params.thrusters.map((x) => x.id),
       thrusterLevels: rov.params.thrusters.map((_, i) => rov.thrusters.level(i)),
+      thrusterLoads: typeof bank.load === 'function' ? rov.params.thrusters.map((_, i) => bank.load!(i)) : null,
+      saturation: st.saturation ?? 1,
+      tetherAtMax: sim.crane === 'released' && sim.tether.atMaxLength,
+      powerFraction: typeof bank.powerFraction === 'number' ? bank.powerFraction : null,
       command: this.input.raw,
+      sources: this.input.sources,
+      spacemouse: !this.spacemouse ? 'unsupported' : this.spacemouse.connected() ? 'on' : 'off',
       fine: this.input.fine,
       mode: st.mode,
       camera: this.rig.mode,
@@ -451,16 +496,19 @@ export class App {
       tether: sim.tetherOut(),
       crane: sim.crane,
       contacts: rov.contactCount,
-      stage: m.stage,
+      steps: m.steps(),
+      stepIndex: m.stepIndex(),
+      stageLabel: t(m.stageKey()),
       objective: this.objectiveText(m.objective()),
-      checklist: m.stage === 'prep' ? m.checklist : null,
-      holdProgress: p && (m.phase === 'hold' || m.phase === 'confirm') ? m.holdTime / p.holdSeconds : null,
-      range: p ? m.range : null,
-      offAxis: p ? m.offAxis : null,
-      warning: m.warning ? t(m.warning.key) : null,
+      hint: hint ? this.objectiveText(hint) : null,
+      checklist: m.prepChecklist(),
+      holdProgress: m.holdProgress(),
+      range: geom ? geom.range : null,
+      offAxis: geom ? geom.offAxis : null,
+      warning: m.warning ? this.objectiveText(m.warning) : null,
       position: { x: rov.position.x, y: rov.position.y, z: rov.position.z },
       navTarget: m.navTarget(),
-      targetLabel: p ? t(p.labelKey) : null,
+      targetLabel: navLabel,
       fps: this.store.get().showFps ? this.fps : null,
     };
   }

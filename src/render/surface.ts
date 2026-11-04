@@ -26,11 +26,11 @@ import { LAUNCH_HANG_HEIGHT, LAUNCH_POINT, VESSEL } from '../sim/site';
 import { makeLabelTexture } from './materials';
 
 /** Gradient sky dome (visible above water only). */
-export function createSky(): Mesh {
+export function createSky(): Mesh & { material: ShaderMaterial } {
   const mat = new ShaderMaterial({
     side: BackSide,
     depthWrite: false,
-    uniforms: { uSunDir: { value: new Vector3(0.4, 0.55, -0.6).normalize() } },
+    uniforms: { uSunDir: { value: new Vector3(0.4, 0.55, -0.6).normalize() }, uIrr: { value: 1 }, uOvercast: { value: 0 } },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
       void main() {
@@ -41,6 +41,8 @@ export function createSky(): Mesh {
       }`,
     fragmentShader: /* glsl */ `
       uniform vec3 uSunDir;
+      uniform float uIrr;
+      uniform float uOvercast;
       varying vec3 vDir;
       void main() {
         float h = clamp(vDir.y, -0.1, 1.0);
@@ -48,9 +50,13 @@ export function createSky(): Mesh {
         vec3 zenith = vec3(0.22, 0.42, 0.66);
         vec3 col = mix(horizon, zenith, pow(max(h, 0.0), 0.55));
         float sun = max(dot(normalize(vDir), uSunDir), 0.0);
-        col += vec3(1.0, 0.92, 0.78) * (pow(sun, 900.0) * 4.0 + pow(sun, 12.0) * 0.18);
+        col += vec3(1.0, 0.92, 0.78) * (pow(sun, 900.0) * 4.0 + pow(sun, 12.0) * 0.18) * (1.0 - uOvercast);
         // Low marine haze band.
         col = mix(col, vec3(0.78, 0.82, 0.85), smoothstep(0.08, 0.0, h) * 0.6);
+        // Overcast: flat grey cloud deck; brightness follows the irradiance (night ≈ black).
+        float cloud = 0.62 + 0.08 * h;
+        col = mix(col, vec3(cloud, cloud * 1.02, cloud * 1.05), uOvercast);
+        col *= mix(1.0, max(uIrr, 0.0) * 1.6, uOvercast) + 0.004;
         gl_FragColor = vec4(col, 1.0);
         #include <colorspace_fragment>
       }`,
@@ -59,7 +65,7 @@ export function createSky(): Mesh {
   sky.name = 'sky';
   sky.frustumCulled = false;
   sky.renderOrder = -1;
-  return sky;
+  return sky as Mesh & { material: ShaderMaterial };
 }
 
 /**
@@ -77,6 +83,12 @@ export function createSeaSurface(): Mesh & { material: ShaderMaterial } {
       uTime: { value: 0 },
       uSunDir: { value: new Vector3(0.4, 0.55, -0.6).normalize() },
       uCamPos: { value: new Vector3() },
+      /** Wave slope amplitude (1 = calm reference sea) and speed multiplier. */
+      uAmp: { value: 1 },
+      uSpeed: { value: 1 },
+      /** Surface irradiance (1 = clear day) and overcast factor. */
+      uIrr: { value: 1 },
+      uOvercast: { value: 0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWPos;
@@ -89,10 +101,15 @@ export function createSeaSurface(): Mesh & { material: ShaderMaterial } {
       uniform float uTime;
       uniform vec3 uSunDir;
       uniform vec3 uCamPos;
+      uniform float uAmp;
+      uniform float uSpeed;
+      uniform float uIrr;
+      uniform float uOvercast;
       varying vec3 vWPos;
       vec2 wave(vec2 p, vec2 d, float f, float a, float s) {
-        float ph = dot(p, d) * f + uTime * s;
-        return d * cos(ph) * a * f;
+        // Longer swell for a higher sea: lower frequencies scale up most.
+        float ph = dot(p, d) * f + uTime * s * uSpeed;
+        return d * cos(ph) * a * f * mix(sqrt(uAmp), uAmp, smoothstep(1.0, 0.15, f));
       }
       vec3 normalAt(vec2 p) {
         vec2 g = vec2(0.0);
@@ -111,10 +128,18 @@ export function createSeaSurface(): Mesh & { material: ShaderMaterial } {
           float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
           vec3 r = reflect(-v, n);
           vec3 sky = mix(vec3(0.68, 0.76, 0.82), vec3(0.25, 0.44, 0.66), pow(max(r.y, 0.0), 0.5));
-          vec3 deep = vec3(0.02, 0.10, 0.14);
-          vec3 col = mix(deep, sky, fres);
-          float spec = pow(max(dot(r, uSunDir), 0.0), 220.0) * 6.0;
+          sky = mix(sky, vec3(0.62, 0.64, 0.66), uOvercast);
+          float light = mix(1.0, uIrr * 1.6, uOvercast) + 0.003;
+          vec3 deep = vec3(0.02, 0.10, 0.14) * (0.3 + 0.7 * light);
+          vec3 col = mix(deep, sky * light, fres);
+          float spec = pow(max(dot(r, uSunDir), 0.0), 220.0) * 6.0 * (1.0 - uOvercast);
           col += vec3(1.0, 0.95, 0.85) * spec;
+          // Whitecaps in a higher sea: steep wave faces, broken into patches.
+          float slope = length(n.xz);
+          vec2 fp = vWPos.xz * 0.15 + vec2(uTime * 0.3, -uTime * 0.2);
+          float patchy = smoothstep(0.55, 0.9, fract(sin(dot(floor(fp), vec2(12.9898, 78.233))) * 43758.5453));
+          float crest = smoothstep(0.36, 0.55, slope) * smoothstep(1.3, 2.5, uAmp) * (0.4 + 0.6 * patchy);
+          col = mix(col, vec3(0.86, 0.88, 0.88) * light, crest * 0.5 * smoothstep(400.0, 60.0, dist));
           // Foam near the vessel hull.
           float a = mix(0.9, 0.98, fres);
           gl_FragColor = vec4(col, a);
@@ -124,10 +149,11 @@ export function createSeaSurface(): Mesh & { material: ShaderMaterial } {
           float cosI = max(dot(nb, v), 0.0);
           float sinT = 1.333 * sqrt(max(0.0, 1.0 - cosI * cosI));
           float inWindow = 1.0 - smoothstep(0.92, 1.0, sinT);
-          vec3 sky = vec3(0.75, 0.88, 0.95) * 1.6;
-          vec3 tir = vec3(0.03, 0.16, 0.2);
+          float light = mix(1.0, uIrr * 1.6, uOvercast) + 0.002;
+          vec3 sky = vec3(0.75, 0.88, 0.95) * 1.6 * light;
+          vec3 tir = vec3(0.03, 0.16, 0.2) * light;
           vec3 col = mix(tir, sky, inWindow);
-          col += pow(max(dot(refract(-v, nb, 1.333), uSunDir), 0.0), 60.0) * 3.0 * inWindow;
+          col += pow(max(dot(refract(-v, nb, 1.333), uSunDir), 0.0), 60.0) * 3.0 * inWindow * (1.0 - uOvercast);
           gl_FragColor = vec4(col, 1.0);
         }
         #include <colorspace_fragment>

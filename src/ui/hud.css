@@ -477,3 +477,68 @@
     width: 300px;
   }
 }
+
+/* v2: hints, power, input & density */
+.hud .mhint {
+  margin: 8px 10px 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b9c7d1;
+  background: rgba(108, 196, 216, 0.08);
+  border-left: 2px solid var(--data);
+}
+
+.hud .power {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px 0;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.hud .power .h {
+  position: relative;
+  height: 6px;
+  background: #18232c;
+  border: 1px solid #2a3a46;
+}
+
+.hud .power i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--data);
+}
+
+.hud .power b {
+  font-weight: 500;
+  color: var(--text);
+  min-width: 34px;
+  text-align: right;
+}
+
+.hud .kv .v .ok {
+  color: var(--ok);
+}
+
+.hud .kv .v .off {
+  color: var(--muted);
+}
+
+.hud[data-density='compact'] .thrust,
+.hud[data-density='compact'] .mhint,
+.hud[data-density='minimal'] .panel {
+  display: none;
+}
+
+.hud[data-density='compact'] .nav {
+  height: 180px;
+}
+
+.hud[data-density='minimal'] .panel.mission {
+  display: block;
+  opacity: 0.85;
+}

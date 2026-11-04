@@ -1,11 +1,10 @@
 import { t } from '../i18n';
 import type { PilotMode } from '../control/rovController';
-import type { Stage } from '../mission/mission';
-import { STAGES } from '../mission/mission';
+import type { MissionStep } from '../mission/types';
 import { JUMPER_PATH, MANIFOLD, PIPELINE_PATH, PLET, TREE, VESSEL, type V3 } from '../sim/site';
 import type { CameraMode } from '../render/cameras';
 import type { CraneState } from '../sim/simulation';
-import type { AxisCommand } from '../input/types';
+import type { AxisCommand, AxisName } from '../input/types';
 import './hud.css';
 
 export interface HudData {
@@ -32,8 +31,23 @@ export interface HudData {
   tether: number;
   crane: CraneState;
   contacts: number;
-  stage: Stage;
+  steps: MissionStep[];
+  stepIndex: number;
+  stageLabel: string;
   objective: string;
+  hint: string | null;
+  /** SpaceMouse connection: on, off (supported, not connected), unsupported. */
+  spacemouse: 'on' | 'off' | 'unsupported';
+  /** Which device drives each axis right now. */
+  sources: Partial<Record<AxisName, string>>;
+  /** Total propulsion power as a fraction of the budget (null if not modelled). */
+  powerFraction: number | null;
+  /** Per-thruster load 0..1 of max power (optional). */
+  thrusterLoads: number[] | null;
+  /** Fraction of the demanded wrench actually delivered (1 = not saturated). */
+  saturation: number;
+  /** Umbilical at maximum paid-out length (winch limit). */
+  tetherAtMax: boolean;
   checklist: { lights: boolean; thrusters: boolean; camera: boolean } | null;
   holdProgress: number | null;
   range: number | null;
@@ -65,9 +79,11 @@ const COLORS = {
   ground: 'rgba(90,70,40,0.55)',
 };
 
-function setupCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D {
-  const ctx = c.getContext('2d')!;
+function setupCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D | null {
   const r = c.getBoundingClientRect();
+  // Hidden HUD/panel (zero size): nothing to draw — avoids negative arc radii.
+  if (r.width < 8 || r.height < 8) return null;
+  const ctx = c.getContext('2d')!;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.max(1, Math.round(r.width * dpr));
   const h = Math.max(1, Math.round(r.height * dpr));
@@ -106,6 +122,7 @@ export class Hud {
         <div class="kv"><span class="k">${t('hud.speed')}</span><span class="v" data-k="speed"></span></div>
         <div class="kv"><span class="k">${t('hud.diveTime')}</span><span class="v" data-k="time"></span></div>
         <div class="kv"><span class="k">${t('hud.tether')}</span><span class="v" data-k="tether"></span></div>
+        <div class="kv"><span class="k">${t('hud.input')}</span><span class="v" data-k="input"></span></div>
       </div>
       <div class="panel heading"><canvas data-c="heading"></canvas></div>
       <div class="panel depth"><canvas data-c="depth"></canvas></div>
@@ -123,17 +140,19 @@ export class Hud {
       </div>
       <div class="panel mission">
         <div class="ptitle"><span>${t('hud.mission')}</span><span data-k="stageIdx"></span></div>
-        <div class="stages" data-k="stages">${STAGES.slice(0, -1).map(() => '<span></span>').join('')}</div>
+        <div class="stages" data-k="stages"></div>
         <div class="stage-name" data-k="stage"></div>
         <div class="objective" data-k="objective"></div>
         <ul class="checklist" data-k="checklist"></ul>
         <div class="geom" data-k="geom"></div>
         <div class="progress" data-k="progressBox"><i data-k="progress"></i></div>
         <div class="warning" data-k="warning"></div>
+        <div class="mhint" data-k="hint"></div>
       </div>
       <div class="panel thrust">
-        <div class="ptitle"><span>${t('hud.thrust')}</span><span data-k="fine"></span></div>
+        <div class="ptitle"><span>${t('hud.thrust')}</span><span><span data-k="limit" class="lim"></span> <span data-k="fine"></span></span></div>
         <div class="bars" data-k="bars"></div>
+        <div class="power" data-k="powerBox"><span>${t('hud.power')}</span><div class="h"><i data-k="power"></i></div><b data-k="powerTxt"></b></div>
         <div class="ptitle" style="padding-top:8px"><span>${t('hud.command')}</span><span data-k="srcs"></span></div>
         <div class="cmds" data-k="cmds"></div>
       </div>
@@ -174,6 +193,14 @@ export class Hud {
     this.root.hidden = !v;
   }
 
+  /** HUD density: full instrumentation, compact (no thrust/nav detail) or minimal (video overlay only). */
+  density: 'full' | 'compact' | 'minimal' = 'full';
+  cycleDensity(): 'full' | 'compact' | 'minimal' {
+    this.density = this.density === 'full' ? 'compact' : this.density === 'compact' ? 'minimal' : 'full';
+    this.root.dataset.density = this.density;
+    return this.density;
+  }
+
   private initBars(ids: string[]): void {
     if (this.bars.length === ids.length) return;
     this.el.bars.innerHTML = ids.map((id) => `<div class="bar"><div class="track"><div class="fill"></div></div><span>${id.replace('-', '')}</span></div>`).join('');
@@ -201,7 +228,8 @@ export class Hud {
       const h = Math.min(1, Math.abs(lv)) * 50;
       f.style.top = lv >= 0 ? `${50 - h}%` : '50%';
       f.style.height = `${h}%`;
-      f.style.background = Math.abs(lv) > 0.95 ? COLORS.warn : COLORS.data;
+      const load = d.thrusterLoads ? d.thrusterLoads[i] : Math.abs(lv);
+      f.style.background = load > 0.95 ? COLORS.warn : COLORS.data;
     });
     for (const k of ['surge', 'sway', 'heave', 'yaw'] as const) {
       const v = Math.max(-1, Math.min(1, d.command[k]));
@@ -253,14 +281,22 @@ export class Hud {
     e.contact.style.color = COLORS.warn;
     e.fine.textContent = d.fine ? t('hud.fine') : '';
     e.fine.style.color = COLORS.accent;
+    e.limit.textContent = d.saturation < 0.95 ? t('hud.limit') : '';
+    e.limit.style.color = COLORS.warn;
+    if (d.tetherAtMax) {
+      e.tether.textContent += ` · ${t('hud.tetherMax')}`;
+      e.tether.className = 'v warn';
+    } else e.tether.className = 'v';
 
     // Mission
-    const si = STAGES.indexOf(d.stage);
-    e.stageIdx.textContent = `${Math.min(si + 1, STAGES.length - 1)}/${STAGES.length - 1}`;
+    e.stageIdx.textContent = `${Math.min(d.stepIndex + 1, d.steps.length)}/${d.steps.length}`;
+    if (e.stages.children.length !== d.steps.length) e.stages.innerHTML = d.steps.map(() => '<span></span>').join('');
     Array.from(e.stages.children).forEach((c, i) => {
-      c.className = i < si ? 'done' : i === si ? 'now' : '';
+      const st = d.steps[i]?.state;
+      c.className = st === 'done' ? 'done' : st === 'active' ? 'now' : '';
+      (c as HTMLElement).title = d.steps[i] ? t(d.steps[i].key) : '';
     });
-    e.stage.textContent = t(`stage.${d.stage}`);
+    e.stage.textContent = d.stageLabel;
     e.objective.textContent = d.objective;
     if (d.checklist) {
       e.checklist.innerHTML = (['lights', 'thrusters', 'camera'] as const)
@@ -273,6 +309,24 @@ export class Hud {
     e.progressBox.style.display = d.holdProgress === null ? 'none' : '';
     e.progress.style.width = `${(d.holdProgress ?? 0) * 100}%`;
     e.warning.textContent = d.warning ?? '';
+    e.hint.textContent = d.hint ?? '';
+    e.hint.style.display = d.hint ? '' : 'none';
+
+    // Input devices
+    const sm = d.spacemouse === 'on' ? `<span class="ok">SPACEMOUSE ●</span>` : d.spacemouse === 'off' ? `<span class="off">SPACEMOUSE ○</span>` : '';
+    const used = new Set(Object.values(d.sources));
+    const kb = used.has('keyboard') ? '<span class="ok">TECLADO</span>' : 'TECLADO';
+    const gp = used.has('gamepad') ? ' · <span class="ok">GAMEPAD</span>' : '';
+    e.input.innerHTML = `${kb}${gp}${sm ? ' · ' + sm : ''}`;
+
+    // Propulsion power budget
+    e.powerBox.style.display = d.powerFraction === null ? 'none' : '';
+    if (d.powerFraction !== null) {
+      const pf = Math.max(0, Math.min(1, d.powerFraction));
+      e.power.style.width = `${pf * 100}%`;
+      e.power.style.background = pf > 0.97 ? COLORS.warn : COLORS.data;
+      e.powerTxt.textContent = `${Math.round(pf * 100)} %`;
+    }
 
     // Nav info
     if (d.navTarget) {
@@ -300,6 +354,7 @@ export class Hud {
   private drawHeading(d: HudData): void {
     const c = this.headingCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const pxPerDeg = w / 90;
@@ -348,6 +403,7 @@ export class Hud {
   private drawDepth(d: HudData): void {
     const c = this.depthCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const pxPerM = h / 24;
@@ -414,6 +470,7 @@ export class Hud {
   private drawAttitude(d: HudData): void {
     const c = this.attCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const cx = w / 2;
@@ -487,6 +544,7 @@ export class Hud {
   private drawNav(d: HudData): void {
     const c = this.navCanvas;
     const ctx = setupCanvas(c);
+    if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
     // Auto range to keep the target visible.

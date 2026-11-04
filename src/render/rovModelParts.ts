@@ -4,14 +4,16 @@
  *
  * All static geometry is funnelled through `GeoSet` buckets (one per material)
  * so the whole vehicle collapses into a handful of draw calls. Every piece is
- * normalised to non-indexed position/normal/uv/color so `mergeGeometries`
+ * normalised to non-indexed position/normal/uv/color/wear so `mergeGeometries`
  * always sees compatible attributes. Vertex colours are only honoured by the
- * materials created with `vertexColors: true` (metal, paint).
+ * materials created with `vertexColors: true` (metal, paint); the `wear`
+ * attribute drives the chipped-paint shader patch (see rovTextures.ts).
  */
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { ArmRig, Quality } from './rovModel';
+import { applySurfaceShader, type RovTextures } from './rovTextures';
 
 // ---------------------------------------------------------------------------
 // Quality
@@ -28,16 +30,18 @@ export interface Detail {
   tube: number;
   /** Bevel segments for extruded foam. */
   bevel: number;
+  /** Small hardware (bolt heads, hose clamps) on/off. */
+  bolts: boolean;
 }
 
 export function detailFor(q: Quality): Detail {
   switch (q) {
     case 'low':
-      return { radial: 12, small: 6, round: 1, tube: 10, bevel: 1 };
+      return { radial: 12, small: 6, round: 1, tube: 10, bevel: 1, bolts: false };
     case 'medium':
-      return { radial: 20, small: 10, round: 1, tube: 16, bevel: 2 };
+      return { radial: 20, small: 10, round: 1, tube: 16, bevel: 2, bolts: true };
     default:
-      return { radial: 32, small: 12, round: 2, tube: 24, bevel: 3 };
+      return { radial: 32, small: 12, round: 2, tube: 24, bevel: 3, bolts: true };
   }
 }
 
@@ -46,12 +50,20 @@ export function detailFor(q: Quality): Detail {
 // ---------------------------------------------------------------------------
 
 const _col = new THREE.Color();
+/** Default wear for parts without explicit wear: enough for scratches, no chips. */
+export const BASE_WEAR = 0.12;
 
-/** Clone `src` into a merge-friendly non-indexed geometry, transformed and vertex-coloured. */
-export function prepare(src: THREE.BufferGeometry, matrix?: THREE.Matrix4, color = 0xffffff): THREE.BufferGeometry {
+/**
+ * Clone `src` into a merge-friendly non-indexed geometry, transformed and
+ * vertex-coloured, with a `wear` attribute (x = paint wear, y = side-grime mask).
+ * A geometry may bring its own `wear` attribute; geometries tagged
+ * `userData.edgeWear` (rounded boxes) get extra wear on their rounded edges.
+ */
+export function prepare(src: THREE.BufferGeometry, matrix?: THREE.Matrix4, color = 0xffffff, wear?: number): THREE.BufferGeometry {
   const g = src.index ? src.toNonIndexed() : src.clone();
+  const own = !!g.attributes.wear;
   for (const name of Object.keys(g.attributes)) {
-    if (name !== 'position' && name !== 'normal' && name !== 'uv') g.deleteAttribute(name);
+    if (name !== 'position' && name !== 'normal' && name !== 'uv' && !(own && name === 'wear')) g.deleteAttribute(name);
   }
   g.morphAttributes = {};
   if (!g.attributes.normal) g.computeVertexNormals();
@@ -65,15 +77,35 @@ export function prepare(src: THREE.BufferGeometry, matrix?: THREE.Matrix4, color
     c[i * 3 + 2] = _col.b;
   }
   g.setAttribute('color', new THREE.Float32BufferAttribute(c, 3));
+  let w: Float32Array | null = null;
+  if (!own) {
+    w = new Float32Array(n * 2);
+    const base = wear ?? BASE_WEAR;
+    const edge = src.userData.edgeWear === true;
+    const nor = g.attributes.normal;
+    for (let i = 0; i < n; i++) {
+      let e = base;
+      if (edge) {
+        const m = Math.max(Math.abs(nor.getX(i)), Math.abs(nor.getY(i)), Math.abs(nor.getZ(i)));
+        e = Math.max(base, Math.min(1, (1 - m) / 0.3));
+      }
+      w[i * 2] = e;
+    }
+  }
   if (matrix) g.applyMatrix4(matrix);
+  if (w) {
+    const nor = g.attributes.normal;
+    for (let i = 0; i < n; i++) w[i * 2 + 1] = 1 - Math.abs(nor.getY(i));
+    g.setAttribute('wear', new THREE.Float32BufferAttribute(w, 2));
+  }
   g.clearGroups();
   return g;
 }
 
 export class GeoSet {
   private parts: THREE.BufferGeometry[] = [];
-  add(geo: THREE.BufferGeometry, matrix?: THREE.Matrix4, color?: number): void {
-    this.parts.push(prepare(geo, matrix, color));
+  add(geo: THREE.BufferGeometry, matrix?: THREE.Matrix4, color?: number, wear?: number): void {
+    this.parts.push(prepare(geo, matrix, color, wear));
     geo.dispose();
   }
   get empty(): boolean {
@@ -92,12 +124,12 @@ export class GeoSet {
 export type MatKey = 'frame' | 'foam' | 'rubber' | 'metal' | 'paint' | 'lens' | 'glass' | 'label';
 export const MAT_KEYS: MatKey[] = ['frame', 'foam', 'rubber', 'metal', 'paint', 'lens', 'glass', 'label'];
 
-/** Adds a geometry to a material bucket with a (local) transform and colour. */
-export type Adder = (key: MatKey, geo: THREE.BufferGeometry, m?: THREE.Matrix4, color?: number) => void;
+/** Adds a geometry to a material bucket with a (local) transform, colour and wear. */
+export type Adder = (key: MatKey, geo: THREE.BufferGeometry, m?: THREE.Matrix4, color?: number, wear?: number) => void;
 
 /** An adder that pre-multiplies every transform by `base`. */
 export function sub(add: Adder, base: THREE.Matrix4): Adder {
-  return (k, g, m, c) => add(k, g, m ? base.clone().multiply(m) : base.clone(), c);
+  return (k, g, m, c, w) => add(k, g, m ? base.clone().multiply(m) : base.clone(), c, w);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +176,14 @@ export function spanMatrix(a: THREE.Vector3, b: THREE.Vector3, axis: THREE.Vecto
 
 export function rbox(w: number, h: number, d: number, r: number, seg: number): THREE.BufferGeometry {
   const rr = Math.min(r, Math.min(w, h, d) * 0.49);
-  return new RoundedBoxGeometry(w, h, d, seg, rr);
+  const g = new RoundedBoxGeometry(w, h, d, seg, rr);
+  g.userData.edgeWear = true;
+  return g;
+}
+
+/** Plain box (12 triangles) for thin bars and small hardware. */
+export function box(w: number, h: number, d: number): THREE.BufferGeometry {
+  return new THREE.BoxGeometry(w, h, d);
 }
 
 export function cyl(rTop: number, rBot: number, h: number, seg: number): THREE.BufferGeometry {
@@ -168,129 +207,114 @@ export function rod(add: Adder, key: MatKey, a: V3, b: V3, r: number, seg: numbe
   add(key, cyl(r, r, len, seg), m, color);
 }
 
-/** Flexible hose / cable through points. */
-export function hose(add: Adder, key: MatKey, pts: V3[], r: number, d: Detail, color?: number): void {
+/** Flexible hose / cable through points. Returns the curve (for clamps). */
+export function hose(add: Adder, key: MatKey, pts: V3[], r: number, d: Detail, color?: number): THREE.Curve<THREE.Vector3> {
   const curve = new THREE.CatmullRomCurve3(pts.map(v3), false, 'centripetal');
-  add(key, new THREE.TubeGeometry(curve, d.tube, r, Math.max(5, d.small - 4), false), undefined, color);
+  add(key, new THREE.TubeGeometry(curve, d.tube, r, Math.max(5, d.small - 4), false), undefined, color, 0);
+  return curve;
+}
+
+/** Band clamps around a hose at the given curve parameters (0..1). */
+export function clamps(add: Adder, curve: THREE.Curve<THREE.Vector3>, r: number, ts: number[], d: Detail): void {
+  if (!d.bolts) return;
+  for (const t of ts) {
+    const q = new THREE.Quaternion().setFromUnitVectors(AY, curve.getTangentAt(t));
+    add('metal', cyl(r + 0.005, r + 0.005, 0.016, 8), TQ(curve.getPointAt(t), q), 0xb9bec3, 0.2);
+  }
+}
+
+/** Hex bolt heads on a plate: points are (u, v) in the plate's local XZ plane, heads face local +Y. */
+export function bolts(add: Adder, m: THREE.Matrix4, pts: [number, number][], d: Detail, r = 0.0095): void {
+  if (!d.bolts) return;
+  for (const [u, v] of pts) add('metal', cyl(r, r, 0.008, 6), mul(m, T(u, 0.004, v)), 0xc7ccd1, 0.25);
+}
+
+/** Bolt pattern along the perimeter of a w×d rectangle (nx along u, nz along v). */
+export function boltRect(w: number, d: number, nx: number, nz: number): [number, number][] {
+  const pts: [number, number][] = [];
+  for (let i = 0; i < nx; i++) {
+    const u = -w / 2 + (w * i) / Math.max(1, nx - 1);
+    pts.push([u, -d / 2], [u, d / 2]);
+  }
+  for (let j = 1; j < nz - 1; j++) {
+    const v = -d / 2 + (d * j) / Math.max(1, nz - 1);
+    pts.push([-w / 2, v], [w / 2, v]);
+  }
+  return pts;
 }
 
 // ---------------------------------------------------------------------------
-// Materials & textures
+// Materials
 // ---------------------------------------------------------------------------
 
 export interface MaterialSet {
   mats: Record<MatKey, THREE.MeshStandardMaterial>;
   dome: THREE.MeshPhysicalMaterial;
-  textures: THREE.Texture[];
 }
 
-function noiseTexture(): THREE.Texture {
-  const size = 128;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = size;
-  const ctx = cv.getContext('2d')!;
-  const img = ctx.createImageData(size, size);
-  let seed = 1234567;
-  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  for (let i = 0; i < size * size; i++) {
-    const v = 150 + rnd() * 70 + (rnd() < 0.04 ? -90 : 0);
-    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
-    img.data[i * 4 + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  const t = new THREE.CanvasTexture(cv);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(4, 4);
-  return t;
-}
-
-/**
- * Decal atlas: v ∈ [LABEL_V0,1] holds the vehicle name, v ∈ [0,LABEL_V0] holds
- * hazard stripes.
- */
-export const LABEL_V0 = 0.335;
-export const STRIPE_V1 = 0.29;
-function labelTexture(): THREE.Texture {
-  const W = 1024;
-  const H = 512;
-  const cv = document.createElement('canvas');
-  cv.width = W;
-  cv.height = H;
-  const ctx = cv.getContext('2d')!;
-  ctx.clearRect(0, 0, W, H);
-  // Name panel
-  ctx.fillStyle = '#121212';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'alphabetic';
-  ctx.font = 'bold 228px "Arial Black", "Helvetica Neue", Arial, sans-serif';
-  ctx.fillText('WC-150', W / 2, 240);
-  ctx.fillRect(40, 268, W - 80, 10);
-  ctx.font = 'bold 46px Arial, Helvetica, sans-serif';
-  ctx.fillText('WORK CLASS ROV  •  3000 MSW', W / 2, 330);
-  // Hazard stripes (bottom 160 px)
-  const y0 = 352;
-  ctx.fillStyle = '#f2b705';
-  ctx.fillRect(0, y0, W, H - y0);
-  ctx.fillStyle = '#141414';
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(0, y0, W, H - y0);
-  ctx.clip();
-  for (let x = -H; x < W + H; x += 80) {
-    ctx.beginPath();
-    ctx.moveTo(x, H);
-    ctx.lineTo(x + 40, H);
-    ctx.lineTo(x + 40 + (H - y0), y0);
-    ctx.lineTo(x + (H - y0), y0);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.restore();
-  const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 4;
-  return t;
-}
-
-export function createMaterials(envMap: THREE.Texture | null): MaterialSet {
-  const noise = noiseTexture();
-  const label = labelTexture();
+export function createMaterials(envMap: THREE.Texture | null, tex: RovTextures): MaterialSet {
   const std = (p: THREE.MeshStandardMaterialParameters) => new THREE.MeshStandardMaterial({ envMap, ...p });
   const mats: Record<MatKey, THREE.MeshStandardMaterial> = {
-    frame: std({ name: 'rov-frame', color: 0x3d434a, metalness: 0.55, roughness: 0.42 }),
+    frame: std({ name: 'rov-frame', color: 0x4b535b, metalness: 0.3, roughness: 0.5 }),
     foam: std({
       name: 'rov-foam',
       color: 0xf29a05,
       metalness: 0,
-      roughness: 0.82,
-      bumpMap: noise,
-      bumpScale: 1.2,
-      roughnessMap: noise,
+      roughness: 0.78,
+      normalMap: tex.foamNormal,
+      normalScale: new THREE.Vector2(0.55, 0.55),
     }),
-    rubber: std({ name: 'rov-rubber', color: 0x1c1e20, metalness: 0, roughness: 0.78 }),
-    metal: std({ name: 'rov-metal', color: 0xffffff, vertexColors: true, metalness: 0.85, roughness: 0.32 }),
-    paint: std({ name: 'rov-paint', color: 0xffffff, vertexColors: true, metalness: 0.3, roughness: 0.5 }),
-    lens: std({
-      name: 'rov-lamp-lens',
-      color: 0xb8c0c8,
+    rubber: std({
+      name: 'rov-rubber',
+      color: 0x222427,
       metalness: 0,
-      roughness: 0.15,
-      emissive: new THREE.Color(0xfff3e2),
-      emissiveIntensity: 0,
+      roughness: 0.86,
+      normalMap: tex.rubberNormal,
+      normalScale: new THREE.Vector2(0.35, 0.35),
     }),
-    glass: std({ name: 'rov-glass', color: 0x06080b, metalness: 0.9, roughness: 0.06 }),
+    metal: std({ name: 'rov-metal', color: 0xffffff, vertexColors: true, metalness: 0.7, roughness: 0.36 }),
+    paint: std({ name: 'rov-paint', color: 0xffffff, vertexColors: true, metalness: 0.12, roughness: 0.5 }),
+    lens: new THREE.MeshPhysicalMaterial({
+      name: 'rov-lamp-lens',
+      color: 0xffffff,
+      map: tex.led,
+      emissive: new THREE.Color(0xfff3e2),
+      emissiveMap: tex.led,
+      emissiveIntensity: 0,
+      metalness: 0,
+      roughness: 0.1,
+      clearcoat: 1,
+      clearcoatRoughness: 0.03,
+      envMap,
+    }),
+    glass: std({ name: 'rov-glass', color: 0x0e1115, metalness: 0.5, roughness: 0.08 }),
     label: std({
       name: 'rov-decal',
-      map: label,
+      map: tex.label,
       transparent: true,
       metalness: 0,
-      roughness: 0.7,
+      roughness: 0.62,
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
       depthWrite: false,
     }),
   };
+  applySurfaceShader(mats.frame, tex.detail, {
+    wearColor: 0x939aa1, wearAmount: 0.42, wearMetalness: 0.9, wearRoughness: 0.32, grime: 0.35, brushed: 0.5, scale: 5,
+  });
+  applySurfaceShader(mats.foam, tex.detail, {
+    wearColor: 0x9a978e, wearAmount: 0.42, wearMetalness: 0, wearRoughness: 0.95, grime: 0.4, brushed: 0, scale: 2.6,
+  });
+  applySurfaceShader(mats.rubber, tex.detail, {
+    wearColor: 0x333333, wearAmount: 0, wearMetalness: 0, wearRoughness: 0.9, grime: 0.25, brushed: 0, scale: 2,
+  });
+  applySurfaceShader(mats.metal, tex.detail, {
+    wearColor: 0xdde1e5, wearAmount: 0.45, wearMetalness: 1, wearRoughness: 0.18, grime: 0.2, brushed: 1, scale: 4,
+  });
+  applySurfaceShader(mats.paint, tex.detail, {
+    wearColor: 0xa7adb3, wearAmount: 0.5, wearMetalness: 0.85, wearRoughness: 0.3, grime: 0.3, brushed: 0.25, scale: 5,
+  });
   const dome = new THREE.MeshPhysicalMaterial({
     name: 'rov-camera-dome',
     color: 0xdfeaf2,
@@ -303,7 +327,7 @@ export function createMaterials(envMap: THREE.Texture | null): MaterialSet {
     envMap,
     depthWrite: false,
   });
-  return { mats, dome, textures: [noise, label] };
+  return { mats, dome };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,11 +340,12 @@ export const DUCT_HALF = 0.13;
 export const POD_END = 0.26;
 
 /**
- * Static parts of one thruster: Kort nozzle, motor pod with stator struts,
- * mounting lugs (local ±X), power connector.
+ * Static parts of one thruster: painted Kort nozzle, motor pod with stator
+ * struts, mounting lugs (local ±X), power connector and, optionally, a guard
+ * grille over the open (non-pod) end.
  * `podSign` puts the motor pod on the +Y (1) or −Y (−1) side.
  */
-export function thrusterStatic(add: Adder, podSign: 1 | -1, d: Detail): void {
+export function thrusterStatic(add: Adder, podSign: 1 | -1, d: Detail, grille: boolean): void {
   const R = DUCT_RI;
   const h = DUCT_HALF;
   // Kort nozzle cross-section, counter-clockwise in (r, y): outside going up
@@ -340,7 +365,7 @@ export function thrusterStatic(add: Adder, podSign: 1 | -1, d: Detail): void {
     [R + 0.005, -h + 0.004],
     [R + 0.012, -h],
   ];
-  add('rubber', lathe(duct, d.radial));
+  add('paint', lathe(duct, d.radial), undefined, 0x2a2d31, 0.2);
   // Thin bright wear ring at the inlet
   add('metal', new THREE.TorusGeometry(R + 0.035, 0.006, 5, d.radial), T(0, h - 0.002, 0, Math.PI / 2), 0x9aa1a8);
 
@@ -358,7 +383,7 @@ export function thrusterStatic(add: Adder, podSign: 1 | -1, d: Detail): void {
     [0.036, POD_END - 0.002],
     [0, POD_END],
   ];
-  p('paint', lathe(pod, d.radial), undefined, 0x2c3137);
+  p('paint', lathe(pod, d.radial), undefined, 0x2c3137, 0.16);
   // Cooling ribs band
   p('paint', cyl(0.069, 0.069, 0.012, d.radial), T(0, 0.12, 0), 0x464d55);
   p('paint', cyl(0.069, 0.069, 0.012, d.radial), T(0, 0.15, 0), 0x464d55);
@@ -370,9 +395,22 @@ export function thrusterStatic(add: Adder, podSign: 1 | -1, d: Detail): void {
   }
   // Penetrator / connector at the pod end
   p('metal', cyl(0.018, 0.018, 0.04, d.small), T(0, POD_END + 0.012, 0), 0xb7a06a);
-  // Mounting lugs on the duct (local ±X)
+  // Mounting lugs on the duct (local ±X) with bolts
   for (const s of [1, -1]) {
     add('frame', rbox(0.075, 0.12, 0.06, 0.01, d.round), T(s * (R + 0.09), -0.05, 0));
+    bolts(add, T(s * (R + 0.09), -0.05, 0.03, Math.PI / 2), [[0, -0.035], [0, 0.035]], d, 0.008);
+  }
+  if (grille) {
+    // Guard grille: ring + parallel bars across the open end
+    const gy = -podSign * (h + 0.012);
+    const gr = R + 0.028;
+    add('frame', new THREE.TorusGeometry(gr, 0.007, 5, d.radial), T(0, gy, 0, Math.PI / 2));
+    for (let k = -3; k <= 3; k++) {
+      const x = k * 0.034;
+      const len = 2 * Math.sqrt(gr * gr - x * x);
+      add('frame', box(0.007, 0.007, len), T(x, gy, 0));
+    }
+    add('frame', box(2 * gr, 0.008, 0.008), T(0, gy - podSign * 0.008, 0));
   }
 }
 
@@ -390,7 +428,7 @@ export function propellerGeometry(d: Detail, podSign: 1 | -1): THREE.BufferGeome
   ];
   const hubGeo = lathe(hub, Math.max(10, d.radial >> 1));
   if (podSign === -1) hubGeo.rotateX(Math.PI);
-  set.add(hubGeo, undefined, 0x24272b);
+  set.add(hubGeo, undefined, 0x24272b, 0.35);
   const blades = 5;
   const outline = new THREE.Shape();
   outline.moveTo(0.035, -0.022);
@@ -407,7 +445,7 @@ export function propellerGeometry(d: Detail, podSign: 1 | -1): THREE.BufferGeome
     });
     g.translate(0, 0, -0.0025);
     const m = mul(T(0, 0, 0, 0, (i / blades) * Math.PI * 2, 0), T(0, 0, 0, Math.PI / 2 - pitch, 0, 0));
-    set.add(g, m, 0xc3923f);
+    set.add(g, m, 0xa8793c, 0.3);
   }
   return set.build();
 }
@@ -423,7 +461,7 @@ export function lightHead(add: Adder, d: Detail): void {
     prof.push([0.038, y], [0.05, y + 0.002], [0.05, y + 0.006], [0.038, y + 0.008]);
   }
   prof.push([0.046, 0.0], [0.05, 0.004], [0.05, 0.02], [0.044, 0.026], [0.038, 0.026], [0.038, 0.02], [0, 0.02]);
-  add('paint', lathe(prof, d.radial), toX, 0x2a2e33);
+  add('paint', lathe(prof, d.radial), toX, 0x2a2e33, 0.25);
   add('lens', new THREE.CircleGeometry(0.037, d.radial), T(0.021, 0, 0, 0, Math.PI / 2, 0));
   // Rear gland
   add('metal', cyl(0.012, 0.012, 0.04, d.small), mul(toX, T(0, -0.1, 0)), 0xb7a06a);
@@ -477,7 +515,7 @@ export function pilotCameraHead(set: GeoSet, d: Detail): THREE.BufferGeometry {
   // Black band + lens barrel visible through the dome
   set.add(cyl(0.0635, 0.0635, 0.03, d.radial), mul(toX, T(0, -0.04, 0)), 0x1b1d20);
   set.add(cyl(0.03, 0.034, 0.05, d.radial), mul(toX, T(0, PILOT_DOME_X + 0.02, 0)), 0x15171a);
-  set.add(new THREE.CircleGeometry(0.024, d.radial), T(PILOT_DOME_X + 0.0455, 0, 0, 0, Math.PI / 2, 0), 0x0b2238);
+  set.add(new THREE.CircleGeometry(0.024, d.radial), T(PILOT_DOME_X + 0.0455, 0, 0, 0, Math.PI / 2, 0), 0x0b2238, 0);
   // Tilt trunnions
   for (const s of [1, -1]) {
     set.add(cyl(0.028, 0.028, 0.03, d.small), T(0, 0, s * 0.072, Math.PI / 2), 0x2f3338);
@@ -498,6 +536,7 @@ export function pilotDome(d: Detail): THREE.BufferGeometry {
 // ---------------------------------------------------------------------------
 
 type JointAxis = 'x' | 'y' | 'z';
+type PartAdder = (g: THREE.BufferGeometry, m?: THREE.Matrix4, c?: number) => void;
 
 interface JointSpec {
   name: string;
@@ -506,15 +545,15 @@ interface JointSpec {
   offset: V3;
   /** Rest angle about `axis` (stowed pose). */
   rest: number;
-  build: (add: (g: THREE.BufferGeometry, m?: THREE.Matrix4, c?: number) => void) => void;
+  build: (add: PartAdder) => void;
 }
 
-const TI = 0x939aa1;
+const TI = 0x7f868d;
 const GRAB = 0x5f666e;
 const ACT = 0x18191b;
 const CHROME = 0xdfe4e8;
 
-function actuator(add: (g: THREE.BufferGeometry, m?: THREE.Matrix4, c?: number) => void, a: V3, b: V3, r: number, d: Detail): void {
+function actuator(add: PartAdder, a: V3, b: V3, r: number, d: Detail): void {
   const A = v3(a);
   const B = v3(b);
   const split = A.clone().lerp(B, 0.6);

@@ -44,7 +44,8 @@ export type PilotAction =
   | 'pause'
   | 'help'
   | 'camTiltCenter'
-  | 'fineControl';
+  | 'fineControl'
+  | 'toggleHud';
 
 /**
  * Contract for an input device. `poll` is called once per rendered frame and

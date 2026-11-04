@@ -1,5 +1,15 @@
 import { AXIS_NAMES, zeroAxes, type AxisCommand, type AxisName, type InputDevice, type PilotAction } from './types';
 
+/**
+ * How simultaneous devices are combined, per axis:
+ *  - 'dominant' (default): the device with the largest deflection on that axis
+ *    wins; others are ignored for that axis. Two devices never add up or
+ *    cancel each other unpredictably, and each axis can come from a different
+ *    device (e.g. SpaceMouse for translation, keyboard for camera tilt).
+ *  - 'sum': values are added and clamped (legacy behaviour).
+ */
+export type CombinePolicy = 'dominant' | 'sum';
+
 export interface InputShaping {
   /** Global gain on surge/sway/heave/yaw (0.2–1). */
   sensitivity: number;
@@ -22,6 +32,7 @@ export class InputManager {
   readonly sources: Partial<Record<AxisName, string>> = {};
   fine = false;
   shaping: InputShaping = { sensitivity: 0.8, invert: {}, fineGain: 0.35 };
+  policy: CombinePolicy = 'dominant';
 
   add(device: InputDevice): void {
     if (!this.devices.includes(device)) this.devices.push(device);
@@ -47,8 +58,12 @@ export class InputManager {
       actions.push(...r.actions);
       for (const k of AXIS_NAMES) {
         const v = r.axes[k];
-        if (v !== undefined && v !== 0) {
+        if (v === undefined || v === 0 || !Number.isFinite(v)) continue;
+        if (this.policy === 'sum') {
           merged[k] += v;
+          this.sources[k] = d.id;
+        } else if (Math.abs(v) > Math.abs(merged[k])) {
+          merged[k] = v;
           this.sources[k] = d.id;
         }
       }

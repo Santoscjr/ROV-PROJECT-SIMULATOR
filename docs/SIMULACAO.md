@@ -8,7 +8,11 @@ Este documento descreve o que é simulado, de onde vieram as ordens de grandeza 
 - **Massa, inércia, massa adicional e amortecimento:** ordens de grandeza do RexROV (`uuvsimulator/uuv_simulator`, Apache-2.0). Usei apenas os valores numéricos publicados como referência; nenhum código foi reutilizado. Dois ajustes:
   - Aumentei o amortecimento linear de baixa velocidade (surge/sway) para representar o arrasto do umbilical.
   - Aumentei o amortecimento rotacional para obter taxas de giro de ~40–60°/s.
-- **Propulsores:** limites de empuxo diferentes para frente e ré, e resposta de 1ª ordem (τ = 0,3 s). A alocação usa a pseudo-inversa da matriz de configuração 6×8. Quando um propulsor satura, a solução inteira é escalonada para preservar a direção da força pedida.
+- **Propulsores (v2.0):** cada propulsor tem como estado a rotação normalizada da hélice *n* ∈ [−1, 1]. O comando de força vira rotação desejada (n* = √(F/Fmáx)). O motor segue n* com atraso de 1ª ordem (τ = 0,15 s) e limite de taxa (2,5 rotação-nominal/s). O empuxo é proporcional a n·|n|, por isso a força sobe em "S": cerca de 6 % do empuxo após 0,1 s e 90 % após ~0,6 s. Os limites continuam diferentes para frente e ré (1000/800 N nos horizontais, 900/750 N nos verticais).
+  - **Perda por avanço:** T = Fmáx·(n² − |n|·uₐ/Vₐ), com uₐ = velocidade da água através do propulsor ao longo do eixo (inclui ω×r) e Vₐ = 8 m/s. Equivale a uma curva K_T(J) linear. O resultado fica limitado a [0; 1,15·Fmáx·n²]. Em velocidade máxima (~1,6 m/s), os horizontais entregam ~85 % do empuxo estático.
+  - **Potência compartilhada (HPU):** cada propulsor consome P = 15 kW·|n|³. O conjunto tem um orçamento único de 66 kW, ordem de grandeza de uma HPU de ~150 hp descontado o circuito de ferramentas. Se a combinação pedida passar do orçamento, todos os comandos são escalonados pelo mesmo fator, o que preserva a direção da força. Nos transitórios, as rotações são reduzidas juntas, como numa queda de pressão. Heave sozinho (60 kW) não satura; surge total fica em ~93 % e surge + heave em ~88 %. **Valores fictícios e plausíveis**, não de um equipamento real.
+  - **HUD:** `level(i)` (fração do limite de empuxo, com sinal), `load(i)` (fração da potência nominal do propulsor) e `powerFraction` (potência total / orçamento).
+- **Alocação:** pseudo-inversa da matriz de configuração 6×8. Quando um propulsor satura, a solução inteira é escalonada para preservar a direção da força pedida. O fator aplicado (`allocator.lastScale`) e o da HPU (`thrusters.powerScale`) alimentam o anti-windup dos controladores.
 
 ## Dinâmica (6 graus de liberdade)
 
@@ -21,9 +25,27 @@ Forma vetorial de Fossen, `M·ν̇ + C(ν)·ν + D(ν)·ν + g(η) = τ`, integr
 | Amortecimento | linear + quadrático, diagonal, sobre a velocidade relativa à água | aplicado num centro de pressão deslocado (o veículo se alinha à corrente e "senta" ao acelerar) |
 | Restauração | peso no CG, empuxo no CB (18 cm acima) | flutuabilidade positiva de 0,8 %; empuxo proporcional à fração submersa perto da superfície |
 | Corrente | perfil com a profundidade, camada-limite no fundo, oscilações lentas | determinística, sem turbulência |
-| Contatos | pontos dos skids contra o leito; esferas contra caixas/cápsulas das estruturas | resposta por projeção, inelástica, com atrito simples |
-| Umbilical | desenhado com curvatura pela corrente; o arrasto entra no amortecimento | sem dinâmica de cabo |
+| Contatos | pontos dos skids contra o leito; esferas contra caixas/cápsulas das estruturas | resposta por projeção. Só impactos acima de 0,25 m/s quicam (restituição 0,15); contatos lentos não quicam, então o veículo pousado não trepida. Atrito de Coulomb no nível de velocidade (μ = 0,35 no leito, 0,2 nas estruturas) |
+| Umbilical | modelo quase estático (ver abaixo), força aplicada no ponto de terminação (0; 1,1; 0 m) | sem dinâmica nem inércia do cabo |
 | Lançamento/recuperação | guindaste cinemático até 8 m de profundidade | sem LARS/TMS completos |
+
+## Umbilical (v2.0)
+
+O cabo **não** é discretizado em centenas de segmentos. A cada passo:
+
+1. **Guincho:** o comprimento lançado *L* acompanha o alvo `1,08·d + 6 m`, onde *d* é a distância em linha reta da âncora ao ROV. A âncora é o ponto de lançamento do navio ou um TMS. O lançamento é limitado a 1,5 m/s, o recolhimento a 0,8 m/s e o comprimento máximo a 600 m.
+2. **Forma:** um arco parabólico no plano da carga média (arrasto + peso). A amplitude sai da folga: comprimento ≈ d + 8a²/(3d), ou seja, a = √(3·d·(L − d)/8).
+3. **Arrasto:** fórmula de Morison normal ½·ρ·Cd·D·|uₙ|·uₙ, com Cd = 1,2 e D = 30 mm, mais um pequeno atrito tangencial. É avaliada em 8 pontos ao longo do arco, usando o perfil de corrente real e a velocidade aproximada do cabo (0 na âncora, v do ROV na ponta). O ROV recebe a fração *s* da carga de cada trecho, como numa corda presa nas duas pontas. Resultado: o cabo empurra o ROV corrente abaixo, com força que cresce com *L* e com a corrente². O arrasto do cabo arrastado pelo próprio ROV faz o papel de amortecimento suave.
+4. **Limite do guincho:** se d > L, o cabo fica esticado. Entra então uma mola de 20 kN/m com amortecedor de 7 kN·s/m ao longo da corda, que só traciona.
+5. **Robustez:** a força total é limitada a 9 kN. Um salto do ponto de fixação maior que 6 m num passo (teleporte) reinicializa o guincho.
+
+Simplificações: o cabo é quase neutro (0,05 kg/m na água), não há ondas no cabo, tranco ou contato com o fundo (só a polilinha desenhada é mantida acima do leito e abaixo da superfície), e a divisão da carga é linear e fixa.
+
+## Perto do fundo
+
+- **Nuvem de sedimento:** `seabedDisturbance` (0..1) cresce quando o jato de um propulsor aponta para o leito, isto é, no sentido oposto ao empuxo. Num ROV, isso acontece ao subir com os verticais. O efeito tem queda quadrática até 3,5 m entre propulsor e fundo, o que dá altitude de ~2 m. Jatos horizontais contam pouco, e só com o propulsor a menos de 1,2 m do leito. Os skids arrastando no leito e os impactos (pousos duros) também contribuem. O valor sobe rápido (τ 0,25 s) e decai devagar (τ 2 s). É usado pelo renderizador para pluma e turbidez.
+- **Efeito solo / bloqueio de fluxo na eficiência dos propulsores:** não modelado.
+- **Pouso:** o contato não quica em baixa velocidade. O atrito de Coulomb permite deslizar empurrado pelos propulsores e segura o veículo contra correntes fracas quando ele está pressionado contra o fundo.
 
 ## Modos de pilotagem
 
@@ -33,7 +55,16 @@ Baseados no comportamento documentado do ArduSub:
 - **STABILIZE:** PID de roll/pitch nos propulsores verticais, com setpoint 0° (ou o comando do eixo, se mapeado). O comando de giro vira demanda de taxa; ao soltá-lo, o rumo é capturado e mantido.
 - **DEPTH HOLD:** STABILIZE mais PID de profundidade, com integrador que aprende a flutuabilidade. Com o comando vertical ativo, o veículo sobe/desce livremente; ao soltar, freia e mantém a nova cota.
 
-Os testes em `tests/physics.test.ts` verificam que os modos produzem comportamentos diferentes. Por exemplo, sem comando, o DEPTH HOLD mantém a cota com tolerância de ±0,25 m, enquanto o MANUAL deriva; e o STABILIZE segura o rumo sob corrente cruzada.
+**Transições e anti-windup (v2.0):**
+
+- **Transferência sem tranco:** ao trocar de modo, a contribuição do assistente em cada canal (atitude e rumo; profundidade) entra ou sai em rampa de 0,5 s, misturada ao comando direto do piloto.
+- **Captura de setpoints:** o rumo só é capturado com giro abaixo de 4°/s, com avanço de 0,35 s. A profundidade só é travada com velocidade vertical abaixo de 0,15 m/s. Antes disso o veículo é freado, e não puxado de volta.
+- **Viés de flutuabilidade:** o valor aprendido pelo integrador de profundidade é mantido entre modos.
+- **Feed-forward de giro:** compensa o amortecimento hidrodinâmico de giro. Com isso, o integrador não acumula viés durante curvas e o rumo é capturado sem ultrapassagem.
+- **Anti-windup:** os integradores congelam quando a saída daquele eixo está saturada, ou quando o alocador ou a HPU escalonaram o comando, e o erro empurraria ainda mais para a saturação. O integrador de profundidade também congela com o ROV pousado e mandado descer.
+- **Comando do piloto em DEPTH HOLD:** o comando vertical passa direto, somado apenas ao viés aprendido, sem disputa com o controlador.
+
+Os testes em `tests/physics.test.ts` verificam que os modos produzem comportamentos diferentes. Por exemplo, sem comando, o DEPTH HOLD mantém a cota com tolerância de ±0,25 m, enquanto o MANUAL deriva; e o STABILIZE segura o rumo sob corrente cruzada. Os testes da v2.0 cobrem a dinâmica dos propulsores e a HPU (`tests/physicsThrusters.test.ts`), o umbilical (`tests/tether.test.ts`), o comportamento perto do fundo (`tests/physicsSeabed.test.ts`) e as transições, o anti-windup e a precisão sob corrente de 0,5 m/s (`tests/controller.test.ts`).
 
 ## Sensores e instrumentos
 
@@ -43,7 +74,7 @@ Todos os valores do HUD vêm do estado da simulação:
 - **Rumo, pitch e roll:** orientação do corpo.
 - **Altitude:** distância vertical da base do veículo ao leito ou ao topo de estruturas; alcance de 60 m.
 - **Velocidade:** DVL. Só é exibida com *bottom lock* (altitude < 90 m); fora disso, o HUD mostra "SEM LOCK".
-- **Empuxo:** saída real de cada propulsor.
+- **Empuxo:** saída real de cada propulsor; carga de potência por propulsor e da HPU.
 - **Navegação (USBL):** posição simulada, sem ruído.
 
 ## Óptica submarina

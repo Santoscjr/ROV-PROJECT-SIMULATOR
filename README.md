@@ -4,7 +4,21 @@ Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no 
 
 **Acesse:** https://santoscjr.github.io/ROV-PROJECT-SIMULATOR/
 
-O operador prepara o veículo no convés, autoriza o lançamento pelo guindaste e desce até ~120 m de lâmina d’água. Em seguida inspeciona dois pontos de um sistema submarino de produção (conexão do jumper no manifold e vão livre do duto de exportação) e retorna ao ponto de recuperação. Ao final, a operação gera um relatório.
+## Operações
+
+| Operação | O que o piloto faz | Condições |
+|---|---|---|
+| **Treinamento de pilotagem** | Começa submerso. Exercícios verificados pela simulação: avanço, recuo, lateral, rumo, profundidade, manter rumo, estabilização, portais e aproximação de alvo | Corrente fraca, água clara (impostas) |
+| **Inspeção de estrutura offshore** | Checklist, lançamento pelo guindaste e descida a ~120 m. Depois, inspeção de três pontos (jumper no manifold, vão livre do duto, painel da árvore de natal) com procedimento de aproximação e iluminação mínima, retorno e recuperação | Escolhidas pelo piloto |
+| **Navegação em condições adversas** | Rota ao longo do duto até o PLET, manutenção de posição em estação, inspeção da válvula e retorno | Corrente forte, água turva, céu nublado (impostas) |
+
+Cada operação termina com um relatório que traz:
+- tempo de operação, profundidade máxima e distância percorrida;
+- objetivos e inspeções registradas;
+- colisões e desvios de procedimento;
+- condições ambientais e estado final do ROV.
+
+As condições ambientais são **corrente**, **visibilidade**, **luz natural** e **estado do mar**. Elas alteram a física (força da corrente sobre o ROV e o umbilical) e a óptica (extinção, partículas, iluminação), e não apenas a aparência.
 
 ## Como pilotar
 
@@ -21,8 +35,13 @@ O operador prepara o veículo no convés, autoriza o lançamento pelo guindaste 
 | Modos MANUAL / STABILIZE / DEPTH HOLD | `1` `2` `3` (`M` alterna) | X |
 | Confirmar / registrar inspeção | `Enter` | A |
 | Pausa · Ajuda | `Esc` · `H` | Start · Back |
+| Densidade do HUD (completo / compacto / mínimo) | `U` | — |
 
-As teclas usam a posição física (funcionam em ABNT2, AZERTY etc.) e podem ser remapeadas em **Configurações**. O SpaceMouse (opcional, via WebHID) é descrito em [docs/SPACEMOUSE.md](docs/SPACEMOUSE.md).
+As teclas usam a posição física (funcionam em ABNT2, AZERTY etc.) e podem ser remapeadas em **Configurações**.
+
+**SpaceMouse (opcional, via WebHID, Chrome/Edge):** conecte uma vez pelo menu principal ou por Configurações → SpaceMouse. Nas próximas visitas a reconexão é automática. Os comandos são proporcionais, com zona morta, sensibilidade, curva de resposta, mapeamento de eixos e botões, e calibração.
+
+**Combinação de dispositivos:** em cada eixo vale o dispositivo com maior deflexão. Se o SpaceMouse desconectar, os comandos dele zeram imediatamente e o teclado continua funcionando. Detalhes em [docs/SPACEMOUSE.md](docs/SPACEMOUSE.md).
 
 ## Desenvolvimento
 

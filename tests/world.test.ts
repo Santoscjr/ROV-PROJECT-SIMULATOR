@@ -5,6 +5,7 @@ import { COLLIDERS, FREE_SPAN, INSPECTION_POINTS, LAUNCH_POINT, MANIFOLD, PIPELI
 import { currentAt } from '../src/sim/ocean';
 import { sphereBox, sphereCapsule } from '../src/physics/collision';
 import { Simulation } from '../src/sim/simulation';
+import type { Mission } from '../src/mission/mission';
 
 describe('site & environment', () => {
   it('has a working depth of about 120 m at the site and shallower water under the vessel', () => {
@@ -47,8 +48,9 @@ describe('simulation (launch & recovery)', () => {
   it('lowers the ROV through the splash zone and releases it at depth', () => {
     const sim = new Simulation('stabilize');
     expect(sim.rov.position.y).toBeGreaterThan(0);
-    sim.mission.checklist.lights = sim.mission.checklist.thrusters = sim.mission.checklist.camera = true;
-    sim.mission.confirm();
+    const m = sim.mission as Mission;
+    m.checklist.lights = m.checklist.thrusters = m.checklist.camera = true;
+    m.confirm();
     let splash = 0;
     for (let i = 0; i < 400 && sim.crane !== 'released'; i++) {
       const ev = sim.advance(0.1);
@@ -59,7 +61,7 @@ describe('simulation (launch & recovery)', () => {
     expect(sim.crane).toBe('released');
     expect(sim.rov.kinematic).toBe(false);
     expect(sim.rov.depth).toBeGreaterThan(7);
-    expect(sim.mission.stage).toBe('descent');
+    expect(m.stage).toBe('descent');
     // Heading is north after launch.
     expect(Math.min(sim.rov.heading, 360 - sim.rov.heading)).toBeLessThan(3);
   });
