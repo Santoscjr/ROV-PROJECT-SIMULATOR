@@ -275,7 +275,7 @@ export class World {
     this.tetherTimer = 1 / 20;
     const end = this.rov.tetherPoint.getWorldPosition(new Vector3());
     const pts = path.slice(0, -1).map((p) => p.clone());
-    pts.push(end.clone().add(new Vector3(0, 1.0, 0)), end);
+    pts.push(end);
     this.tether.geometry.dispose();
     this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), Math.max(40, pts.length * 5), 0.03, 5);
   }

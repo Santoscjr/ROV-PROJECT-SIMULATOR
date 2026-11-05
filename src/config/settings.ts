@@ -29,6 +29,17 @@ export const BINDABLE = [
   'pause',
   'help',
   'toggleHud',
+  'tetherPay',
+  'tetherHaul',
+  'tetherStop',
+  'tmsAuto',
+  'camOp',
+  'camExt',
+  'camTms',
+  'camTether',
+  'zoomIn',
+  'zoomOut',
+  'layoutCycle',
 ] as const;
 export type Bindable = (typeof BINDABLE)[number];
 export type KeyBindings = Record<Bindable, string[]>;
@@ -52,6 +63,17 @@ const COMMON: Omit<KeyBindings, 'surge+' | 'surge-' | 'sway+' | 'sway-' | 'heave
   pause: ['Escape', 'KeyP'],
   help: ['KeyH', 'F1'],
   toggleHud: ['KeyU'],
+  tetherPay: ['KeyO'],
+  tetherHaul: ['KeyI'],
+  tetherStop: ['KeyK'],
+  tmsAuto: ['KeyJ'],
+  camOp: ['Digit7'],
+  camExt: ['Digit8'],
+  camTms: ['Digit9'],
+  camTether: ['Digit0'],
+  zoomIn: ['KeyZ'],
+  zoomOut: ['KeyX'],
+  layoutCycle: ['KeyY'],
 };
 
 export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
@@ -119,8 +141,18 @@ export interface Settings {
   /** Contextual tips for beginners in the mission panel. */
   showHints: boolean;
   /** Last selected operation. */
-  mission: 'training' | 'inspection' | 'adverse';
+  mission: 'training' | 'inspection' | 'adverse' | 'tms' | 'free';
+  /** Pilot station layout and the source shown in each panel. */
+  layout: ViewLayout;
+  panels: ViewSource[];
+  /** Tether wet weight preset. */
+  tetherBuoyancy: 'positive' | 'neutral' | 'negative';
 }
+
+export type ViewLayout = 'single' | 'dual' | 'quad';
+export type ViewSource = 'operational' | 'external' | 'tms' | 'tether' | 'sonar';
+export const VIEW_SOURCES: ViewSource[] = ['operational', 'external', 'tms', 'tether', 'sonar'];
+const DEFAULT_PANELS: ViewSource[] = ['operational', 'tether', 'tms', 'sonar'];
 
 export const DEFAULT_SETTINGS: Settings = {
   graphics: 'medium',
@@ -141,6 +173,9 @@ export const DEFAULT_SETTINGS: Settings = {
   showFps: false,
   showHints: true,
   mission: 'training',
+  layout: 'single',
+  panels: [...DEFAULT_PANELS],
+  tetherBuoyancy: 'neutral',
 };
 
 const STORAGE_KEY = 'rov.settings.v1';
@@ -192,7 +227,10 @@ export function sanitizeSettings(raw: unknown): Settings {
     volume: num(r.volume, 0, 1, d.volume),
     showFps: r.showFps === true,
     showHints: r.showHints !== false,
-    mission: pick(r.mission, ['training', 'inspection', 'adverse'] as const, d.mission),
+    mission: pick(r.mission, ['training', 'inspection', 'adverse', 'tms', 'free'] as const, d.mission),
+    layout: pick(r.layout, ['single', 'dual', 'quad'] as const, d.layout),
+    panels: DEFAULT_PANELS.map((def, i) => pick(Array.isArray(r.panels) ? r.panels[i] : undefined, VIEW_SOURCES, def)),
+    tetherBuoyancy: pick(r.tetherBuoyancy, ['positive', 'neutral', 'negative'] as const, d.tetherBuoyancy),
   };
 }
 

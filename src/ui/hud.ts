@@ -4,7 +4,7 @@ import type { MissionStep } from '../mission/types';
 import { JUMPER_PATH, MANIFOLD, PIPELINE_PATH, PLET, TREE, VESSEL, type V3 } from '../sim/site';
 import type { CameraMode } from '../render/cameras';
 import type { CraneState } from '../sim/simulation';
-import type { AxisCommand, AxisName } from '../input/types';
+import type { AxisCommand, AxisName, PilotAction } from '../input/types';
 import './hud.css';
 
 export interface HudData {
@@ -48,6 +48,21 @@ export interface HudData {
   saturation: number;
   /** Umbilical at maximum paid-out length (winch limit). */
   tetherAtMax: boolean;
+  tms: {
+    mode: 'manual' | 'auto';
+    state: string;
+    payout: number;
+    stored: number;
+    speed: number;
+    tension: number;
+    slack: number;
+    tensionWarn: number;
+    tensionLimit: number;
+    slackWarn: number;
+    maxLength: number;
+    onRov: boolean;
+    released: boolean;
+  };
   checklist: { lights: boolean; thrusters: boolean; camera: boolean } | null;
   holdProgress: number | null;
   range: number | null;
@@ -169,6 +184,24 @@ export class Hud {
         <circle cx="60" cy="60" r="26" stroke="#5fbf7a" stroke-width="2.5" fill="none" data-k="ring"
           stroke-dasharray="0 999" transform="rotate(-90 60 60)"/>
       </svg>
+      <div class="panel tmsp">
+        <div class="ptitle"><span>TMS · ${t('hud.tms.title')}</span><span data-k="tmsMode"></span></div>
+        <div class="tms-row">
+          <div><span class="k">${t('hud.tms.payout')}</span><b data-k="tmsPayout"></b></div>
+          <div><span class="k">${t('hud.tms.stored')}</span><b data-k="tmsStored"></b></div>
+          <div><span class="k">${t('hud.tms.speed')}</span><b data-k="tmsSpeed"></b></div>
+          <div><span class="k">${t('hud.tms.tension')}</span><b data-k="tmsTension"></b></div>
+          <div><span class="k">${t('hud.tms.slack')}</span><b data-k="tmsSlack"></b></div>
+        </div>
+        <div class="tms-bar"><i data-k="tmsLen"></i></div>
+        <div class="tms-btns">
+          <button data-tms="haul">◀ ${t('hud.tms.haul')}</button>
+          <button data-tms="stop">■ ${t('hud.tms.stop')}</button>
+          <button data-tms="pay">${t('hud.tms.pay')} ▶</button>
+          <button data-tms="auto" data-k="tmsAutoBtn"></button>
+        </div>
+        <div class="tms-warn" data-k="tmsWarn"></div>
+      </div>
       <div class="toasts" data-k="toasts"></div>
       <div class="osd" data-k="osd"></div>
       <div class="fps" data-k="fps"></div>
@@ -180,6 +213,7 @@ export class Hud {
     this.attCanvas = this.root.querySelector('[data-c="att"]')!;
     this.navCanvas = this.root.querySelector('[data-c="nav"]')!;
     this.reticle = this.root.querySelector('svg.reticle')!;
+    this.bindTmsButtons();
     for (const k of ['surge', 'sway', 'heave', 'yaw'] as const) {
       const box = document.createElement('div');
       box.className = 'cmd';
@@ -191,6 +225,40 @@ export class Hud {
 
   show(v: boolean): void {
     this.root.hidden = !v;
+    if (!v) this.releaseTmsButtons();
+  }
+
+  /** Hold-to-run state of the on-screen winch buttons. */
+  readonly tmsHeld = { pay: false, haul: false };
+  onTmsAction: (a: PilotAction) => void = () => {};
+
+  releaseTmsButtons(): void {
+    this.tmsHeld.pay = this.tmsHeld.haul = false;
+    this.root.querySelectorAll('[data-tms]').forEach((b) => b.classList.remove('on'));
+  }
+
+  private bindTmsButtons(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tms]').forEach((b) => {
+      const k = b.dataset.tms!;
+      if (k === 'pay' || k === 'haul') {
+        const down = (e: PointerEvent) => {
+          e.preventDefault();
+          b.setPointerCapture(e.pointerId);
+          this.tmsHeld[k] = true;
+          b.classList.add('on');
+        };
+        const up = () => {
+          this.tmsHeld[k] = false;
+          b.classList.remove('on');
+        };
+        b.addEventListener('pointerdown', down);
+        b.addEventListener('pointerup', up);
+        b.addEventListener('pointercancel', up);
+        b.addEventListener('lostpointercapture', up);
+      } else {
+        b.addEventListener('click', () => this.onTmsAction(k === 'stop' ? 'tetherStop' : 'tmsAuto'));
+      }
+    });
   }
 
   /** HUD density: full instrumentation, compact (no thrust/nav detail) or minimal (video overlay only). */
@@ -251,7 +319,7 @@ export class Hud {
     const e = this.el;
     e.clock.textContent = new Date().toLocaleTimeString('pt-BR', { hour12: false });
     e.mode.textContent = t(`hud.mode.${d.mode}`);
-    e.camera.textContent = `${t(d.camera === 'operational' ? 'hud.cam.op' : 'hud.cam.ext')} · ${t('hud.tilt')} ${fmt(d.tilt, 0)}°`;
+    e.camera.textContent = `${t('view.' + d.camera)} · ${t('hud.tilt')} ${fmt(d.tilt, 0)}°`;
     e.lights.textContent = d.lightsOn ? `${Math.round(d.lightLevel * 100)} %` : t('hud.off');
     e.lights.className = `v ${d.lightsOn ? 'ok' : 'off'}`;
     if (d.dvl) {
@@ -282,6 +350,26 @@ export class Hud {
     e.fine.textContent = d.fine ? t('hud.fine') : '';
     e.fine.style.color = COLORS.accent;
     e.limit.textContent = d.saturation < 0.95 ? t('hud.limit') : '';
+    // TMS instrumentation (all values from the simulated winch and tether).
+    const tm = d.tms;
+    e.tmsMode.textContent = `${t('hud.tms.mode.' + tm.mode)} · ${t('hud.tms.state.' + tm.state)}`;
+    e.tmsPayout.textContent = `${tm.payout.toFixed(1)} m`;
+    e.tmsStored.textContent = `${tm.stored.toFixed(0)} m`;
+    e.tmsSpeed.textContent = `${tm.speed >= 0 ? '+' : ''}${tm.speed.toFixed(2)} m/s`;
+    e.tmsTension.textContent = `${(tm.tension / 1000).toFixed(2)} kN`;
+    e.tmsTension.className = tm.tension > tm.tensionLimit ? 'alarm' : tm.tension > tm.tensionWarn ? 'warn' : '';
+    e.tmsSlack.textContent = `${tm.slack.toFixed(1)} m`;
+    e.tmsSlack.className = tm.slack > tm.slackWarn ? 'warn' : '';
+    e.tmsLen.style.width = `${(tm.payout / tm.maxLength) * 100}%`;
+    e.tmsAutoBtn.textContent = tm.mode === 'auto' ? t('hud.tms.toManual') : t('hud.tms.toAuto');
+    this.root.querySelector('[data-tms="pay"]')!.classList.toggle('act', tm.state === 'pay');
+    this.root.querySelector('[data-tms="haul"]')!.classList.toggle('act', tm.state === 'haul');
+    const warns: string[] = [];
+    if (tm.tension > tm.tensionWarn) warns.push(t('hud.tms.warnTension'));
+    if (tm.slack > tm.slackWarn) warns.push(t('hud.tms.warnSlack'));
+    if (tm.onRov) warns.push(t('hud.tms.warnOnRov'));
+    if (['limitMax', 'limitMin', 'tensionTrip', 'slip'].includes(tm.state)) warns.push(t('hud.tms.state.' + tm.state));
+    e.tmsWarn.textContent = warns.join(' · ');
     e.limit.style.color = COLORS.warn;
     if (d.tetherAtMax) {
       e.tether.textContent += ` · ${t('hud.tetherMax')}`;

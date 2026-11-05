@@ -45,7 +45,18 @@ export type PilotAction =
   | 'help'
   | 'camTiltCenter'
   | 'fineControl'
-  | 'toggleHud';
+  | 'toggleHud'
+  | 'tetherPay'
+  | 'tetherHaul'
+  | 'tetherStop'
+  | 'tmsAuto'
+  | 'camOp'
+  | 'camExt'
+  | 'camTms'
+  | 'camTether'
+  | 'layoutCycle'
+  | 'zoomIn'
+  | 'zoomOut';
 
 /**
  * Contract for an input device. `poll` is called once per rendered frame and

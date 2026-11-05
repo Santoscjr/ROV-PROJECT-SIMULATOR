@@ -542,3 +542,133 @@
   display: block;
   opacity: 0.85;
 }
+
+/* v3: TMS panel */
+.hud .tmsp {
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  width: min(460px, 40vw);
+  padding: 0 0 8px;
+  pointer-events: auto;
+}
+.hud .tms-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  padding: 6px 10px 0;
+  font-size: 12px;
+}
+.hud .tms-row .k {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.hud .tms-row b {
+  font-weight: 500;
+}
+.hud .tms-row b.warn {
+  color: var(--warn);
+}
+.hud .tms-row b.alarm {
+  color: var(--alarm);
+}
+.hud .tms-bar {
+  margin: 6px 10px 0;
+  height: 4px;
+  background: #18232c;
+}
+.hud .tms-bar i {
+  display: block;
+  height: 100%;
+  background: var(--data);
+}
+.hud .tms-btns {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+.hud .tms-btns button {
+  flex: 1;
+  padding: 5px 6px;
+  font: 600 11px var(--mono);
+  user-select: none;
+  touch-action: none;
+}
+.hud .tms-btns button.on,
+.hud .tms-btns button.act {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #2a2112;
+}
+.hud .tms-warn {
+  padding: 4px 10px 0;
+  font-size: 11px;
+  color: var(--warn);
+  min-height: 14px;
+}
+.hud[data-density='compact'] .tmsp .tms-row {
+  grid-template-columns: repeat(3, 1fr);
+}
+.hud[data-density='minimal'] .tmsp {
+  display: none;
+}
+.hud .osd {
+  bottom: 6px;
+}
+/* Station panels */
+.station {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+}
+.station[hidden] {
+  display: none;
+}
+.st-panel {
+  position: absolute;
+  border: 1px solid rgba(52, 73, 90, 0.9);
+  box-sizing: border-box;
+}
+.st-panel[hidden] {
+  display: none;
+}
+.st-head {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font: 600 11px var(--mono);
+  color: var(--muted);
+  pointer-events: auto;
+}
+.st-head select {
+  font-size: 11px;
+  padding: 2px 4px;
+  background: rgba(14, 22, 29, 0.85);
+}
+.st-idx {
+  color: var(--accent);
+}
+.st-host {
+  position: absolute;
+  inset: 0 0 22px 0;
+}
+.sonar-view {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.hud[data-layout='dual'] .reticle,
+.hud[data-layout='quad'] .reticle,
+.hud[data-layout='quad'] .thrust,
+.hud[data-layout='quad'] .attitude,
+.hud[data-layout='quad'] .depth {
+  display: none;
+}

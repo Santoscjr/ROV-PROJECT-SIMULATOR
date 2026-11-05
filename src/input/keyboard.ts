@@ -18,6 +18,13 @@ const ACTIONS: PilotAction[] = [
   'pause',
   'help',
   'toggleHud',
+  'tetherStop',
+  'tmsAuto',
+  'camOp',
+  'camExt',
+  'camTms',
+  'camTether',
+  'layoutCycle',
 ];
 
 export interface KeySource {

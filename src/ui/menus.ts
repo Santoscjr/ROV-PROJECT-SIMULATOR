@@ -301,6 +301,10 @@ export class Menus {
               <div class="field"><label for="s-fps">${t('settings.fps')}</label><input id="s-fps" type="checkbox" data-s="showFps"></div>
               <div class="field"><label for="s-vol">${t('settings.volume')}</label><span class="ctl"><input id="s-vol" type="range" min="0" max="1" step="0.05" data-s="volume"><output data-o="volume"></output></span></div>
               <div class="field"><label for="s-hints">${t('settings.hints')}</label><input id="s-hints" type="checkbox" data-s="showHints"></div>
+              <h3 style="margin-top:18px">${t('settings.station')}</h3>
+              <div class="field"><label for="s-layout">${t('settings.layout.views')}</label>
+                <select id="s-layout" data-s="layout">${['single', 'dual', 'quad'].map((l) => `<option value="${l}">${t('msg.layout.' + l)}</option>`).join('')}</select></div>
+              <p class="muted small">${t('settings.stationNote')}</p>
             </div>
             <div>
               <h3>${t('settings.camera')}</h3>
@@ -347,6 +351,9 @@ export class Menus {
                 <select data-s="${key}">${options.map((o) => `<option value="${o}">${t(`settings.${key}.${o}`)}</option>`).join('')}</select></div>`,
               ).join('')}
               <p class="muted small">${t('settings.condNote')}</p>
+              <h3 style="margin-top:18px">${t('settings.tether')}</h3>
+              <div class="field"><label for="s-tb">${t('settings.tetherBuoyancy')}</label>
+                <select id="s-tb" data-s="tetherBuoyancy">${['positive', 'neutral', 'negative'].map((b) => `<option value="${b}">${t('settings.tetherBuoyancy.' + b)}</option>`).join('')}</select></div>
             </div>
             <div>
               <h3>${t('settings.condWhat')}</h3>
