@@ -497,6 +497,16 @@ export class App {
         this.hud.toast(t('msg.layout.' + next));
         break;
       }
+      case 'tmsRecover': {
+        // Free mode only (missions drive launch/recovery themselves).
+        if (sim.missionDef.id !== 'free') {
+          this.hud.toast(t('msg.recover.missionOnly'), 'warn');
+          break;
+        }
+        const r = sim.toggleAssembly();
+        this.hud.toast(t(r ? 'msg.recover.' + r : 'msg.recover.dockFirst'), r ? 'ok' : 'warn', 4000);
+        break;
+      }
       case 'tmsAuto':
         sim.tms.reset(sim.tms.payout, sim.tms.mode === 'auto' ? 'manual' : 'auto');
         this.tmsLatch = { pay: false, haul: false };

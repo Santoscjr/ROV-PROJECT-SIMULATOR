@@ -13,6 +13,22 @@ import { TOPHAT, TopHat, type LarsState } from './topHat';
 import { zeroAxes, type AxisCommand } from '../input/types';
 
 /** Legacy view of the launch/recovery state (HUD, tests). */
+/** Minimum altitude of the latched ROV skids above the seabed when the Top-Hat stops (m). */
+export const TMS_MIN_ALTITUDE = 6;
+/** Shallowest operating depth of the Top-Hat (m). */
+export const TMS_MIN_DEPTH = 15;
+/** Distance from the Top-Hat centre down to the latched ROV's skids (m). */
+const TMS_STACK = TOPHAT.dockDrop + 1.0;
+
+/**
+ * Top-Hat operating depth for a requested depth: never deeper than the seabed
+ * under the launch point minus the latched ROV and a safe altitude.
+ */
+export function safeTmsDepth(requested: number, seabedDepth = -terrainHeight(LAUNCH_POINT.x, LAUNCH_POINT.z)): number {
+  const max = Math.max(TMS_MIN_DEPTH, seabedDepth - TMS_STACK - TMS_MIN_ALTITUDE);
+  return Math.min(max, Math.max(TMS_MIN_DEPTH, requested));
+}
+
 export type CraneState = 'hanging' | 'lowering' | 'docked' | 'released' | 'lifting' | 'onDeck';
 const CRANE_OF: Record<LarsState, CraneState> = { deck: 'hanging', lowering: 'lowering', atDepth: 'docked', released: 'released', raising: 'lifting', onDeck: 'onDeck' };
 
@@ -114,7 +130,7 @@ export class Simulation {
     // The ROV always starts latched under the Top-Hat: on deck (full launch) or at depth.
     const heading = def.start === 'crane' ? 0 : def.start.heading;
     this.lars.yaw = ((90 - heading) * Math.PI) / 180;
-    this.lars.reset(def.start === 'crane' ? 'deck' : 'atDepth', def.tms?.depth ?? this.tmsDepth);
+    this.lars.reset(def.start === 'crane' ? 'deck' : 'atDepth', safeTmsDepth(def.tms?.depth ?? this.tmsDepth));
     this.rov.reset(this.lars.dockPosition(), this.lars.yaw);
     this.rov.kinematic = true;
     this.rov.kinematicYaw = this.lars.yaw;
@@ -128,6 +144,40 @@ export class Simulation {
     this.tether.reset(this.tmsExit, this.attachWorld());
     this.tether.enabled = false;
     this.controller.reset();
+    if (def.start !== 'crane' && def.start.released) this.startReleasedAt(def.start.position, this.lars.yaw);
+  }
+
+  /**
+   * Subsea start already released: the vehicle is free at `pos` and the winch has
+   * paid out the tether a pilot would have used to get there (chord + working slack).
+   */
+  private startReleasedAt(pos: { x: number; y: number; z: number }, yaw: number): void {
+    if (!this.lars.release()) return;
+    this.rov.kinematic = false;
+    this.rov.reset(new Vector3(pos.x, pos.y, pos.z), yaw);
+    this.latchRigid = false;
+    const chord = this.tmsExit.distanceTo(this.rov.position);
+    const c = this.tms.config;
+    this.tms.reset(Math.min(c.maxLength, chord * (1 + c.autoSlackFraction) + c.autoSlack), this.tms.mode);
+    this.tether.payout = this.tms.payout;
+    this.tether.reset(this.tmsExit, this.attachWorld());
+    this.tether.enabled = true;
+    this.controller.reset();
+  }
+
+  /**
+   * Free mode: recover the latched assembly to the deck, or lower it again from
+   * the deck. Returns the action taken (null if the ROV must dock first).
+   */
+  toggleAssembly(): 'raising' | 'lowering' | null {
+    const lars = this.lars;
+    if (lars.state === 'atDepth') return lars.startRaise() ? 'raising' : null;
+    if (lars.state === 'onDeck' || lars.state === 'deck') {
+      lars.depth = safeTmsDepth(this.tmsDepth);
+      lars.state = 'deck';
+      return lars.startLowering() ? 'lowering' : null;
+    }
+    return null;
   }
 
   setMode(mode: PilotMode): boolean {

@@ -125,8 +125,12 @@ export interface MissionStep {
 export type StartMode =
   /** On the crane: pre-dive checklist, launch, descent. */
   | 'crane'
-  /** Already in the water, released, at a given position/heading. */
-  | { position: V3; heading: number; lights: boolean };
+  /**
+   * Subsea start. Default: latched under the Top-Hat at the operating depth
+   * (release with Enter). `released`: the vehicle starts free at `position`
+   * with the tether already paid out from the Top-Hat (tasks placed on the site).
+   */
+  | { position: V3; heading: number; lights: boolean; released?: boolean };
 
 /**
  * Common interface of every operation. The simulator, HUD and report only
@@ -178,6 +182,7 @@ export interface MissionDefinition {
   forcedConditions?: Partial<ConditionChoice>;
   start: StartMode;
   /** Initial TMS state (default: AUTO with working slack). */
+  /** `depth`: requested Top-Hat depth (default: the operator's setting); always clamped to the seabed. */
   tms?: { mode: 'manual' | 'auto'; payout?: number; depth?: number };
   /** Default pilot mode suggested for this mission (pilot's setting wins if set explicitly). */
   create(): OperationMission;

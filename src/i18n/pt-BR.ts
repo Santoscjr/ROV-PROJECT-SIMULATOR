@@ -535,4 +535,8 @@ export const ptBR: Record<string, string> = {
   'settings.lighting.observer.assisted': 'Assistida (luz e exposição de observação)',
   'settings.lighting.tetherAssist': 'Realce de visibilidade do tether (assistido)',
   'settings.lightingNote': 'Multiplicadores das luminárias simuladas. O modo assistido da câmera externa adiciona uma luz de observação não física apenas nessa visão; as câmeras operacionais não são afetadas. O realce do tether é um auxílio visual opcional (não altera diâmetro nem física). A turbidez continua definida pelas condições ambientais.',
+  'msg.recover.raising': 'Recolhendo conjunto ROV + Top-Hat para o convés (O)',
+  'msg.recover.lowering': 'Descendo conjunto ROV + Top-Hat até a profundidade de operação (O)',
+  'msg.recover.dockFirst': 'Acople o ROV ao Top-Hat antes de recolher (recolha o tether e aproxime-se por baixo)',
+  'msg.recover.missionOnly': 'Recolhimento manual do conjunto disponível apenas na pilotagem livre',
 };

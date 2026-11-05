@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { TaskMission, type Task } from '../src/mission/taskMission';
-import { MISSIONS, missionById, trainingTasks, adverseTasks } from '../src/mission/catalog';
+import { MISSIONS, missionById, trainingTasks, adverseTasks, TRAINING_START, ADVERSE_START } from '../src/mission/catalog';
 import type { MissionInput } from '../src/mission/types';
 import { resolveConditions, visibilityRange, DEFAULT_CONDITIONS } from '../src/sim/conditions';
 import { currentAt } from '../src/sim/ocean';
-import { Simulation } from '../src/sim/simulation';
+import { Simulation, safeTmsDepth, TMS_MIN_ALTITUDE, TMS_MIN_DEPTH } from '../src/sim/simulation';
+import { TOPHAT } from '../src/sim/topHat';
 import { terrainHeight } from '../src/sim/terrain';
-import { COLLIDERS } from '../src/sim/site';
+import { COLLIDERS, LAUNCH_POINT } from '../src/sim/site';
 import { sphereBox, sphereCapsule } from '../src/physics/collision';
 import { Vector3 } from 'three';
 
@@ -128,17 +129,71 @@ describe('mission catalog', () => {
     }
   });
 
-  it('subsea-start missions start released, with lights, at the right heading', () => {
-    // v3.1: subsea operations start latched under the Top-Hat at depth.
+  it('training/adverse start released at their site position with the tether paid out (v3.1.1)', () => {
     const sim = new Simulation('stabilize', 'training');
-    expect(sim.crane).toBe('docked');
-    expect(sim.rov.kinematic).toBe(true);
-    expect(sim.lightsOn).toBe(true);
-    expect(sim.releaseRov()).toBe(true);
     expect(sim.crane).toBe('released');
+    expect(sim.rov.kinematic).toBe(false);
+    expect(sim.lightsOn).toBe(true);
+    expect(sim.rov.position.distanceTo(new Vector3(TRAINING_START.x, TRAINING_START.y, TRAINING_START.z))).toBeLessThan(0.01);
     expect(Math.min(sim.rov.heading, 360 - sim.rov.heading)).toBeLessThan(1);
+    // Tether covers the straight distance to the Top-Hat plus working slack.
+    expect(sim.tms.payout).toBeGreaterThan(sim.tmsExit.distanceTo(sim.rov.position));
+    // T5 (depth task) is relative to the real start depth again: 3 m below it.
+    const t5 = trainingTasks().find((t) => t.id === 'T5') as { depth: number };
+    expect(t5.depth - sim.rov.depth).toBeCloseTo(3, 0);
+    // Stable: a few seconds without commands keep the vehicle near its start, tether taut-free.
+    for (let i = 0; i < 40; i++) sim.advance(0.25);
+    expect(sim.rov.position.distanceTo(new Vector3(TRAINING_START.x, TRAINING_START.y, TRAINING_START.z))).toBeLessThan(3);
+    expect(sim.tether.tension).toBeLessThan(sim.tms.config.tensionWarn);
     sim.reset('stabilize', missionById('adverse'));
+    expect(sim.crane).toBe('released');
     expect(Math.abs(sim.rov.heading - 100)).toBeLessThan(1);
+    expect(sim.rov.position.distanceTo(new Vector3(ADVERSE_START.x, ADVERSE_START.y, ADVERSE_START.z))).toBeLessThan(0.01);
+  });
+
+  it('TMS training and free mode start latched under the Top-Hat at the operator depth', () => {
+    const sim = new Simulation('stabilize', 'free');
+    sim.tmsDepth = 50;
+    sim.reset('stabilize', missionById('free'));
+    expect(sim.crane).toBe('docked');
+    expect(-sim.lars.position.y).toBeCloseTo(50, 3);
+    sim.reset('stabilize', missionById('tms'));
+    expect(sim.crane).toBe('docked');
+    expect(-sim.lars.position.y).toBeCloseTo(50, 3);
+    expect(sim.releaseRov()).toBe(true);
+  });
+
+  it('Top-Hat depth never takes the latched ROV into (or too close to) the seabed', () => {
+    const seabed = -terrainHeight(LAUNCH_POINT.x, LAUNCH_POINT.z);
+    expect(safeTmsDepth(50)).toBe(50);
+    const deepest = safeTmsDepth(10_000);
+    expect(deepest).toBeLessThan(seabed);
+    expect(seabed - (deepest + TOPHAT.dockDrop + 1)).toBeGreaterThanOrEqual(TMS_MIN_ALTITUDE - 1e-9);
+    expect(safeTmsDepth(-5)).toBe(TMS_MIN_DEPTH);
+    // Shallow seabed: still never below it.
+    expect(safeTmsDepth(100, 40)).toBeLessThanOrEqual(40 - TMS_MIN_ALTITUDE - TOPHAT.dockDrop - 1 + 1e-9);
+    // Real lowering with an absurd setting stops above the seabed (no indefinite descent).
+    const sim = new Simulation('stabilize', 'inspection');
+    sim.tmsDepth = 500;
+    sim.reset('stabilize', missionById('inspection'));
+    sim.lars.startLowering();
+    for (let i = 0; i < 2400; i++) sim.advance(0.25);
+    expect(sim.lars.state).toBe('atDepth');
+    const rovBottom = -sim.rov.position.y + 1;
+    expect(rovBottom).toBeLessThan(seabed - TMS_MIN_ALTITUDE + 0.5);
+  });
+
+  it('free mode: O recovers the latched assembly to the deck and lowers it again', () => {
+    const sim = new Simulation('stabilize', 'free');
+    sim.reset('stabilize', missionById('free'));
+    expect(sim.toggleAssembly()).toBe('raising');
+    for (let i = 0; i < 1200 && sim.lars.state !== 'onDeck'; i++) sim.advance(0.25);
+    expect(sim.lars.state).toBe('onDeck');
+    expect(sim.toggleAssembly()).toBe('lowering');
+    // Released ROV must dock first.
+    sim.reset('stabilize', missionById('free'));
+    sim.releaseRov();
+    expect(sim.toggleAssembly()).toBeNull();
   });
 
   it('missions impose their conditions over the pilot choice', () => {

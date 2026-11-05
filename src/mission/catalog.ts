@@ -189,8 +189,8 @@ export const MISSIONS: MissionDefinition[] = [
     descKey: 'op.training.desc',
     difficulty: 1,
     forcedConditions: { current: 'low', visibility: 'clear' },
-    start: { position: TRAINING_START, heading: 0, lights: true },
-    tms: { mode: 'auto', depth: 95 },
+    start: { position: TRAINING_START, heading: 0, lights: true, released: true },
+    tms: { mode: 'auto' },
     create: () => new TaskMission({ id: 'training', tasks: trainingTasks(), stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0.3 }),
   },
   {
@@ -221,8 +221,8 @@ export const MISSIONS: MissionDefinition[] = [
     descKey: 'op.adverse.desc',
     difficulty: 3,
     forcedConditions: { current: 'strong', visibility: 'turbid', light: 'overcast' },
-    start: { position: ADVERSE_START, heading: 100, lights: true },
-    tms: { mode: 'auto', depth: 92 },
+    start: { position: ADVERSE_START, heading: 100, lights: true, released: true },
+    tms: { mode: 'auto' },
     create: () => new TaskMission({ id: 'adverse', tasks: adverseTasks(), stableSpeed: 0.18, stableRate: 5, minLightForRecord: 0.4 }),
   },
 ];
@@ -235,7 +235,7 @@ MISSIONS.push(
     difficulty: 2,
     forcedConditions: { current: 'low', visibility: 'clear' },
     start: { position: TMS_START, heading: 0, lights: true },
-    tms: { mode: 'auto', depth: 80 },
+    tms: { mode: 'auto' },
     create: () => new TaskMission({ id: 'tms', tasks: tmsTrainingTasks(), stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0, monitor: tmsMonitor }),
   },
   {

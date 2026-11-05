@@ -72,11 +72,8 @@ await page.screenshot({ path: `${out}/01-menu.png` });
 await page.locator('[data-op="training"]').click();
 await page.getByRole('button', { name: 'Iniciar operação' }).click();
 await sleep(800);
-const tr0 = await page.evaluate(() => ({ crane: window.__ROV__.sim.crane, id: window.__ROV__.sim.mission.id, idx: window.__ROV__.sim.mission.index }));
-check(tr0.crane === 'docked' && tr0.id === 'training' && tr0.idx === 0, 'training starts latched under the Top-Hat at task 1');
-await page.keyboard.press('Enter');
-await sleep(400);
-check((await page.evaluate(() => window.__ROV__.sim.crane)) === 'released', 'Enter releases the ROV from the Top-Hat');
+const tr0 = await page.evaluate(() => ({ crane: window.__ROV__.sim.crane, id: window.__ROV__.sim.mission.id, idx: window.__ROV__.sim.mission.index, payout: window.__ROV__.sim.tms.payout }));
+check(tr0.crane === 'released' && tr0.id === 'training' && tr0.idx === 0 && tr0.payout > 20, 'training starts released on site at task 1, tether paid out from the Top-Hat');
 await page.screenshot({ path: `${out}/01b-training.png` });
 // Task 1 (surge 8 m): fast-forward the simulation with a forward command.
 await page.evaluate(() => {
@@ -164,7 +161,7 @@ await page.evaluate(() => {
   const dh = Math.hypot(ip.target.x - p.x, ip.target.z - p.z) - 1.3;
   window.__ROV__.app.rig.tilt = (Math.atan2(dy, dh) * 180) / Math.PI;
 });
-await page.keyboard.press('KeyC'); // operational camera
+await page.keyboard.press('Digit7'); // operational camera on the active panel (sources persist across starts)
 await sleep(1500);
 await page.screenshot({ path: `${out}/04-inspection-op.png` });
 const ph = await state();
