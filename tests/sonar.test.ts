@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import { Sonar } from '../src/render/sonar';
-import type { Collider } from '../src/sim/site';
+import { COLLIDERS, MANIFOLD, type Collider } from '../src/sim/site';
+import { terrainHeight } from '../src/sim/terrain';
 
 const box = (x: number, y: number, z: number, hx = 2, hy = 1.5, hz = 1): Collider => ({
   kind: 'box',
@@ -126,5 +127,84 @@ describe('Sonar scan', () => {
     const avg = (performance.now() - t0) / frames;
     console.log(`sonar medium: avg ${avg.toFixed(2)} ms/frame, worst ${worst.toFixed(2)} ms`);
     expect(avg).toBeLessThan(6);
+  });
+
+  it('real site: manifold echoes at its true bearing/range; high-quality scan stays cheap', () => {
+    // 25 m south-west of the manifold, 6 m above it, looking at it.
+    const m = MANIFOLD.position;
+    const pos = new Vector3(m.x - 15, m.y + 6, m.z + 20);
+    const hdg = (Math.atan2(m.x - pos.x, -(m.z - pos.z)) * 180) / Math.PI;
+    const s = new Sonar(terrainHeight, COLLIDERS);
+    s.setQuality('high');
+    s.setRange(40);
+    let guard = 0;
+    const n = s.pingCount;
+    while (s.pingCount < n + 2 && guard++ < 1000) s.scan(pos, hdg, s.beams);
+    const p = s.lastPing()!;
+    const mid = Math.floor(p.beams / 2);
+    const row = beamRow(s, mid);
+    let pk = 0;
+    row.forEach((v, i) => {
+      if (v > row[pk]) pk = i;
+    });
+    const dist = Math.hypot(m.x - pos.x, m.z - pos.z);
+    // Nearest face is within the manifold half-diagonal of its centre.
+    expect(rangeOf(s, pk)).toBeGreaterThan(dist - 7);
+    expect(rangeOf(s, pk)).toBeLessThan(dist + 1);
+    expect(row[pk]).toBeGreaterThan(0.5);
+    // Cost per frame at the default cadence (beams / 14 per frame).
+    const t0 = performance.now();
+    const frames = 140;
+    for (let i = 0; i < frames; i++) s.scan(pos, hdg + (i % 7) * 3);
+    const avg = (performance.now() - t0) / frames;
+    console.log(`sonar high @site: avg ${avg.toFixed(2)} ms/frame`);
+    expect(avg).toBeLessThan(6);
+  });
+
+  it('draw(): header fits and fan stays inside the canvas from 160x100 to 1920x1080', () => {
+    // Minimal Canvas2D mock: monospace text is 0.6 em per char.
+    const texts: { t: string; x: number; y: number; font: number; align: string }[] = [];
+    let font = 10;
+    let align = 'left';
+    const ctx: Record<string, unknown> = {
+      measureText: (t: string) => ({ width: t.length * font * 0.6 }),
+      fillText: (t: string, x: number, y: number) => texts.push({ t, x, y, font, align }),
+      createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+    };
+    const ctxProxy = new Proxy(ctx, {
+      get: (o, k: string) => (k in o ? o[k] : () => undefined),
+      set: (o, k: string, v) => {
+        if (k === 'font') font = parseFloat(String(v));
+        if (k === 'textAlign') align = String(v);
+        o[k] = v;
+        return true;
+      },
+    });
+    const g = globalThis as Record<string, unknown>;
+    const prevDoc = g.document;
+    g.document = { createElement: () => ({ width: 0, height: 0, className: '', getContext: () => ctxProxy }) };
+    try {
+      const s = new Sonar(seabed, ahead);
+      ping(s, pos);
+      for (const [w, h] of [[160, 100], [320, 200], [480, 270], [800, 150], [1280, 720], [1920, 1080]]) {
+        texts.length = 0;
+        s.draw(w, h);
+        const header = texts[texts.length - 1];
+        expect(header.t).toMatch(/R(NG )?\d+/);
+        expect(header.x + header.t.length * header.font * 0.6).toBeLessThanOrEqual(w);
+        expect(header.font).toBeGreaterThanOrEqual(7);
+        for (const t of texts) {
+          const half = t.align === 'center' ? (t.t.length * t.font * 0.6) / 2 : 0;
+          const x0 = t.x - half;
+          const x1 = t.align === 'center' ? t.x + half : t.x + t.t.length * t.font * 0.6;
+          expect(x0).toBeGreaterThanOrEqual(-1);
+          expect(x1).toBeLessThanOrEqual(w + 1);
+          expect(t.y).toBeGreaterThanOrEqual(0);
+          expect(t.y).toBeLessThanOrEqual(h);
+        }
+      }
+    } finally {
+      g.document = prevDoc;
+    }
   });
 });
