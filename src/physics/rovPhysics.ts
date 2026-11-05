@@ -98,6 +98,14 @@ export class RovPhysics {
   kinematic = false;
   readonly kinematicTarget = new Vector3();
   kinematicYaw = 0;
+  /**
+   * Max speed (m/s) of the kinematic approach towards the target, on top of
+   * the target's own motion (latch pull-in: no jump, the vehicle is drawn in
+   * smoothly while still following a moving TMS).
+   */
+  kinematicMaxSpeed = 0.3;
+  private readonly kinematicPrevTarget = new Vector3();
+  private kinematicPrevValid = false;
   thrustersEnabled = true;
   /** Number of contacts in the last step (for UI / audio). */
   contactCount = 0;
@@ -139,6 +147,7 @@ export class RovPhysics {
     this.slideSpeed = 0;
     this.impactKick = 0;
     this.tetherForce.set(0, 0, 0);
+    this.kinematicPrevValid = false;
   }
 
   /** Drain impact events produced since the last call. */
@@ -164,6 +173,7 @@ export class RovPhysics {
       this.updateSeabedDisturbance(dt, env);
       return;
     }
+    this.kinematicPrevValid = false;
 
     const p = this.params;
     const q = this.orientation;
@@ -354,9 +364,24 @@ export class RovPhysics {
   }
 
   private stepKinematic(dt: number): void {
-    // Smoothly follow the crane hook; keep the vehicle level.
+    // Smoothly follow the crane hook / TMS; keep the vehicle level.
+    // 1) carry along with the target's own motion (a target jump > 1 m in one
+    //    step is a re-placement, not a motion: not carried);
+    // 2) close the remaining gap exponentially (8 1/s), rate-limited to
+    //    kinematicMaxSpeed so a capture far from the dock pose is a smooth pull-in.
     const prev = _tmp.copy(this.position);
-    this.position.lerp(this.kinematicTarget, 1 - Math.exp(-dt * 8));
+    const target = this.kinematicTarget;
+    if (this.kinematicPrevValid) {
+      _tmp2.subVectors(target, this.kinematicPrevTarget);
+      if (_tmp2.lengthSq() < 1) this.position.add(_tmp2);
+    }
+    this.kinematicPrevTarget.copy(target);
+    this.kinematicPrevValid = true;
+    _tmp2.subVectors(target, this.position).multiplyScalar(1 - Math.exp(-dt * 8));
+    const maxStep = this.kinematicMaxSpeed * dt;
+    const len = _tmp2.length();
+    if (len > maxStep) _tmp2.multiplyScalar(maxStep / len);
+    this.position.add(_tmp2);
     this.kinematicVel.subVectors(this.position, prev).divideScalar(dt);
     _dq.setFromAxisAngle(_tmp2.set(0, 1, 0), this.kinematicYaw);
     this.orientation.slerp(_dq, 1 - Math.exp(-dt * 2));

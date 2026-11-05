@@ -114,9 +114,18 @@ export class TmsWinch {
       target = this.command === 'pay' ? c.payRate : this.command === 'haul' ? -c.haulRate : 0;
       state = this.command;
     }
-    // Protections.
-    if (target < 0 && tension > c.tensionLimit) {
+    // Protections. Hauling is torque-limited (hydraulic relief): between the
+    // warning and the limit the available haul speed falls linearly to zero,
+    // and above the limit the drive stalls at once (it cannot keep hauling
+    // against the overload while ramping down — that overshot the limit by
+    // several kN in the simulation).
+    const wantsHaul = target < 0;
+    if (wantsHaul && tension > c.tensionWarn) {
+      target *= Math.max(0, Math.min(1, (c.tensionLimit - tension) / Math.max(1, c.tensionLimit - c.tensionWarn)));
+    }
+    if (tension > c.tensionLimit && (wantsHaul || this.speed < 0)) {
       target = 0;
+      if (this.speed < 0) this.speed = 0;
       state = 'tensionTrip';
     }
     // Ramp the drive.

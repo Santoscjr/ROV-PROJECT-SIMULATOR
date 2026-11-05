@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
-import { Simulation } from '../src/sim/simulation';
+import { Simulation, safeTmsDepth } from '../src/sim/simulation';
 import { missionById } from '../src/mission/catalog';
 import { TOPHAT } from '../src/sim/topHat';
 
@@ -100,6 +100,61 @@ describe('Top-Hat launch & recovery', () => {
     expect(m.stage).toBe('recovery');
     sim.advance(0.1);
     expect(sim.lars.state).toBe('raising');
+  });
+});
+
+describe('Top-Hat state machine guards (v3.2)', () => {
+  it('refuses invalid transitions in every state', () => {
+    const sim = new Simulation('stabilize', 'inspection');
+    sim.tmsDepth = 40;
+    sim.reset('stabilize', missionById('inspection'));
+    const lars = sim.lars;
+    // deck: no release, no raise, no latch.
+    expect(sim.releaseRov()).toBe(false);
+    expect(sim.raiseAssembly()).toBe(false);
+    expect(lars.latch()).toBe(false);
+    expect(lars.startLowering()).toBe(true);
+    // lowering: nothing else allowed, not even lowering again.
+    expect(lars.startLowering()).toBe(false);
+    expect(sim.releaseRov()).toBe(false);
+    expect(sim.raiseAssembly()).toBe(false);
+    expect(lars.latch()).toBe(false);
+    for (let i = 0; i < 4 * 80 && lars.state === 'lowering'; i++) sim.advance(0.25);
+    expect(lars.state).toBe('atDepth');
+    expect(lars.latch()).toBe(false);
+    expect(lars.startLowering()).toBe(false);
+    expect(sim.releaseRov()).toBe(true);
+    // released: no raise (ROV not on board), no second release, no lowering.
+    expect(sim.raiseAssembly()).toBe(false);
+    expect(sim.releaseRov()).toBe(false);
+    expect(lars.startLowering()).toBe(false);
+    expect(sim.toggleAssembly()).toBeNull();
+    expect(lars.state).toBe('released');
+  });
+
+  it('lowering never goes below the safe depth, even if an unsafe depth was set', () => {
+    const sim = new Simulation('stabilize', 'inspection');
+    sim.reset('stabilize', missionById('inspection'));
+    sim.lars.depth = 5000; // e.g. a stale value; the seabed is much shallower
+    sim.lars.startLowering();
+    let deepest = 0;
+    for (let i = 0; i < 4 * 400 && sim.lars.state === 'lowering'; i++) {
+      sim.advance(0.25);
+      deepest = Math.max(deepest, -sim.lars.position.y);
+    }
+    expect(sim.lars.state).toBe('atDepth');
+    expect(deepest).toBeLessThanOrEqual(safeTmsDepth(5000) + 1e-6);
+    expect(sim.rov.altitude(sim.env)).toBeGreaterThan(5);
+  });
+
+  it('the docked ROV does not overlap the TMS contact box (no push-out at release)', () => {
+    const sim = new Simulation('stabilize', 'free');
+    sim.advance(0.5);
+    const box = sim.lars.collider;
+    const rovTop = sim.rov.position.y + 0.82; // hull contact spheres
+    expect(box.center.y - box.half.y).toBeGreaterThan(rovTop);
+    // The receptacle is still inside the TMS frame (top of the latched bullet just under it).
+    expect(sim.lars.receptacleWorld(new Vector3()).y).toBeLessThan(box.center.y - box.half.y + 0.1);
   });
 });
 

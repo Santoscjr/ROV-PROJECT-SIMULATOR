@@ -72,6 +72,85 @@ describe('TMS winch', () => {
     expect(w.command).toBe('stop');
   });
 
+  it('ramps at exactly the drive acceleration and stops monotonically when the command is released', () => {
+    const w = new TmsWinch({}, 50);
+    w.reset(50, 'manual');
+    w.setCommand(true, false);
+    for (let i = 0; i < 60; i++) w.update(DT, 10, 0); // 0.5 s
+    expect(w.speed).toBeCloseTo(0.5 * w.config.accel, 6);
+    for (let i = 0; i < 240; i++) w.update(DT, 10, 0);
+    expect(w.speed).toBeCloseTo(w.config.payRate, 6);
+    w.setCommand(false, false);
+    let prev = w.speed;
+    let stopped = -1;
+    for (let i = 0; i < 300; i++) {
+      w.update(DT, 10, 0);
+      expect(w.speed).toBeLessThanOrEqual(prev + 1e-12);
+      expect(w.speed).toBeGreaterThanOrEqual(0); // no reversal
+      prev = w.speed;
+      if (stopped < 0 && w.speed === 0) stopped = (i + 1) * DT;
+    }
+    // payRate / accel = 1.5 s to a standstill.
+    expect(stopped).toBeGreaterThan(1.45);
+    expect(stopped).toBeLessThan(1.55);
+    // Haul ramps the same way, in the other direction.
+    w.setCommand(false, true);
+    for (let i = 0; i < 60; i++) w.update(DT, 10, 0);
+    expect(w.speed).toBeCloseTo(-0.5 * w.config.accel, 6);
+  });
+
+  it('haul is derated between warning and limit and stalls at once above the limit (no overshoot while ramping)', () => {
+    const w = new TmsWinch({}, 40);
+    w.reset(40, 'manual');
+    w.setCommand(false, true);
+    for (let i = 0; i < 240; i++) w.update(DT, 40, 0);
+    expect(w.speed).toBeCloseTo(-w.config.haulRate, 6);
+    // Between warn (2.5 kN) and limit (4.5 kN): half-way → half the haul speed.
+    for (let i = 0; i < 240; i++) w.update(DT, 40, 3500);
+    expect(w.speed).toBeCloseTo(-0.5 * w.config.haulRate, 3);
+    // Above the limit: stalled in the same step, haul inhibited, no cable moved in.
+    const before = w.payout;
+    w.update(DT, 40, 4600);
+    expect(w.speed).toBe(0);
+    expect(w.state).toBe('tensionTrip');
+    expect(w.payout).toBe(before);
+    // Paying out is never inhibited by tension.
+    w.setCommand(true, false);
+    for (let i = 0; i < 120; i++) w.update(DT, 40, 4600);
+    expect(w.payout).toBeGreaterThan(before + 0.3);
+  });
+
+  it('brake slip renders cable out progressively under severe overload, bounded speed, never past max length', () => {
+    const w = new TmsWinch({ maxLength: 60 }, 59);
+    w.reset(59, 'manual');
+    const p0 = w.payout;
+    w.update(DT, 59, 7500);
+    expect(w.state).toBe('slip');
+    const slow = w.payout - p0;
+    const p1 = w.payout;
+    w.update(DT, 59, 14000);
+    const fast = w.payout - p1;
+    expect(fast).toBeGreaterThan(slow); // more overload → more slip
+    expect(fast).toBeLessThanOrEqual(0.5 * DT + 1e-12); // ≤ 0.5 m/s
+    for (let i = 0; i < 1200; i++) w.update(DT, 60, 14000);
+    expect(w.payout).toBe(60);
+  });
+
+  it('AUTO converges to the slack target and hauls back in when the ROV approaches', () => {
+    const w = new TmsWinch({}, 10);
+    w.reset(10, 'auto');
+    const target = (chord: number) => chord * (1 + w.config.autoSlackFraction) + w.config.autoSlack;
+    for (let i = 0; i < 120 * 60; i++) w.update(DT, 40, 0);
+    expect(Math.abs(w.payout - target(40))).toBeLessThan(0.1);
+    expect(w.state).toBe('auto');
+    for (let i = 0; i < 120 * 60; i++) w.update(DT, 15, 0);
+    expect(Math.abs(w.payout - target(15))).toBeLessThan(0.1);
+    // Never hauls against an overload in AUTO either.
+    for (let i = 0; i < 240; i++) w.update(DT, 5, 5000);
+    expect(w.speed).toBe(0);
+    expect(w.state).toBe('tensionTrip');
+  });
+
   it('AUTO keeps a working slack relative to the distance', () => {
     const w = new TmsWinch({}, 10);
     w.reset(10, 'auto');
