@@ -31,6 +31,7 @@ type AppState = 'menu' | 'running' | 'paused' | 'report';
 
 const PIXEL_RATIO = { low: 1, medium: 1.5, high: 2 } as const;
 const MSAA = { low: 0, medium: 2, high: 4 } as const;
+const SECONDARY_SCALE = { low: 0.7, medium: 0.85, high: 1 } as const;
 
 export class App {
   private readonly renderer: WebGLRenderer;
@@ -66,7 +67,10 @@ export class App {
   private readonly tmp = new Vector3();
   private readonly camDir = new Vector3();
   /** Draw calls / triangles of the last frame (all passes). */
-  frameStats = { calls: 0, triangles: 0 };
+  frameStats = { calls: 0, triangles: 0, monitorCalls: 0, monitorTriangles: 0, secondaryScale: 1 };
+  /** Smoothed measured frame time (ms) and adaptive resolution factor of the secondary views. */
+  private frameMs = 16;
+  private secAdapt = 1;
   private markers = new MissionMarkers();
   private readonly tetherPts: Vector3[] = [];
   private tmsModel: TmsModel | null = null;
@@ -371,6 +375,11 @@ export class App {
     this.hud.toast(n > 1 ? t('msg.cameraPanel', { c: t('view.' + m), n: i + 1 }) : t('msg.camera', { c: t('view.' + m) }));
   }
 
+  /** Secondary-view resolution factor (quantised to avoid reallocating targets every frame). */
+  private secScale(): number {
+    return Math.round(this.secAdapt * 4) / 4;
+  }
+
   /** Persist camera pan/tilt/zoom (throttled; only when changed). */
   private saveCamStates(force = false): void {
     if (!force && this.time - this.camSaveT < 1) return;
@@ -549,10 +558,13 @@ export class App {
   // ---------- Frame ----------
   private frame(): void {
     const now = performance.now();
-    const dt = Math.min(0.1, (now - this.last) / 1000);
+    const realMs = now - this.last;
+    const dt = Math.min(0.1, realMs / 1000);
     this.last = now;
     this.time += dt;
-    this.fps += (1 / Math.max(dt, 1e-3) - this.fps) * 0.05;
+    // Measured (unclamped) frame rate / time.
+    this.fps += (1000 / Math.max(realMs, 1) - this.fps) * 0.05;
+    this.frameMs += (Math.min(realMs, 1000) - this.frameMs) * 0.05;
 
     const actions = this.input.poll();
     for (const a of actions) this.handleAction(a);
@@ -763,7 +775,9 @@ export class App {
         // Secondary views (shared simulation & scene; no particle overlay).
         const view = (this.secondary[i] ??= this.makeView(src));
         if (view.source !== src) view.setSource(src);
-        const sp = view.ensurePass(Math.round(vp.w * 0.75), Math.round(vp.h * 0.75));
+        // Resolution of the secondary panels follows the quality preset (parity with the main view on 'high').
+        const k = SECONDARY_SCALE[st.graphics] * this.secScale();
+        const sp = view.ensurePass(Math.round(vp.w * k), Math.round(vp.h * k));
         sp.setWater(this.pass.optics);
         view.rig.tmsMount = this.tmsModel?.cameraMount ?? null;
         view.rig.camera.aspect = r.w / r.h;
@@ -804,6 +818,7 @@ export class App {
       tmsMount: this.tmsModel?.cameraMount ?? null,
       mainPass: this.pass,
       fxFor,
+      scale: this.secScale(),
       terrainHeight,
       whiteBalance: wbFor,
       observer,
@@ -820,7 +835,14 @@ export class App {
       if (this.instr.root.parentElement !== instrHost) instrHost.appendChild(this.instr.root);
       this.instr.update(this.hud.lastData, this.hud);
     } else if (this.instr.root.parentElement) this.instr.root.remove();
-    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles };
+    // Graceful degradation: with several views, lower the secondary views' resolution
+    // (in 25 % steps) while frames are slow, and restore it when there is headroom.
+    if (running && (rects.length > 1 || this.monitor2.isOpen)) {
+      if (this.frameMs > 40) this.secAdapt = Math.max(0.5, this.secAdapt - dt * 0.1);
+      else if (this.frameMs < 24) this.secAdapt = Math.min(1, this.secAdapt + dt * 0.05);
+    }
+    const ms = this.monitor2.stats;
+    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles, monitorCalls: ms.calls, monitorTriangles: ms.triangles, secondaryScale: this.secScale() };
 
     // Audio & HUD.
     const load = levels.reduce((s, l) => s + Math.abs(l), 0) / levels.length;

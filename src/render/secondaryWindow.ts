@@ -19,6 +19,8 @@ export interface WindowFrame {
   tmsMount: Object3D | null;
   mainPass: UnderwaterPass;
   fxFor: (mode: string) => CameraFx;
+  /** Adaptive resolution factor (graceful degradation under load). */
+  scale: number;
   terrainHeight: (x: number, z: number) => number;
   whiteBalance: (depth: number) => number;
   /** Prepare scene lighting for a view (observer aid on external views only). */
@@ -52,6 +54,8 @@ export class SecondaryWindow {
   private barT = 0;
   private sonarCfg: SonarSettings | null = null;
   private readonly size = new Vector2();
+  /** Draw calls / triangles of the last monitor frame. */
+  stats = { calls: 0, triangles: 0 };
   /** Called when settings change from this window's own selectors. */
   onChange: (m: MonitorSettings) => void = () => {};
   /** Window attached / detached (keyboard forwarding). */
@@ -250,6 +254,8 @@ export class SecondaryWindow {
     const size = renderer.getSize(this.size);
     if (size.x !== W || size.y !== H) renderer.setSize(W, H, false);
     const rects = this.rects();
+    renderer.info.autoReset = false;
+    renderer.info.reset();
     renderer.setScissorTest(true);
     let instrShown = false;
     for (let i = 0; i < 2; i++) {
@@ -284,7 +290,7 @@ export class SecondaryWindow {
       const view = (this.views[i] ??= new SecondaryView(src, this.camStates));
       if (view.source !== src) view.setSource(src);
       const vp = glViewport(r, H, pr);
-      const pass = view.ensurePass(vp.w, vp.h);
+      const pass = view.ensurePass(Math.max(1, Math.round(vp.w * f.scale)), Math.max(1, Math.round(vp.h * f.scale)));
       pass.setWater(f.mainPass.optics);
       const rig = view.rig;
       rig.tmsMount = f.tmsMount;
@@ -300,6 +306,7 @@ export class SecondaryWindow {
       pass.render(renderer, f.scene, cam);
     }
     renderer.setScissorTest(false);
+    this.stats = { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles };
     if (!instrShown) this.instr?.root.remove();
   }
 
@@ -331,6 +338,7 @@ export class SecondaryWindow {
   }
 
   private releaseGpu(): void {
+    this.stats = { calls: 0, triangles: 0 };
     this.views.forEach((v, i) => {
       v?.dispose();
       this.views[i] = null;

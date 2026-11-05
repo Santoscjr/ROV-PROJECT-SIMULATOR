@@ -83,8 +83,7 @@ const setStation = (patch) => page.evaluate((p) => window.__ROV__.app.store.upda
 const shot = async (name, settle = 1800) => {
   await sleep(settle);
   await page.screenshot({ path: `${out}/${name}.png` });
-  const fps = await page.evaluate(() => window.__ROV__.app.fps);
-  console.log(`  ${name}  (software GL ~${fps.toFixed(1)} fps)`);
+  console.log(`  ${name}`);
 };
 
 for (const vis of levels) {
