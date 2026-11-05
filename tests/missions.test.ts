@@ -129,10 +129,13 @@ describe('mission catalog', () => {
   });
 
   it('subsea-start missions start released, with lights, at the right heading', () => {
+    // v3.1: subsea operations start latched under the Top-Hat at depth.
     const sim = new Simulation('stabilize', 'training');
-    expect(sim.crane).toBe('released');
-    expect(sim.rov.kinematic).toBe(false);
+    expect(sim.crane).toBe('docked');
+    expect(sim.rov.kinematic).toBe(true);
     expect(sim.lightsOn).toBe(true);
+    expect(sim.releaseRov()).toBe(true);
+    expect(sim.crane).toBe('released');
     expect(Math.min(sim.rov.heading, 360 - sim.rov.heading)).toBeLessThan(1);
     sim.reset('stabilize', missionById('adverse'));
     expect(Math.abs(sim.rov.heading - 100)).toBeLessThan(1);
@@ -155,7 +158,7 @@ describe('environmental conditions', () => {
       const sim = new Simulation('manual', 'inspection'); // inspection does not force conditions
       sim.setConditionChoice({ ...DEFAULT_CONDITIONS, current: level });
       sim.crane = 'released';
-      sim.rov.kinematic = false;
+      sim.tms.reset(300, 'manual'); // plenty of slack: measure the current, not the tether
       sim.rov.position.set(20, -90, -16);
       const p0 = sim.rov.position.clone();
       for (let i = 0; i < 60; i++) sim.advance(0.25);

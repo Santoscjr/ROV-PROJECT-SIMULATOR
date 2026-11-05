@@ -23,6 +23,10 @@ export interface MissionInput {
   /** Crane state reported by the simulator. */
   craneReleased: boolean;
   craneOnDeck: boolean;
+  /** ROV latched under the Top-Hat at depth. */
+  docked?: boolean;
+  /** Launch & recovery state. */
+  lars?: 'deck' | 'lowering' | 'atDepth' | 'released' | 'raising' | 'onDeck';
   /** TMS / tether state (from the simulation). */
   tms?: {
     mode: 'manual' | 'auto';
@@ -174,7 +178,7 @@ export interface MissionDefinition {
   forcedConditions?: Partial<ConditionChoice>;
   start: StartMode;
   /** Initial TMS state (default: AUTO with working slack). */
-  tms?: { mode: 'manual' | 'auto'; payout?: number };
+  tms?: { mode: 'manual' | 'auto'; payout?: number; depth?: number };
   /** Default pilot mode suggested for this mission (pilot's setting wins if set explicitly). */
   create(): OperationMission;
 }

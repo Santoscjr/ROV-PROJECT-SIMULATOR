@@ -73,7 +73,10 @@ await page.locator('[data-op="training"]').click();
 await page.getByRole('button', { name: 'Iniciar operação' }).click();
 await sleep(800);
 const tr0 = await page.evaluate(() => ({ crane: window.__ROV__.sim.crane, id: window.__ROV__.sim.mission.id, idx: window.__ROV__.sim.mission.index }));
-check(tr0.crane === 'released' && tr0.id === 'training' && tr0.idx === 0, 'training starts subsea at task 1');
+check(tr0.crane === 'docked' && tr0.id === 'training' && tr0.idx === 0, 'training starts latched under the Top-Hat at task 1');
+await page.keyboard.press('Enter');
+await sleep(400);
+check((await page.evaluate(() => window.__ROV__.sim.crane)) === 'released', 'Enter releases the ROV from the Top-Hat');
 await page.screenshot({ path: `${out}/01b-training.png` });
 // Task 1 (surge 8 m): fast-forward the simulation with a forward command.
 await page.evaluate(() => {
@@ -112,13 +115,16 @@ check((await state()).stage === 'launch', 'checklist complete → launch authori
 // Fast-forward the crane descent (~15 s of simulated time) by stepping the simulation directly.
 await page.evaluate(() => {
   const { sim } = window.__ROV__;
-  for (let i = 0; i < 200 && sim.crane !== 'released'; i++) {
+  for (let i = 0; i < 800 && sim.crane !== 'docked'; i++) {
     sim.advance(0.25);
     sim.updateMission(0.25, { cameraPosition: { x: 0, y: 0, z: 0 }, cameraDirection: { x: 1, y: 0, z: 0 }, cameraMode: 'external' });
   }
 });
 await sleep(500);
-check((await state()).stage === 'descent', 'released by the crane → descent');
+check((await state()).crane === 'docked', 'ROV and Top-Hat lowered together, latched at operating depth');
+await page.keyboard.press('Enter');
+await sleep(600);
+check((await state()).stage === 'descent', 'released from the Top-Hat → descent');
 await page.screenshot({ path: `${out}/03-released.png` });
 
 // Physics responds to keys progressively.
@@ -150,6 +156,9 @@ await page.evaluate(() => {
   sim.rov.angularVelocity.set(0, 0, 0);
   sim.controller.reset();
   sim.lightsOn = true;
+  // Teleport shortcut: give the tether the length the pilot would have paid out.
+  sim.tms.reset(sim.tmsExit.distanceTo(p) * 1.2 + 10, 'auto');
+  sim.tether.reset(sim.tmsExit, sim.attachWorld());
   // Aim the pan/tilt unit at the target.
   const dy = ip.target.y - (p.y - 0.18);
   const dh = Math.hypot(ip.target.x - p.x, ip.target.z - p.z) - 1.3;
@@ -178,11 +187,17 @@ await page.evaluate(() => {
   m.stats.inspections.push({ id: 'IP-03', labelKey: 'mission.ip03', time: m.time, range: 3, offAxis: 5 });
   m.pointIndex = 3;
   m.stage = 'return';
-  sim.rov.position.set(sim.launchPoint.x + 2, -8, sim.launchPoint.z + 1);
-  sim.rov.velocity.set(0, 0, 0);
+  // Fly back under the Top-Hat (test shortcut): clear first (arms capture), then align below the receptacle.
+  sim.rov.position.copy(sim.lars.dockPosition()).add({ x: 0, y: -5, z: 0, isVector3: true });
+  sim.advance(0.05);
+  sim.rov.position.copy(sim.lars.dockPosition()).add({ x: 0.1, y: -0.25, z: 0, isVector3: true });
+  const yaw = sim.lars.yaw;
+  sim.rov.orientation.set(0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2));
+  sim.rov.velocity.set(0, 0.05, 0);
+  sim.tms.reset(6, 'manual');
 });
 await sleep(1500);
-check((await state()).stage === 'recovery', 'under the crane & shallow → recovery');
+check((await state()).stage === 'recovery', 'docked to the Top-Hat → recovery ascent');
 await page.evaluate(() => {
   const { sim } = window.__ROV__;
   for (let i = 0; i < 400 && sim.crane !== 'onDeck'; i++) sim.advance(0.25);

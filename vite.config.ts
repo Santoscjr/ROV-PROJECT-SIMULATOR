@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         spacemouse: resolve(__dirname, 'spacemouse.html'),
+        monitor: resolve(__dirname, 'monitor.html'),
       },
       output: {
         manualChunks: { three: ['three'] },

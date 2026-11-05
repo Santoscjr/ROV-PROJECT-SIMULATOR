@@ -24,14 +24,14 @@ describe('station layouts', () => {
   it('layout and panel sources persist through settings sanitising', () => {
     const s = sanitizeSettings({ layout: 'quad', panels: ['operational', 'tms', 'nope', 'sonar'] });
     expect(s.layout).toBe('quad');
-    expect(s.panels).toEqual(['operational', 'tms', 'tms', 'sonar']);
+    expect(s.panels).toEqual(['operational', 'tms', 'tether', 'sonar']);
   });
 
   it('camera rig cycles through all sources', () => {
     const rig = new CameraRig(1);
     rig.setMode('operational');
     const seen = new Set<string>();
-    for (let i = 0; i < 4; i++) seen.add(rig.cycle());
+    for (let i = 0; i < CAMERA_MODES.length; i++) seen.add(rig.cycle());
     expect([...seen].sort()).toEqual([...CAMERA_MODES].sort());
   });
 });
@@ -48,6 +48,8 @@ describe('TMS training mission', () => {
     upd();
     upd();
     expect(m.index).toBe(1);
+    expect(sim.releaseRov()).toBe(true);
+    expect(sim.tms.mode).toBe('manual');
     // Pay out by running the winch.
     sim.tms.setCommand(true, false);
     for (let i = 0; i < 4 * 40 && m.index === 1; i++) {
@@ -60,5 +62,24 @@ describe('TMS training mission', () => {
     // Moving away is only complete with real distance.
     upd();
     expect(m.index).toBe(2);
+  });
+});
+
+describe('free mode (regression)', () => {
+  it('starts, runs and restarts without errors and never completes', () => {
+    const sim = new Simulation('stabilize', 'free');
+    sim.reset('stabilize', missionById('free'));
+    const upd = () => sim.updateMission(0.25, { cameraPosition: { x: 0, y: 0, z: 0 }, cameraDirection: { x: 1, y: 0, z: 0 }, cameraMode: 'operational' });
+    for (let i = 0; i < 40; i++) {
+      sim.command.surge = 0.5;
+      sim.advance(0.25);
+      upd();
+    }
+    expect(sim.mission.complete).toBe(false);
+    expect(sim.mission.objective().key).toBe('free.objective');
+    expect(sim.mission.steps()).toEqual([]);
+    sim.reset('stabilize', missionById('free'));
+    upd();
+    expect(sim.mission.stats.distance).toBe(0);
   });
 });

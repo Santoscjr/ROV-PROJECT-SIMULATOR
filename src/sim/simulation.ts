@@ -8,20 +8,22 @@ import { missionById } from '../mission/catalog';
 import { currentAt } from './ocean';
 import { DEFAULT_CONDITIONS, resolveConditions, type ConditionChoice, type EnvironmentConditions } from './conditions';
 import { terrainHeight } from './terrain';
-import { COLLIDERS, LAUNCH_HANG_HEIGHT, LAUNCH_POINT, LAUNCH_RELEASE_DEPTH, TMS } from './site';
+import { COLLIDERS, LAUNCH_HANG_HEIGHT, LAUNCH_POINT } from './site';
+import { TOPHAT, TopHat, type LarsState } from './topHat';
 import { zeroAxes, type AxisCommand } from '../input/types';
 
-export type CraneState = 'hanging' | 'lowering' | 'released' | 'latching' | 'lifting' | 'onDeck';
+/** Legacy view of the launch/recovery state (HUD, tests). */
+export type CraneState = 'hanging' | 'lowering' | 'docked' | 'released' | 'lifting' | 'onDeck';
+const CRANE_OF: Record<LarsState, CraneState> = { deck: 'hanging', lowering: 'lowering', atDepth: 'docked', released: 'released', raising: 'lifting', onDeck: 'onDeck' };
 
 export const FIXED_DT = 1 / 120;
-const LOWER_SPEED = 0.8;
-const LIFT_SPEED = 0.9;
 
 export interface SimEvents {
   impacts: ImpactEvent[];
   /** +1 entered water, −1 left water (vehicle), for audio/FX. */
   splash: number;
   released: boolean;
+  docked: boolean;
 }
 
 /**
@@ -38,13 +40,30 @@ export class Simulation {
   readonly tether: SegmentTether;
   /** TMS winch managing the tether length. */
   readonly tms = new TmsWinch();
-  /** Tether exit point at the TMS (world). */
-  readonly tmsExit = new Vector3(TMS.exit.x, TMS.exit.y, TMS.exit.z);
+  /** Top-Hat TMS launch & recovery system. */
+  readonly lars = new TopHat(LAUNCH_POINT.x, LAUNCH_POINT.z, LAUNCH_HANG_HEIGHT + TOPHAT.dockDrop);
+  /** Default operating depth of the TMS (m), from Settings. */
+  tmsDepth = 80;
+  private readonly _exit = new Vector3();
   /** Pilot's choice of conditions (Settings). */
   conditionChoice: ConditionChoice = { ...DEFAULT_CONDITIONS };
   /** Effective conditions = pilot's choice + mission overrides. */
   conditions: EnvironmentConditions = resolveConditions(DEFAULT_CONDITIONS);
-  crane: CraneState = 'hanging';
+  /** Launch/recovery state (legacy names). Setting 'released' frees the ROV (tests/tools). */
+  get crane(): CraneState {
+    return CRANE_OF[this.lars.state];
+  }
+  set crane(v: CraneState) {
+    if (v === 'released') {
+      this.lars.state = 'released';
+      this.rov.kinematic = false;
+      this.tether.enabled = true;
+    }
+  }
+  /** Tether exit point at the TMS (world). */
+  get tmsExit(): Vector3 {
+    return this.lars.exitWorld(this._exit);
+  }
   /** Lamp level 0..1 and on/off state. */
   lightLevel = 0.8;
   lightsOn = false;
@@ -52,8 +71,11 @@ export class Simulation {
   /** Accumulated time not yet simulated (fixed-step loop). */
   private accumulator = 0;
   private wasSubmerged = false;
-  private events: SimEvents = { impacts: [], splash: 0, released: false };
-  private readonly craneHook = new Vector3();
+  private events: SimEvents = { impacts: [], splash: 0, released: false, docked: false };
+  private readonly tmpC = new Vector3();
+  private readonly tmpPull = new Vector3();
+  /** Latch fully engaged: the ROV moves rigidly with the TMS (after the capture pull-in). */
+  private latchRigid = true;
   altitude: number | null = null;
   readonly launchPoint = new Vector3(LAUNCH_POINT.x, 0, LAUNCH_POINT.z);
   private readonly tmp = new Vector3();
@@ -68,7 +90,7 @@ export class Simulation {
         return out.set(c.x, c.y, c.z);
       },
       terrainHeight,
-      colliders: COLLIDERS,
+      colliders: [...COLLIDERS, this.lars.collider],
     };
     this.tether = new SegmentTether(this.env.current, {}, terrainHeight, COLLIDERS);
     this.env.tether = this.tether;
@@ -89,30 +111,22 @@ export class Simulation {
     this.mission = def.create();
     this.accumulator = 0;
     Object.assign(this.command, zeroAxes());
-    if (def.start === 'crane') {
-      // Body +X forward; yaw π/2 about +Y turns +X to −Z (north).
-      this.rov.reset(new Vector3(LAUNCH_POINT.x, LAUNCH_HANG_HEIGHT, LAUNCH_POINT.z), Math.PI / 2);
-      this.rov.kinematic = true;
-      this.rov.kinematicYaw = Math.PI / 2;
-      this.rov.kinematicTarget.copy(this.rov.position);
-      this.crane = 'hanging';
-      this.lightsOn = false;
-      this.wasSubmerged = false;
-    } else {
-      const p = def.start.position;
-      this.rov.reset(new Vector3(p.x, p.y, p.z), ((90 - def.start.heading) * Math.PI) / 180);
-      this.rov.kinematic = false;
-      this.crane = 'released';
-      this.lightsOn = def.start.lights;
-      this.wasSubmerged = true;
-    }
+    // The ROV always starts latched under the Top-Hat: on deck (full launch) or at depth.
+    const heading = def.start === 'crane' ? 0 : def.start.heading;
+    this.lars.yaw = ((90 - heading) * Math.PI) / 180;
+    this.lars.reset(def.start === 'crane' ? 'deck' : 'atDepth', def.tms?.depth ?? this.tmsDepth);
+    this.rov.reset(this.lars.dockPosition(), this.lars.yaw);
+    this.rov.kinematic = true;
+    this.rov.kinematicYaw = this.lars.yaw;
+    this.rov.kinematicTarget.copy(this.rov.position);
+    this.latchRigid = true;
+    this.lightsOn = def.start === 'crane' ? false : def.start.lights;
+    this.wasSubmerged = this.rov.position.y < 0;
     this.lightLevel = 0.8;
-    const chord = this.tmsExit.distanceTo(this.rov.position);
-    const t = def.tms ?? { mode: 'auto' as const };
-    this.tms.reset(t.payout ?? chord * 1.12 + 6, t.mode);
+    this.tms.reset(this.tms.config.minLength, def.tms?.mode ?? 'auto');
     this.tether.payout = this.tms.payout;
-    this.tether.reset(this.tmsExit, this.rov.position);
-    this.tether.enabled = this.crane === 'released';
+    this.tether.reset(this.tmsExit, this.attachWorld());
+    this.tether.enabled = false;
     this.controller.reset();
   }
 
@@ -128,13 +142,38 @@ export class Simulation {
     return next;
   }
 
+  /** Tether termination on the ROV (world). */
+  attachWorld(out = new Vector3()): Vector3 {
+    return out.copy(this.rov.tetherAttach).applyQuaternion(this.rov.orientation).add(this.rov.position);
+  }
+
+  /** Release the ROV from the Top-Hat (only when latched at depth). */
+  releaseRov(): boolean {
+    if (!this.lars.release()) return false;
+    this.rov.kinematic = false;
+    this.rov.velocity.set(0, 0, 0);
+    this.rov.angularVelocity.set(0, 0, 0);
+    this.tms.reset(Math.max(this.tms.config.minLength, 4), this.tms.mode);
+    this.tether.payout = this.tms.payout;
+    this.tether.reset(this.tmsExit, this.attachWorld());
+    this.tether.enabled = true;
+    this.controller.reset();
+    this.events.released = true;
+    return true;
+  }
+
+  /** Start the ascent of the latched assembly (recovery to deck). */
+  raiseAssembly(): boolean {
+    return this.lars.startRaise();
+  }
+
   get effectiveLight(): number {
     return this.lightsOn ? this.lightLevel : 0;
   }
 
   /** Advance by real elapsed time using fixed physics steps. Returns events. */
   advance(elapsed: number): SimEvents {
-    this.events = { impacts: [], splash: 0, released: false };
+    this.events = { impacts: [], splash: 0, released: false, docked: false };
     this.accumulator += Math.min(elapsed, 0.25); // avoid spiral of death after tab switch
     while (this.accumulator >= FIXED_DT) {
       this.fixedStep(FIXED_DT);
@@ -145,56 +184,57 @@ export class Simulation {
 
   private fixedStep(dt: number): void {
     const rov = this.rov;
-    if (this.mission.consumeLaunchRequest()) this.crane = 'lowering';
-    if (this.mission.consumeRecoveryRequest()) this.crane = 'latching';
+    const lars = this.lars;
+    if (this.mission.consumeLaunchRequest()) lars.startLowering();
+    if (this.mission.consumeRecoveryRequest()) lars.startRaise();
 
-    // Crane / LARS.
-    switch (this.crane) {
-      case 'hanging':
-        rov.kinematic = true;
-        this.craneHook.set(this.launchPoint.x, LAUNCH_HANG_HEIGHT, this.launchPoint.z);
-        break;
-      case 'lowering':
-        rov.kinematic = true;
-        this.craneHook.set(this.launchPoint.x, Math.max(-LAUNCH_RELEASE_DEPTH, this.craneHook.y - LOWER_SPEED * dt), this.launchPoint.z);
-        if (this.craneHook.y <= -LAUNCH_RELEASE_DEPTH + 1e-3 && rov.position.y < -LAUNCH_RELEASE_DEPTH + 0.15) {
-          this.crane = 'released';
-          rov.kinematic = false;
-          rov.velocity.set(0, 0, 0);
-          this.controller.reset();
-          this.events.released = true;
-        }
-        break;
-      case 'released':
-        break;
-      case 'latching': {
-        rov.kinematic = true;
-        rov.kinematicYaw = Math.PI / 2;
-        const target = this.tmp.set(this.launchPoint.x, rov.position.y, this.launchPoint.z);
-        this.craneHook.copy(rov.position).lerp(target, 0.02);
-        if (rov.position.distanceTo(target) < 0.3) this.crane = 'lifting';
-        break;
-      }
-      case 'lifting':
-        rov.kinematic = true;
-        this.craneHook.set(this.launchPoint.x, Math.min(LAUNCH_HANG_HEIGHT, this.craneHook.y + LIFT_SPEED * dt), this.launchPoint.z);
-        if (rov.position.y > LAUNCH_HANG_HEIGHT - 0.1) this.crane = 'onDeck';
-        break;
-      case 'onDeck':
-        rov.kinematic = true;
-        break;
+    // Top-Hat / main umbilical.
+    this.env.current(lars.position, this.tmpC);
+    const released = lars.state === 'released';
+    this.tmpPull.copy(this.tether.force).multiplyScalar(released ? -1 : 0);
+    lars.update(dt, this.tmpC, this.tmpPull);
+    if (!released) {
+      // Latched: held mechanically under the TMS (no free motion).
+      rov.kinematic = true;
+      rov.kinematicYaw = lars.yaw;
+      lars.dockPosition(rov.kinematicTarget);
     }
-    rov.kinematicTarget.copy(this.craneHook);
 
-    this.tether.enabled = this.crane === 'released';
-    if (this.tether.enabled) this.tms.update(dt, this.tether.chordLength, this.tether.tension);
-    else this.tms.payout = Math.max(this.tms.payout, this.tmsExit.distanceTo(rov.position) * 1.12 + 6);
+    // Tether between the TMS exit guide and the ROV termination.
+    this.tether.anchor.copy(this.tmsExit);
+    this.tether.enabled = released;
+    if (released) this.tms.update(dt, this.tether.chordLength, this.tether.tension);
+    else this.tms.reset(this.tms.config.minLength, this.tms.mode);
     this.tether.payout = this.tms.payout;
     this.tether.setVehicle(rov.position, rov.orientation);
 
     // Pilot → controller → thrusters (thrusters also run on deck for the pre-dive check).
     this.controller.update(this.command, dt);
     rov.step(dt, this.env);
+
+    // Docking capture (position, alignment, relative speed, tether hauled in).
+    if (released) {
+      const vw = rov.worldVelocity(this.tmpC);
+      const cap = lars.checkCapture(rov.position, rov.orientation, vw, rov.heading, this.tms.payout);
+      if (cap.ok && lars.latch()) {
+        this.latchRigid = false; // smooth latch pull-in from the capture position
+        this.tether.enabled = false;
+        this.tms.reset(this.tms.config.minLength, 'manual');
+        this.controller.reset();
+        this.events.docked = true;
+      }
+    }
+
+    if (lars.state !== 'released') {
+      const dock = lars.dockPosition(this.tmpC);
+      if (!this.latchRigid && rov.position.distanceTo(dock) < 0.02) this.latchRigid = true;
+      if (this.latchRigid) {
+        rov.position.copy(dock);
+        rov.velocity.set(0, 0, 0);
+        rov.orientation.setFromAxisAngle(this.tmpPull.set(0, 1, 0), lars.yaw);
+        rov.angularVelocity.set(0, 0, 0);
+      }
+    }
 
     for (const imp of rov.takeImpacts()) {
       this.events.impacts.push(imp);
@@ -236,14 +276,11 @@ export class Simulation {
         slackWarn: this.tms.config.slackWarn,
       },
       commanding: Math.abs(c.surge) + Math.abs(c.sway) + Math.abs(c.heave) + Math.abs(c.yaw) > 0.05,
-      craneReleased: this.crane === 'released',
-      craneOnDeck: this.crane === 'onDeck',
+      craneReleased: this.lars.state === 'released',
+      craneOnDeck: this.lars.state === 'onDeck',
+      docked: this.lars.state === 'atDepth',
+      lars: this.lars.state,
     });
-  }
-
-  /** Hook position for drawing the crane wire (null when released). */
-  wireEnd(): Vector3 | null {
-    return this.crane === 'released' ? null : this.craneHook;
   }
 
   /** Umbilical length paid out (m), straight-line approximation with slack. */

@@ -36,6 +36,12 @@ As condições ambientais são **corrente**, **visibilidade**, **luz natural** e
 | Confirmar / registrar inspeção | `Enter` | A |
 | Pausa · Ajuda | `Esc` · `H` | Start · Back |
 | Densidade do HUD (completo / compacto / mínimo) | `U` | — |
+| Liberar o ROV do Top-Hat (quando acoplado) | `Enter` | A |
+| Pagar / recolher tether (segurar) | `↑` / `↓` | — |
+| Parar guincho · AUTO/MANUAL | `K` · `J` | — |
+| Pitch (nariz para cima / para baixo) | `PgUp` / `PgDn` | — |
+| Câmeras: auxiliar · principal · externa · TMS · tether | `6` `7` `8` `9` `0` | — |
+| Layout de telas (1/2/4) · monitor secundário | `Y` · `F8` | — |
 
 As teclas usam a posição física (funcionam em ABNT2, AZERTY etc.) e podem ser remapeadas em **Configurações**.
 

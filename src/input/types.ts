@@ -51,10 +51,12 @@ export type PilotAction =
   | 'tetherStop'
   | 'tmsAuto'
   | 'camOp'
+  | 'camAux'
   | 'camExt'
   | 'camTms'
   | 'camTether'
   | 'layoutCycle'
+  | 'monitorOpen'
   | 'zoomIn'
   | 'zoomOut';
 

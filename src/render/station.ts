@@ -3,6 +3,9 @@ import { CameraRig } from './cameras';
 import { UnderwaterPass } from './underwaterPass';
 import type { ViewLayout, ViewSource } from '../config/settings';
 
+export type CameraSource = Exclude<ViewSource, 'sonar' | 'instruments'>;
+export const isCameraSource = (s: ViewSource): s is CameraSource => s !== 'sonar' && s !== 'instruments';
+
 export interface Rect {
   x: number;
   y: number;
@@ -50,13 +53,13 @@ export class SecondaryView {
   private h = 0;
   constructor(public source: ViewSource) {
     this.rig = new CameraRig(1);
-    if (source !== 'sonar') this.rig.setMode(source);
+    if (isCameraSource(source)) this.rig.setMode(source);
     this.rig.tilt = -25;
   }
 
   setSource(s: ViewSource): void {
     this.source = s;
-    if (s !== 'sonar') this.rig.setMode(s);
+    if (isCameraSource(s)) this.rig.setMode(s);
   }
 
   ensurePass(w: number, h: number): UnderwaterPass {

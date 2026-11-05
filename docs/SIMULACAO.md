@@ -93,3 +93,23 @@ Todos os valores do HUD vêm do estado da simulação:
 - WebHID e protocolo HID do SpaceMouse: ver `docs/SPACEMOUSE.md`.
 
 Os modelos 3D (ROV, manifold, árvore de natal, duto, embarcação) são originais, gerados proceduralmente no código. Não há assets de terceiros.
+
+
+## TMS Top-Hat e tether (v3.1)
+
+Aproximação de treinamento, sem reproduzir um fabricante específico.
+
+- **Máquina de estados** (`src/sim/topHat.ts`): CONVÉS → DESCENDO → ACOPLADO na profundidade de liberação (configurável de 40 a 100 m) ⇄ LIBERADO → captura → SUBINDO → CONVÉS.
+  - Enquanto acoplado, o ROV fica rigidamente preso sob o Top-Hat e não tem movimento livre. Ele só é liberado por comando na profundidade de operação.
+  - A captura arma depois que o ROV se afasta mais de 2 m. Ela exige alinhamento horizontal e vertical da trava com o receptáculo, rumo, baixa velocidade relativa e tether recolhido.
+  - Envelope assistido: 0,9 m, 20°, 0,4 m/s, até 12 m de tether. Sem assistência: 0,35 m, 8°, 0,25 m/s, até 8 m.
+  - Após a captura, a trava puxa o ROV suavemente até a posição de encaixe.
+  - O Top-Hat oscila com a corrente e com a tração do tether, de forma amortecida e limitada a 3 m.
+- **Tether** (`src/physics/segmentTether.ts`): 32 segmentos resolvidos por PBD.
+  - Considera peso aparente configurável, arrasto normal e tangencial na corrente local e contato com o fundo, as estruturas e o casco do ROV.
+  - A força atua na terminação de ré no topo do ROV (−0,6; 1,05; 0 m), o que gera torque.
+  - Há limites de comprimento (3 a 300 m) e de velocidade (1,5 m/s pagando, 1,0 m/s recolhendo, com rampa).
+  - Acima de 4,5 kN o recolhimento é bloqueado; acima de 7 kN o freio desliza.
+  - Não modelado: enroscamento entre segmentos do próprio cabo, torção e contato com o Top-Hat.
+- **Pitch**: os 4 propulsores verticais (x = ±0,7 m) produzem momento de pitch. Com estabilização, o comando define uma atitude-alvo de até ±15°; ao soltar, o veículo volta ao nível. No modo manual o comando é um momento direto, limitado pela estabilidade hidrostática.
+- **Sonar** (`src/render/sonar.ts`): FLS com leque de 130°, eixo inclinado 15° para baixo, ecos do fundo e dos colliders das estruturas, sombra acústica, ganho variável com a distância e speckle.

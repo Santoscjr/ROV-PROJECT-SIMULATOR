@@ -52,12 +52,19 @@ describe('simulation (launch & recovery)', () => {
     m.checklist.lights = m.checklist.thrusters = m.checklist.camera = true;
     m.confirm();
     let splash = 0;
-    for (let i = 0; i < 400 && sim.crane !== 'released'; i++) {
+    for (let i = 0; i < 1500 && sim.crane !== 'docked'; i++) {
       const ev = sim.advance(0.1);
       if (ev.splash === 1) splash++;
       sim.updateMission(0.1, { cameraPosition: { x: 0, y: 0, z: 0 }, cameraDirection: { x: 1, y: 0, z: 0 }, cameraMode: 'external' });
     }
     expect(splash).toBe(1);
+    // ROV and Top-Hat went down together; the pilot releases at the operating depth.
+    expect(sim.crane).toBe('docked');
+    expect(sim.rov.kinematic).toBe(true);
+    expect(Math.abs(sim.lars.position.y + sim.tmsDepth)).toBeLessThan(0.01);
+    expect(sim.releaseRov()).toBe(true);
+    sim.advance(0.1);
+    sim.updateMission(0.1, { cameraPosition: { x: 0, y: 0, z: 0 }, cameraDirection: { x: 1, y: 0, z: 0 }, cameraMode: 'external' });
     expect(sim.crane).toBe('released');
     expect(sim.rov.kinematic).toBe(false);
     expect(sim.rov.depth).toBeGreaterThan(7);

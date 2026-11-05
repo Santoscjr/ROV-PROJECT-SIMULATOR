@@ -18,10 +18,12 @@ import type { Objective } from './mission/types';
 import { MISSIONS, missionById } from './mission/catalog';
 import { MissionMarkers } from './render/markers';
 import { createTmsModel, type TmsModel } from './render/tmsModel';
-import { SecondaryView, glViewport, layoutRects, usePanel } from './render/station';
+import { SecondaryView, glViewport, isCameraSource, layoutRects, usePanel } from './render/station';
 import { Sonar } from './render/sonar';
-import { StationUi } from './ui/stationUi';
-import { CatmullRomCurve3, Mesh, MeshStandardMaterial, Object3D, SpotLight, TubeGeometry } from 'three';
+import { SecondaryWindow } from './render/secondaryWindow';
+import { InstrumentPanel, StationUi } from './ui/stationUi';
+import { Object3D, SpotLight } from 'three';
+import type { CameraMode } from './render/cameras';
 import { COLLIDERS } from './sim/site';
 import type { ViewSource } from './config/settings';
 
@@ -59,6 +61,9 @@ export class App {
   private markers = new MissionMarkers();
   private readonly tetherPts: Vector3[] = [];
   private tmsModel: TmsModel | null = null;
+  private tetherLamp: SpotLight | null = null;
+  private readonly instr = new InstrumentPanel();
+  private readonly monitor2 = new SecondaryWindow(terrainHeight, COLLIDERS, (doc) => new InstrumentPanel(doc));
   /** SpaceMouse/gamepad button latches for the winch (toggle semantics). */
   private tmsLatch = { pay: false, haul: false };
   private readonly secondary: SecondaryView[] = [];
@@ -136,7 +141,10 @@ export class App {
       restart: () => this.restart(),
       mainMenu: () => this.toMainMenu(),
       spaceMouse: () => this.spacemouse,
+      openMonitor: () => this.monitor2.open(this.store.get().monitorSource),
     });
+    this.monitor2.onSourceChange = (src) => this.store.update({ monitorSource: src });
+    window.addEventListener('beforeunload', () => this.monitor2.dispose());
 
     this.applySettings(s);
     this.store.subscribe((ns) => this.applySettings(ns));
@@ -185,9 +193,18 @@ export class App {
     this.world.setConditions(this.sim.conditions);
     this.audio.setVolume(s.volume);
     this.sim.tether.setBuoyancy(s.tetherBuoyancy);
+    this.sim.tmsDepth = s.tmsDepth;
+    this.sim.lars.assist = s.dockAssist;
   }
 
   private start(missionId = this.store.get().mission): void {
+    // Fresh state: no camera/sonar/panel state carried over from a previous operation.
+    this.secondary.forEach((v) => v.dispose());
+    this.secondary.length = 0;
+    this.rig.pan = 0;
+    this.rig.zoom = 1;
+    this.rig.tetherPan = this.rig.tetherTilt = this.rig.auxPan = this.rig.auxTilt = 0;
+    this.tmsLatch = { pay: false, haul: false };
     this.audio.init();
     if (missionId !== this.store.get().mission) this.store.update({ mission: missionId });
     const def = missionById(missionId);
@@ -305,6 +322,7 @@ export class App {
       }
       case 'toggleCamera': {
         const m = this.rig.toggle();
+        this.setPanel0(m);
         this.pass.resetAdaptation();
         sim.mission.notifyCameraToggled();
         this.hud.toast(t('msg.camera', { c: t('view.' + m) }));
@@ -331,17 +349,22 @@ export class App {
       case 'toggleHud':
         this.hud.toast(t('msg.hud.' + this.hud.cycleDensity()));
         break;
+      case 'camAux':
       case 'camOp':
       case 'camExt':
       case 'camTms':
       case 'camTether': {
-        const m = ({ camOp: 'operational', camExt: 'external', camTms: 'tms', camTether: 'tether' } as const)[a];
+        const m = ({ camOp: 'operational', camAux: 'auxiliary', camExt: 'external', camTms: 'tms', camTether: 'tether' } as const)[a];
         this.rig.setMode(m);
+        this.setPanel0(m);
         this.pass.resetAdaptation();
         sim.mission.notifyCameraToggled();
         this.hud.toast(t('msg.camera', { c: t('view.' + m) }));
         break;
       }
+      case 'monitorOpen':
+        if (!this.monitor2.open(this.store.get().monitorSource)) this.hud.toast(t('settings.monitorBlocked'), 'warn', 5000);
+        return;
       case 'layoutCycle': {
         const order = ['single', 'dual', 'quad'] as const;
         const next = order[(order.indexOf(this.store.get().layout) + 1) % order.length];
@@ -367,6 +390,12 @@ export class App {
         this.tmsLatch = { pay: false, haul: !this.tmsLatch.haul };
         break;
       case 'confirm': {
+        // Release from the Top-Hat when latched at depth (except during recovery).
+        if (sim.lars.state === 'atDepth' && sim.releaseRov()) {
+          this.audio.click();
+          this.hud.toast(t('lars.releasedToast'), 'ok', 4000);
+          break;
+        }
         const res = sim.mission.confirm();
         if (res) {
           this.audio.click();
@@ -425,7 +454,11 @@ export class App {
         );
       }
       if (ev.splash !== 0) this.audio.splash();
-      if (ev.released) this.hud.toast(t('mission.launch.released'), 'ok', 4000);
+      if (ev.released && this.sim.missionDef.start === 'crane') this.hud.toast(t('mission.launch.released'), 'ok', 4000);
+      if (ev.docked) {
+        this.audio.knock(0.15);
+        this.hud.toast(t('lars.dockedToast'), 'ok', 5000);
+      }
     }
 
     // Sync the visual vehicle with the physics state.
@@ -471,10 +504,13 @@ export class App {
 
     // Environment & effects.
     const camDepth = -cam.position.y;
-    // Observer light only for the external view at depth (not part of the vehicle).
+    // Observer-mode light: a non-physical visual aid used ONLY while rendering
+    // external views (set per panel below), never for the operational cameras.
     const obs = this.world.observerLight;
-    obs.position.copy(cam.position);
-    obs.intensity = this.rig.mode === 'external' && camDepth > 15 ? 45 : 0;
+    const observer = (mode: string, pos: Vector3) => {
+      obs.position.copy(pos);
+      obs.intensity = mode === 'external' && pos.y < -15 ? 45 : 0;
+    };
     const camUnder = camDepth > 0;
     if (camUnder !== this.lastCamUnder) {
       this.wet = 1;
@@ -488,17 +524,21 @@ export class App {
       camPos: cam.position,
       lightLevel: sim.effectiveLight,
     });
-    this.world.vessel.setWire(sim.wireEnd() ? this.tmp.copy(rov.tetherPoint.getWorldPosition(new Vector3())) : null);
+    // Main umbilical: crane sheave → Top-Hat termination (always attached).
+    this.world.vessel.setWire(sim.lars.liftWorld(this.tmp));
     this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     // TMS visuals follow the winch state.
     if (this.tmsModel) {
+      this.tmsModel.root.position.copy(sim.lars.position);
+      this.tmsModel.root.rotation.y = sim.lars.yaw;
       const tms = sim.tms;
       this.tmsModel.setDrumAngle(tms.drumAngle);
       this.tmsModel.setStoredFraction(tms.storedFraction);
       const ph = (tms.payout / 6) % 2;
       this.tmsModel.setLevelWind(ph < 1 ? ph * 2 - 1 : 3 - ph * 2);
     }
+    if (this.tetherLamp) this.tetherLamp.intensity = 7 * sim.effectiveLight;
     const fx = this.store.get().cameraFx;
     const wbFor = (depth: number) => Math.min(1, Math.max(0, (depth - 25) / 40)) * (sim.effectiveLight > 0 ? 1 : 0.35);
     const st = this.store.get();
@@ -506,6 +546,10 @@ export class App {
     const H = window.innerHeight;
     const pr = this.renderer.getPixelRatio();
     const rects = layoutRects(st.layout, W, H);
+    const multi = rects.length > 1;
+    // Panel 0 follows the interactive rig; in multi-view it can show any source.
+    const src0 = multi ? st.panels[0] : this.rig.mode;
+    if (multi && isCameraSource(st.panels[0]) && st.panels[0] !== this.rig.mode) this.rig.setMode(st.panels[0] as CameraMode);
     const hosts = this.station.layout(rects, st.panels, this.rig.mode);
     this.hud.root.dataset.layout = st.layout;
     const info = this.renderer.info;
@@ -514,69 +558,107 @@ export class App {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.setScissorTest(true);
+    let sonarHost: HTMLElement | null = null;
+    let sonarRect: { w: number; h: number } | null = null;
+    let instrHost: HTMLElement | null = null;
+    let instrRect: { w: number; h: number } | null = null;
 
-    // Main (interactive) view: full pipeline incl. particles/beams.
-    const r0 = rects[0];
-    const vp0 = glViewport(r0, H, pr);
-    if (vp0.w !== this.mainPassSize.w || vp0.h !== this.mainPassSize.h) {
-      this.pass.setSize(vp0.w, vp0.h);
-      this.mainPassSize = { w: vp0.w, h: vp0.h };
-    }
-    cam.aspect = r0.w / r0.h;
-    cam.updateProjectionMatrix();
-    usePanel(this.renderer, vp0);
-    const opCam = this.rig.mode === 'operational';
-    this.pass.setCameraFx(fx, opCam);
-    this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wbFor(camDepth) });
-    this.world.effects.update(cam, {
-      time: this.time,
-      width: vp0.w,
-      height: vp0.h,
-      originX: vp0.x,
-      originY: vp0.y,
-      pixelRatio: pr,
-      ambient,
-      underwater: camUnder,
-      lightLevel: sim.effectiveLight,
-    });
-    this.pass.render(this.renderer, this.world.scene, cam);
-    this.renderer.autoClear = false;
-    this.renderer.render(this.world.effects.scene, cam);
-    this.renderer.autoClear = true;
-    this.renderer.shadowMap.needsUpdate = false;
-
-    // Secondary station views (shared simulation & scene; no particle overlay).
-    for (let i = 1; i < rects.length; i++) {
-      const src = st.panels[i];
-      const view = (this.secondary[i] ??= new SecondaryView(src));
-      if (view.source !== src) view.setSource(src);
+    for (let i = 0; i < rects.length; i++) {
+      const src = i === 0 ? src0 : st.panels[i];
+      const r = rects[i];
       if (src === 'sonar') {
-        const host = hosts[i];
-        if (this.sonar.canvas.parentElement !== host) host.appendChild(this.sonar.canvas);
+        if (!sonarHost) {
+          sonarHost = hosts[i];
+          sonarRect = r;
+        }
         continue;
       }
-      if (hosts[i] && this.sonar.canvas.parentElement === hosts[i]) this.sonar.canvas.remove();
-      const vp = glViewport(rects[i], H, pr);
-      const sp = view.ensurePass(Math.round(vp.w * 0.75), Math.round(vp.h * 0.75));
-      sp.setWater(this.pass.optics);
-      view.rig.tmsMount = this.tmsModel?.cameraMount ?? null;
-      view.rig.camera.aspect = rects[i].w / rects[i].h;
-      view.rig.update(dt, rov.root, rov.cameraEye, headingRad);
-      const vc = view.rig.camera;
-      const d = -vc.position.y;
-      sp.setCameraFx(fx, src === 'operational');
-      sp.update(vc, { camDepth: d, seabedDepth: -terrainHeight(vc.position.x, vc.position.z) || SITE_BASE_DEPTH, time: this.time, wet: 0, whiteBalance: wbFor(d) });
-      usePanel(this.renderer, vp);
-      sp.render(this.renderer, this.world.scene, vc);
+      if (src === 'instruments') {
+        if (!instrHost) {
+          instrHost = hosts[i];
+          instrRect = r;
+        }
+        continue;
+      }
+      const vp = glViewport(r, H, pr);
+      if (i === 0) {
+        // Main (interactive) view: full pipeline incl. particles/beams.
+        if (vp.w !== this.mainPassSize.w || vp.h !== this.mainPassSize.h) {
+          this.pass.setSize(vp.w, vp.h);
+          this.mainPassSize = { w: vp.w, h: vp.h };
+        }
+        cam.aspect = r.w / r.h;
+        cam.updateProjectionMatrix();
+        usePanel(this.renderer, vp);
+        observer(this.rig.mode, cam.position);
+        this.pass.setCameraFx(fx, this.rig.mode === 'operational');
+        this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wbFor(camDepth) });
+        this.world.effects.update(cam, {
+          time: this.time,
+          width: vp.w,
+          height: vp.h,
+          originX: vp.x,
+          originY: vp.y,
+          pixelRatio: pr,
+          ambient,
+          underwater: camUnder,
+          lightLevel: sim.effectiveLight,
+        });
+        this.pass.render(this.renderer, this.world.scene, cam);
+        this.renderer.autoClear = false;
+        this.renderer.render(this.world.effects.scene, cam);
+        this.renderer.autoClear = true;
+      } else {
+        // Secondary views (shared simulation & scene; no particle overlay).
+        const view = (this.secondary[i] ??= new SecondaryView(src));
+        if (view.source !== src) view.setSource(src);
+        const sp = view.ensurePass(Math.round(vp.w * 0.75), Math.round(vp.h * 0.75));
+        sp.setWater(this.pass.optics);
+        view.rig.tmsMount = this.tmsModel?.cameraMount ?? null;
+        view.rig.camera.aspect = r.w / r.h;
+        view.rig.update(dt, rov.root, rov.cameraEye, headingRad);
+        const vc = view.rig.camera;
+        const d = -vc.position.y;
+        observer(view.rig.mode, vc.position);
+        sp.setCameraFx(fx, src === 'operational' || src === 'auxiliary');
+        sp.update(vc, { camDepth: d, seabedDepth: -terrainHeight(vc.position.x, vc.position.z) || SITE_BASE_DEPTH, time: this.time, wet: 0, whiteBalance: wbFor(d) });
+        usePanel(this.renderer, vp);
+        sp.render(this.renderer, this.world.scene, vc);
+      }
+      this.renderer.shadowMap.needsUpdate = false;
     }
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, W, H);
-    // Sonar: scan the real geometry at a controlled rate when visible.
-    const sonarIdx = rects.length > 1 ? st.panels.slice(1, rects.length).indexOf('sonar') + 1 : 0;
-    if (sonarIdx > 0) {
-      if (running) this.sonar.scan(sim.rov.position, sim.rov.heading, 6);
-      this.sonar.draw(rects[sonarIdx].w, rects[sonarIdx].h - 22);
+    // Sonar: scan the real geometry only while it is visible.
+    if (sonarHost && sonarRect) {
+      if (this.sonar.canvas.parentElement !== sonarHost) sonarHost.appendChild(this.sonar.canvas);
+      if (running) this.sonar.scan(sim.rov.position, sim.rov.heading);
+      this.sonar.draw(sonarRect.w, sonarRect.h - 22);
     } else if (this.sonar.canvas.parentElement) this.sonar.canvas.remove();
+    // Secondary monitor window (same simulation, same frame).
+    this.monitor2.render({
+      scene: this.world.scene,
+      dt,
+      time: this.time,
+      rovRoot: rov.root,
+      eye: rov.cameraEye,
+      headingRad,
+      tmsMount: this.tmsModel?.cameraMount ?? null,
+      mainPass: this.pass,
+      fx,
+      terrainHeight,
+      whiteBalance: wbFor,
+      observer: (mode, _y, pos) => observer(mode, pos as Vector3),
+      rovPos: sim.rov.position,
+      heading: sim.rov.heading,
+      running,
+    });
+    if (this.monitor2.instruments && this.hud.lastData) this.monitor2.instruments.update(this.hud.lastData, this.hud);
+    // Instrumentation panel.
+    if (instrHost && instrRect && this.hud.lastData) {
+      if (this.instr.root.parentElement !== instrHost) instrHost.appendChild(this.instr.root);
+      this.instr.update(this.hud.lastData, this.hud);
+    } else if (this.instr.root.parentElement) this.instr.root.remove();
     this.frameStats = { calls: info.render.calls, triangles: info.render.triangles };
 
     // Audio & HUD.
@@ -591,11 +673,20 @@ export class App {
     return t(o.key, params);
   }
 
+  /** Keep panel 0's stored source in sync with the interactive camera. */
+  private setPanel0(m: CameraMode): void {
+    const panels = [...this.store.get().panels];
+    if (panels[0] !== m) {
+      panels[0] = m;
+      this.store.update({ panels });
+    }
+  }
+
   /** True if the ROV pilot camera is visible in any station panel. */
   private operationalVisible(): boolean {
     const st = this.store.get();
     const n = layoutRects(st.layout, 1, 1).length;
-    return this.rig.mode === 'operational' || st.panels.slice(1, n).includes('operational' as ViewSource);
+    return this.rig.mode === 'operational' || (n > 1 && st.panels.slice(0, n).includes('operational' as ViewSource));
   }
 
   /** TMS model, its lamp and the main umbilical (re-attached when the World is rebuilt). */
@@ -604,21 +695,34 @@ export class App {
     scene.add(this.markers.group);
     this.tmsModel = createTmsModel({ quality: this.store.get().graphics });
     const m = this.tmsModel;
-    m.root.position.copy(this.sim.tmsExit).sub(m.exitPoint.position);
+    m.root.position.copy(this.sim.lars.position);
+    m.root.rotation.y = this.sim.lars.yaw;
     scene.add(m.root);
-    m.root.updateMatrixWorld(true);
-    const lamp = new SpotLight(0xfff2d8, 30, 0, (50 * Math.PI) / 180, 0.6, 2);
+    // TMS mechanism lamp (lights the drum, level-wind and exit guide for the TMS camera at any depth).
+    const lamp = new SpotLight(0xfff2d8, 22, 0, (55 * Math.PI) / 180, 0.5, 2);
     const target = new Object3D();
     target.position.set(0, 0, -5);
     m.lightMounts[0].add(lamp, target);
     lamp.target = target;
-    // Main umbilical: crane / A-frame sheave → TMS termination.
-    const top = this.world.vessel.boomTip.clone();
-    const lift = m.liftPoint.getWorldPosition(new Vector3());
-    const mid = top.clone().lerp(lift, 0.5).add(new Vector3(1.5, 0, 0));
-    const umb = new Mesh(new TubeGeometry(new CatmullRomCurve3([top, mid, lift]), 48, 0.035, 6), new MeshStandardMaterial({ color: 0x1d1f21, roughness: 0.6 }));
-    umb.frustumCulled = false;
-    scene.add(umb);
+    // Tether-camera lamp on the ROV top, aimed aft/up along the tether termination.
+    const tl = new SpotLight(0xf3f0e8, 0, 0, (60 * Math.PI) / 180, 0.6, 2);
+    const tt = new Object3D();
+    tl.position.set(0.5, 1.0, 0.3);
+    tt.position.set(-3, 2.2, 0);
+    this.world.rov.root.add(tl, tt);
+    tl.target = tt;
+    this.tetherLamp = tl;
+  }
+
+  /** Docking guidance when the ROV is free and within 15 m of the Top-Hat. */
+  private dockInfo() {
+    const sim = this.sim;
+    if (sim.lars.state !== 'released') return null;
+    const rec = sim.lars.receptacleWorld(new Vector3());
+    const distance = rec.distanceTo(sim.rov.position);
+    if (distance > 15) return null;
+    const c = sim.lars.lastCapture ?? sim.lars.checkCapture(sim.rov.position, sim.rov.orientation, sim.rov.worldVelocity(), sim.rov.heading, sim.tms.payout);
+    return { ...c, distance, assist: sim.lars.assist };
   }
 
   private conditionsLabel(): string {
@@ -652,6 +756,8 @@ export class App {
       thrusterLevels: rov.params.thrusters.map((_, i) => rov.thrusters.level(i)),
       thrusterLoads: typeof bank.load === 'function' ? rov.params.thrusters.map((_, i) => bank.load!(i)) : null,
       saturation: st.saturation ?? 1,
+      larsState: sim.lars.state,
+      dock: this.dockInfo(),
       tms: {
         mode: sim.tms.mode,
         state: sim.tms.state,
@@ -685,7 +791,8 @@ export class App {
       steps: m.steps(),
       stepIndex: m.stepIndex(),
       stageLabel: t(m.stageKey()),
-      objective: this.objectiveText(m.objective()),
+      objective:
+        sim.lars.state === 'atDepth' && sim.missionDef.start !== 'crane' ? t('lars.releasePrompt') : this.objectiveText(m.objective()),
       hint: hint ? this.objectiveText(hint) : null,
       checklist: m.prepChecklist(),
       holdProgress: m.holdProgress(),

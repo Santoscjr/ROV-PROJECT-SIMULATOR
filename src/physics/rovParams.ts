@@ -125,5 +125,7 @@ export const DEFAULT_ROV_PARAMS: RovParams = {
   // trimmed to ≈93 % thrust and surge + heave together to ≈88 %.
   // Plausible orders of magnitude only.
   powerBudget: 66000,
-  tetherAttach: [0, 1.1, 0],
+  // Umbilical termination on the aft top of the vehicle (matches the 3D model's
+  // bend restrictor): the tether force acts here, so it also produces torque.
+  tetherAttach: [-0.6, 1.05, 0],
 };

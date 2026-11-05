@@ -15,6 +15,8 @@ export const BINDABLE = [
   'yaw-',
   'camTilt+',
   'camTilt-',
+  'pitch+',
+  'pitch-',
   'fineControl',
   'toggleLights',
   'lightsUp',
@@ -34,19 +36,22 @@ export const BINDABLE = [
   'tetherStop',
   'tmsAuto',
   'camOp',
+  'camAux',
   'camExt',
   'camTms',
   'camTether',
   'zoomIn',
   'zoomOut',
   'layoutCycle',
+  'monitorOpen',
 ] as const;
 export type Bindable = (typeof BINDABLE)[number];
 export type KeyBindings = Record<Bindable, string[]>;
 
 export type KeyboardPreset = 'wasd' | 'arrows';
 
-const COMMON: Omit<KeyBindings, 'surge+' | 'surge-' | 'sway+' | 'sway-' | 'heave+' | 'heave-' | 'yaw+' | 'yaw-'> = {
+type PresetKeys = 'surge+' | 'surge-' | 'sway+' | 'sway-' | 'heave+' | 'heave-' | 'yaw+' | 'yaw-' | 'pitch+' | 'pitch-' | 'tetherPay' | 'tetherHaul';
+const COMMON: Omit<KeyBindings, PresetKeys> = {
   'camTilt+': ['KeyT'],
   'camTilt-': ['KeyG'],
   fineControl: ['ShiftLeft', 'ShiftRight'],
@@ -63,17 +68,17 @@ const COMMON: Omit<KeyBindings, 'surge+' | 'surge-' | 'sway+' | 'sway-' | 'heave
   pause: ['Escape', 'KeyP'],
   help: ['KeyH', 'F1'],
   toggleHud: ['KeyU'],
-  tetherPay: ['KeyO'],
-  tetherHaul: ['KeyI'],
   tetherStop: ['KeyK'],
   tmsAuto: ['KeyJ'],
   camOp: ['Digit7'],
+  camAux: ['Digit6'],
   camExt: ['Digit8'],
   camTms: ['Digit9'],
   camTether: ['Digit0'],
   zoomIn: ['KeyZ'],
   zoomOut: ['KeyX'],
   layoutCycle: ['KeyY'],
+  monitorOpen: ['F8'],
 };
 
 export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
@@ -87,6 +92,10 @@ export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
     'heave-': ['KeyF'],
     'yaw+': ['KeyE'],
     'yaw-': ['KeyQ'],
+    'pitch+': ['PageUp'],
+    'pitch-': ['PageDown'],
+    tetherPay: ['ArrowUp'],
+    tetherHaul: ['ArrowDown'],
   },
   arrows: {
     ...COMMON,
@@ -98,6 +107,10 @@ export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
     'heave-': ['PageDown', 'Numpad2'],
     'yaw+': ['ArrowRight'],
     'yaw-': ['ArrowLeft'],
+    'pitch+': ['Home'],
+    'pitch-': ['End'],
+    tetherPay: ['Numpad9'],
+    tetherHaul: ['Numpad3'],
   },
 };
 
@@ -147,12 +160,18 @@ export interface Settings {
   panels: ViewSource[];
   /** Tether wet weight preset. */
   tetherBuoyancy: 'positive' | 'neutral' | 'negative';
+  /** Source shown on the secondary monitor window. */
+  monitorSource: ViewSource;
+  /** Beginner docking assistance (larger capture envelope). */
+  dockAssist: boolean;
+  /** Default Top-Hat operating depth (m). */
+  tmsDepth: number;
 }
 
 export type ViewLayout = 'single' | 'dual' | 'quad';
-export type ViewSource = 'operational' | 'external' | 'tms' | 'tether' | 'sonar';
-export const VIEW_SOURCES: ViewSource[] = ['operational', 'external', 'tms', 'tether', 'sonar'];
-const DEFAULT_PANELS: ViewSource[] = ['operational', 'tether', 'tms', 'sonar'];
+export type ViewSource = 'operational' | 'auxiliary' | 'external' | 'tms' | 'tether' | 'sonar' | 'instruments';
+export const VIEW_SOURCES: ViewSource[] = ['operational', 'auxiliary', 'external', 'tms', 'tether', 'sonar', 'instruments'];
+const DEFAULT_PANELS: ViewSource[] = ['operational', 'sonar', 'tether', 'auxiliary'];
 
 export const DEFAULT_SETTINGS: Settings = {
   graphics: 'medium',
@@ -176,6 +195,9 @@ export const DEFAULT_SETTINGS: Settings = {
   layout: 'single',
   panels: [...DEFAULT_PANELS],
   tetherBuoyancy: 'neutral',
+  dockAssist: true,
+  tmsDepth: 80,
+  monitorSource: 'sonar',
 };
 
 const STORAGE_KEY = 'rov.settings.v1';
@@ -202,6 +224,8 @@ export function sanitizeSettings(raw: unknown): Settings {
   for (const k of BINDABLE) {
     const v = rb[k];
     bindings[k] = Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]).slice(0, 3) : [...base[k]];
+    // v3.0 → v3.1 migration: the tether moved from O/I to the arrow keys.
+    if ((k === 'tetherPay' && bindings[k].join() === 'KeyO') || (k === 'tetherHaul' && bindings[k].join() === 'KeyI')) bindings[k] = [...base[k]];
   }
   return {
     graphics: pick(r.graphics, QUALITIES, d.graphics),
@@ -230,6 +254,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     mission: pick(r.mission, ['training', 'inspection', 'adverse', 'tms', 'free'] as const, d.mission),
     layout: pick(r.layout, ['single', 'dual', 'quad'] as const, d.layout),
     panels: DEFAULT_PANELS.map((def, i) => pick(Array.isArray(r.panels) ? r.panels[i] : undefined, VIEW_SOURCES, def)),
+    dockAssist: r.dockAssist !== false,
+    monitorSource: pick(r.monitorSource, VIEW_SOURCES, d.monitorSource),
+    tmsDepth: num(r.tmsDepth, 40, 100, d.tmsDepth),
     tetherBuoyancy: pick(r.tetherBuoyancy, ['positive', 'neutral', 'negative'] as const, d.tetherBuoyancy),
   };
 }

@@ -100,15 +100,14 @@ describe('mission flow', () => {
     expect(m.stage).toBe('return');
   });
 
-  it('recovery requires being shallow and under the crane', () => {
+  it('recovery requires the ROV to be latched under the Top-Hat', () => {
     const m = toInspection();
     for (let i = 0; i < 25; i++) m.update(input());
     m.confirm();
-    m.update(input({ position: { x: 50, y: -40, z: 0 }, depth: 40 }));
     expect(m.stage).toBe('return');
-    m.update(input({ position: { x: 70, y: -8, z: 0 }, depth: 8 }));
+    m.update(input({ position: { x: 50, y: -8, z: 0 }, depth: 8 })); // near the vessel but not latched
     expect(m.stage).toBe('return');
-    m.update(input({ position: { x: 52, y: -8, z: 1 }, depth: 8 }));
+    m.update(input({ docked: true }));
     expect(m.stage).toBe('recovery');
     expect(m.consumeRecoveryRequest()).toBe(true);
     m.update(input({ craneOnDeck: true }));
