@@ -185,7 +185,7 @@ export class CameraRig {
       cam.up.set(0, 1, 0).applyQuaternion(_q);
       cam.lookAt(_v.copy(cam.position).add(dir));
     } else if (this.mode === 'tms' && this.tmsMount) {
-      cam.fov = 70;
+      cam.fov = 84;
       this.tmsMount.getWorldPosition(cam.position);
       this.tmsMount.getWorldQuaternion(cam.quaternion);
     } else if (this.mode === 'tether') {

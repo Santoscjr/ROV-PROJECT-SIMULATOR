@@ -28,12 +28,18 @@ import { sunTransmission, waterOptics, type WaterOptics } from './optics';
 import { WaterEffects } from './effects';
 import type { UnderwaterPass } from './underwaterPass';
 
-/** Half-angle of each LED lamp beam. Wider beams + splayed lamps light a useful work area, not a central spot. */
-const LAMP_ANGLE = (52 * Math.PI) / 180;
-/** Horizontal splay of each lamp (deg, + = towards port), order: upper-port, upper-stbd, lower-port, lower-stbd. */
-const LAMP_SPLAY = [14, -14, 26, -26];
-/** Luminous intensity of each lamp at 100 % (cd, scene units). */
-const LAMP_CD = 55;
+/**
+ * Front lighting = 2 directional "spot" lamps (upper pair: long throw on the
+ * work target, the only ones that may cast shadows) + 2 wide "flood" lamps
+ * (lower pair: splayed and slightly down to fill the near field and seabed).
+ * Order: upper-port, upper-stbd, lower-port, lower-stbd.
+ */
+const LAMPS = [
+  { angle: 32, penumbra: 0.6, splay: 9, down: 0, cd: 75 },
+  { angle: 32, penumbra: 0.6, splay: -9, down: 0, cd: 75 },
+  { angle: 62, penumbra: 0.85, splay: 30, down: -10, cd: 42 },
+  { angle: 62, penumbra: 0.85, splay: -30, down: -10, cd: 42 },
+] as const;
 /** Contrast threshold for the visibility culling (fraction of the blue/green transmission). */
 const CULL_LN = 5.3;
 
@@ -54,7 +60,10 @@ export class World {
   /** Visualisation aid: soft light carried by the external (observer) camera. */
   readonly observerLight: PointLight;
   private readonly tether: Mesh;
-  private readonly tetherMat = new MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.6 });
+  /** Tether jacket: yellow polyurethane (common on work-class tethers), same diameter as the physics. */
+  private readonly tetherMat = new MeshStandardMaterial({ color: 0xd9a42a, roughness: 0.5, metalness: 0 });
+  /** Front-lamp multiplier (settings → lighting.front). */
+  frontGain = 1;
   private readonly envTex: Texture;
   private readonly tmpColor = new Color();
   private tetherTimer = 0;
@@ -105,9 +114,11 @@ export class World {
 
     const shadowLamps = quality === 'high' ? 2 : quality === 'medium' ? 1 : 0;
     this.rov.lightMounts.forEach((mount, i) => {
-      mount.rotateY(((LAMP_SPLAY[i] ?? 0) * Math.PI) / 180);
-      // Soft-edged LED beam (penumbra) with a broad useful core.
-      const l = new SpotLight(0xf3f0e8, 0, 0, LAMP_ANGLE, 0.45, 2);
+      const spec = LAMPS[i] ?? LAMPS[2];
+      mount.rotateY((spec.splay * Math.PI) / 180);
+      mount.rotateZ((spec.down * Math.PI) / 180);
+      // Soft-edged LED beam (penumbra).
+      const l = new SpotLight(0xf3f0e8, 0, 0, (spec.angle * Math.PI) / 180, spec.penumbra, 2);
       const target = new Object3D();
       target.position.set(10, 0, 0);
       mount.add(target);
@@ -127,7 +138,7 @@ export class World {
       this.lamps.push(l);
     });
 
-    this.tether = new Mesh(new TubeGeometry(new CatmullRomCurve3([new Vector3(), new Vector3(0, 1, 0)]), 4, 0.03, 5), this.tetherMat);
+    this.tether = new Mesh(new TubeGeometry(new CatmullRomCurve3([new Vector3(), new Vector3(0, 1, 0)]), 4, 0.03, 8), this.tetherMat);
     this.tether.frustumCulled = false;
     this.tether.castShadow = quality !== 'low';
     this.scene.add(this.tether);
@@ -194,10 +205,10 @@ export class World {
     this.sea.material.uniforms.uCamPos.value.copy(opts.camPos);
 
     const lamp = opts.lightLevel;
-    for (const l of this.lamps) {
-      l.intensity = LAMP_CD * lamp;
+    this.lamps.forEach((l, i) => {
+      l.intensity = (LAMPS[i] ?? LAMPS[2]).cd * lamp * this.frontGain;
       l.visible = lamp > 0;
-    }
+    });
     this.rov.setLightLevel(lamp);
 
     this.cull(opts.camPos);
@@ -281,7 +292,13 @@ export class World {
     const pts = path.slice(0, -1).map((p) => p.clone());
     pts.push(end);
     this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), Math.max(40, pts.length * 5), 0.03, 5);
+    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), Math.max(40, pts.length * 5), 0.03, 8);
+  }
+
+  /** Optional assisted visibility of the tether (non-physical glow, clearly a display aid). */
+  setTetherAssist(on: boolean): void {
+    this.tetherMat.emissive.setHex(on ? 0x8a6a10 : 0x000000);
+    this.tetherMat.emissiveIntensity = on ? 0.6 : 0;
   }
 
   dispose(): void {

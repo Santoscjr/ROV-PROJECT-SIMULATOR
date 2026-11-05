@@ -308,6 +308,13 @@ export class Menus {
               <p class="muted small">${t('settings.stationNote')}</p>
               <div class="field"><span>${t('settings.monitor')}</span><button data-a="monitor">${t('settings.monitorOpen')}</button></div>
               <p class="muted small">${t('settings.monitorNote')}</p>
+              ${nSelect('monitor.layout', ['single', 'dual'], 'monitor.layout.')}
+              ${nSelect('monitor.instruments', ['full', 'compact', 'hidden'], 'monitor.instr.')}
+              <h3 style="margin-top:18px">${t('settings.sonar')}</h3>
+              ${nSelect('sonar.range', ['10', '20', '40', '60'], '', ' m')}
+              ${nRange('sonar.gain', 0.3, 3, 0.05)}
+              ${nSelect('sonar.quality', ['low', 'medium', 'high'], 'settings.graphics.')}
+              ${nRange('sonar.tilt', 0, 45, 1)}
             </div>
             <div>
               <h3>${t('settings.camera')}</h3>
@@ -318,6 +325,13 @@ export class Menus {
               ${fxRange('exposureBias', -1.5, 1.5, 0.1)}
               <div class="field"><label for="fx-ae">${t('settings.fx.autoExposure')}</label><input id="fx-ae" type="checkbox" data-fx="autoExposure"></div>
               <p class="muted small">${t('settings.fxNote')}</p>
+              <h3 style="margin-top:18px">${t('settings.lighting')}</h3>
+              ${nRange('lighting.front', 0.25, 2, 0.05)}
+              ${nRange('lighting.top', 0, 3, 0.05)}
+              ${nRange('lighting.tms', 0.25, 3, 0.05)}
+              ${nSelect('lighting.observer', ['normal', 'assisted'], 'settings.lighting.observer.')}
+              <div class="field"><label for="n-lighting-tetherAssist">${t('settings.lighting.tetherAssist')}</label><input id="n-lighting-tetherAssist" type="checkbox" data-n="lighting.tetherAssist"></div>
+              <p class="muted small">${t('settings.lightingNote')}</p>
             </div>
           </div>
           <div class="tab-pane settings-grid" data-pane="controls">
@@ -394,6 +408,17 @@ export class Menus {
         } else this.store.update({ [key]: value } as Partial<Settings>);
       });
     });
+    // Nested settings (group.key): lighting, sonar, monitor.
+    s.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-n]').forEach((input) =>
+      input.addEventListener('input', () => {
+        const [g, k] = input.dataset.n!.split('.') as [NestedGroup, string];
+        const cur = this.store.get()[g] as unknown as Record<string, unknown>;
+        let val: unknown = input instanceof HTMLInputElement && input.type === 'checkbox' ? input.checked : input.value;
+        if (typeof cur[k] === 'number') val = Number(val);
+        this.store.update({ [g]: { ...cur, [k]: val } } as Partial<Settings>);
+        if (input instanceof HTMLSelectElement) input.blur();
+      }),
+    );
     s.querySelectorAll<HTMLInputElement>('[data-fx]').forEach((input) =>
       input.addEventListener('input', () => {
         const k = input.dataset.fx as keyof CameraFx;
@@ -436,6 +461,16 @@ export class Menus {
         if (document.activeElement !== input) input.value = String(val);
         const out = input.nextElementSibling as HTMLOutputElement | null;
         if (out) out.textContent = (val as number).toFixed(2);
+      }
+    });
+    s.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-n]').forEach((input) => {
+      const [g, k] = input.dataset.n!.split('.') as [NestedGroup, string];
+      const val = (v[g] as unknown as Record<string, unknown>)[k];
+      if (input instanceof HTMLInputElement && input.type === 'checkbox') input.checked = !!val;
+      else {
+        if (document.activeElement !== input) input.value = String(val);
+        const out = input.nextElementSibling as HTMLOutputElement | null;
+        if (out && typeof val === 'number') out.textContent = val.toFixed(2);
       }
     });
     s.querySelectorAll<HTMLOutputElement>('output[data-o]').forEach((o) => {
@@ -528,6 +563,20 @@ export class Menus {
     this.show('report');
     (card.querySelector('button.primary') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
+}
+
+type NestedGroup = 'lighting' | 'sonar' | 'monitor';
+
+function nRange(path: string, min: number, max: number, step: number): string {
+  const id = 'n-' + path.replace('.', '-');
+  return `<div class="field"><label for="${id}">${t('settings.' + path)}</label><span class="ctl"><input id="${id}" type="range" min="${min}" max="${max}" step="${step}" data-n="${path}"><output></output></span></div>`;
+}
+
+function nSelect(path: string, values: string[], labelPrefix: string, suffix = ''): string {
+  const id = 'n-' + path.replace('.', '-');
+  return `<div class="field"><label for="${id}">${t('settings.' + path)}</label><select id="${id}" data-n="${path}">${values
+    .map((v) => `<option value="${v}">${labelPrefix ? t(labelPrefix + v) : v}${suffix}</option>`)
+    .join('')}</select></div>`;
 }
 
 function fxRange(key: keyof CameraFx, min: number, max: number, step: number): string {
