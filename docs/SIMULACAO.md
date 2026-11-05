@@ -113,3 +113,17 @@ Aproximação de treinamento, sem reproduzir um fabricante específico.
   - Não modelado: enroscamento entre segmentos do próprio cabo, torção e contato com o Top-Hat.
 - **Pitch**: os 4 propulsores verticais (x = ±0,7 m) produzem momento de pitch. Com estabilização, o comando define uma atitude-alvo de até ±15°; ao soltar, o veículo volta ao nível. No modo manual o comando é um momento direto, limitado pela estabilidade hidrostática.
 - **Sonar** (`src/render/sonar.ts`): FLS com leque de 130°, eixo inclinado 15° para baixo, ecos do fundo e dos colliders das estruturas, sombra acústica, ganho variável com a distância e speckle.
+
+## Estação, iluminação e Top-Hat (v3.1.1)
+
+- **Profundidade do Top-Hat** (`safeTmsDepth`, `src/sim/simulation.ts`): o operador escolhe a profundidade (padrão 50 m). Ela é limitada pelo fundo sob o ponto de lançamento menos o ROV acoplado (≈2,4 m abaixo do centro do Top-Hat) e uma altitude mínima de 6 m. O conjunto nunca desce indefinidamente e nunca atravessa o fundo. As missões não impõem mais 80–95 m.
+- **Partidas**: treinamento e condições adversas começam com o ROV já liberado na posição original da missão e com o tether pago (corda até o Top-Hat + folga de trabalho). A tarefa T5 volta a ser relativa à profundidade real de partida. As missões TMS e livre começam acopladas na profundidade escolhida. Na pilotagem livre, `O` recolhe o conjunto ao convés e o desce de novo.
+- **Guincho**: aceleração de 1,0 m/s². Ao soltar a tecla, o guincho para em cerca de 1,5 s.
+- **Iluminação frontal**: dois faróis direcionais (32°, os únicos que podem projetar sombra) e dois abertos (62°, abertos 30° para os lados e 10° para baixo). Há multiplicador nas Configurações.
+- **Luz superior/traseira** no topo do ROV, apontada para a terminação do tether e os primeiros metros de cabo.
+- **Tether**: jaqueta amarela, com o diâmetro físico inalterado. Há um realce opcional (emissivo), apresentado como auxílio visual.
+- **TMS**: duas luminárias próprias, independentes das luzes do ROV. Os metais têm metalness menor (sem ambiente para refletir, o aço muito metálico ficava preto). A câmera foi movida para o canto superior dianteiro, de onde vê o tambor, o cabo enrolado e a estrutura.
+- **Câmera externa assistida**: luz de observação não física e +0,6 EV, apenas nas visões externas. As câmeras operacionais não são afetadas. A turbidez continua definida pelas condições.
+- **Painéis**: cada câmera física (principal, auxiliar, tether) tem um único estado de pan/tilt/zoom, compartilhado pelos painéis que a mostram e salvo nas configurações. A câmera externa orbita de forma independente em cada painel.
+- **Desempenho**: as visões secundárias (painéis 2–4 e monitor) renderizam com resolução de 0,7, 0,85 ou 1,0 conforme a qualidade. Com frames lentos (>40 ms), a resolução cai em degraus de 25 %, até 50 %, e volta quando há folga (<24 ms). Partículas e feixes volumétricos aparecem só no painel 1. O monitor secundário usa um único contexto WebGL para os dois painéis.
+
