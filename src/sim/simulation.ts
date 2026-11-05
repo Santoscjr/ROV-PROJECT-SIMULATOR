@@ -1,13 +1,14 @@
 import { Vector3 } from 'three';
 import { RovPhysics, type ImpactEvent, type PhysicsEnvironment } from '../physics/rovPhysics';
-import { Tether } from '../physics/tether';
+import { SegmentTether } from '../physics/segmentTether';
+import { TmsWinch } from './tms';
 import { RovController, PILOT_MODES, type PilotMode } from '../control/rovController';
 import type { MissionDefinition, MissionInput, OperationMission } from '../mission/types';
 import { missionById } from '../mission/catalog';
 import { currentAt } from './ocean';
 import { DEFAULT_CONDITIONS, resolveConditions, type ConditionChoice, type EnvironmentConditions } from './conditions';
 import { terrainHeight } from './terrain';
-import { COLLIDERS, LAUNCH_HANG_HEIGHT, LAUNCH_POINT, LAUNCH_RELEASE_DEPTH } from './site';
+import { COLLIDERS, LAUNCH_HANG_HEIGHT, LAUNCH_POINT, LAUNCH_RELEASE_DEPTH, TMS } from './site';
 import { zeroAxes, type AxisCommand } from '../input/types';
 
 export type CraneState = 'hanging' | 'lowering' | 'released' | 'latching' | 'lifting' | 'onDeck';
@@ -34,7 +35,11 @@ export class Simulation {
   missionDef: MissionDefinition = missionById('inspection');
   readonly env: PhysicsEnvironment;
   /** Umbilical from the vessel (launch point) to the vehicle. */
-  readonly tether: Tether;
+  readonly tether: SegmentTether;
+  /** TMS winch managing the tether length. */
+  readonly tms = new TmsWinch();
+  /** Tether exit point at the TMS (world). */
+  readonly tmsExit = new Vector3(TMS.exit.x, TMS.exit.y, TMS.exit.z);
   /** Pilot's choice of conditions (Settings). */
   conditionChoice: ConditionChoice = { ...DEFAULT_CONDITIONS };
   /** Effective conditions = pilot's choice + mission overrides. */
@@ -65,7 +70,7 @@ export class Simulation {
       terrainHeight,
       colliders: COLLIDERS,
     };
-    this.tether = new Tether(this.env.current, {}, terrainHeight);
+    this.tether = new SegmentTether(this.env.current, {}, terrainHeight, COLLIDERS);
     this.env.tether = this.tether;
     this.reset(defaultMode);
   }
@@ -102,7 +107,11 @@ export class Simulation {
       this.wasSubmerged = true;
     }
     this.lightLevel = 0.8;
-    this.tether.reset(this.launchPoint, this.rov.position);
+    const chord = this.tmsExit.distanceTo(this.rov.position);
+    const t = def.tms ?? { mode: 'auto' as const };
+    this.tms.reset(t.payout ?? chord * 1.12 + 6, t.mode);
+    this.tether.payout = this.tms.payout;
+    this.tether.reset(this.tmsExit, this.rov.position);
     this.tether.enabled = this.crane === 'released';
     this.controller.reset();
   }
@@ -178,6 +187,10 @@ export class Simulation {
     rov.kinematicTarget.copy(this.craneHook);
 
     this.tether.enabled = this.crane === 'released';
+    if (this.tether.enabled) this.tms.update(dt, this.tether.chordLength, this.tether.tension);
+    else this.tms.payout = Math.max(this.tms.payout, this.tmsExit.distanceTo(rov.position) * 1.12 + 6);
+    this.tether.payout = this.tms.payout;
+    this.tether.setVehicle(rov.position, rov.orientation);
 
     // Pilot → controller → thrusters (thrusters also run on deck for the pre-dive check).
     this.controller.update(this.command, dt);
@@ -223,6 +236,6 @@ export class Simulation {
 
   /** Umbilical length paid out (m), straight-line approximation with slack. */
   tetherOut(): number {
-    return this.crane === 'released' ? this.tether.payout : 0;
+    return this.tms.payout;
   }
 }

@@ -64,6 +64,15 @@ export const VESSEL = {
 
 /** Launch & recovery point: alongside the starboard side, under the crane. */
 export const LAUNCH_POINT = v(VESSEL.beam / 2 + 4.5, 0, 6);
+/**
+ * Tether Management System: hangs from the vessel's main umbilical below the
+ * launch point (simplified: fixed position). The ROV tether leaves through the
+ * bottom fairlead at `TMS.exit`.
+ */
+export const TMS = {
+  position: v(LAUNCH_POINT.x, -70, LAUNCH_POINT.z),
+  exit: v(LAUNCH_POINT.x, -71.45, LAUNCH_POINT.z),
+};
 /** Height of the ROV hanging on the crane before launch. */
 export const LAUNCH_HANG_HEIGHT = 4.2;
 /** Depth at which the crane releases the vehicle (m). */

@@ -481,7 +481,7 @@ export class App {
       thrusterLevels: rov.params.thrusters.map((_, i) => rov.thrusters.level(i)),
       thrusterLoads: typeof bank.load === 'function' ? rov.params.thrusters.map((_, i) => bank.load!(i)) : null,
       saturation: st.saturation ?? 1,
-      tetherAtMax: sim.crane === 'released' && sim.tether.atMaxLength,
+      tetherAtMax: sim.tms.payout >= sim.tms.config.maxLength - 0.01,
       powerFraction: typeof bank.powerFraction === 'number' ? bank.powerFraction : null,
       command: this.input.raw,
       sources: this.input.sources,

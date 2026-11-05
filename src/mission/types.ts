@@ -160,6 +160,8 @@ export interface MissionDefinition {
   /** Conditions imposed by the mission (pilot cannot change them). */
   forcedConditions?: Partial<ConditionChoice>;
   start: StartMode;
+  /** Initial TMS state (default: AUTO with working slack). */
+  tms?: { mode: 'manual' | 'auto'; payout?: number };
   /** Default pilot mode suggested for this mission (pilot's setting wins if set explicitly). */
   create(): OperationMission;
 }
