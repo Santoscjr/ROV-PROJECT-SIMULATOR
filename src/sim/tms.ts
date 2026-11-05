@@ -41,7 +41,7 @@ export const DEFAULT_TMS: TmsConfig = {
   minLength: 3,
   payRate: 1.5,
   haulRate: 1.0,
-  accel: 0.5,
+  accel: 1.0,
   tensionWarn: 2500,
   tensionLimit: 4500,
   slipTension: 7000,

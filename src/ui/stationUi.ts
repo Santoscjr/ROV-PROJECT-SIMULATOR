@@ -4,13 +4,16 @@ import type { Rect } from '../render/station';
 import type { Hud, HudData } from './hud';
 
 /**
- * Frames, titles and source selectors of the station panels (DOM overlay).
- * Panel 0 follows the main camera; panels 1..3 can show any source.
+ * Frames, titles, source selectors and lock toggles of the station panels (DOM
+ * overlay). The active panel (target of camera commands) is highlighted.
  */
 export class StationUi {
   readonly root: HTMLDivElement;
   private frames: HTMLDivElement[] = [];
   onSource: (panel: number, source: ViewSource) => void = () => {};
+  onLock: (panel: number, locked: boolean) => void = () => {};
+  onActivate: (panel: number) => void = () => {};
+  private locks: boolean[] = [];
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -18,17 +21,29 @@ export class StationUi {
     parent.appendChild(this.root);
   }
 
-  /** Lay out the panel frames; returns the sonar host element of each panel. */
-  layout(rects: Rect[], sources: ViewSource[], mainSource: string): HTMLDivElement[] {
+  /** Lay out the panel frames; returns the host element (sonar/instruments) of each panel. */
+  layout(rects: Rect[], sources: ViewSource[], locks: boolean[], active: number): HTMLDivElement[] {
     this.root.hidden = rects.length <= 1;
+    this.locks = locks;
     while (this.frames.length < rects.length) {
       const i = this.frames.length;
       const f = document.createElement('div');
       f.className = 'st-panel';
       f.innerHTML = `<div class="st-head"><span class="st-idx">${i + 1}</span><select aria-label="${t('station.source')}">${VIEW_SOURCES.map(
         (s) => `<option value="${s}">${t('view.' + s)}</option>`,
-      ).join('')}</select></div><div class="st-host"></div>`;
-      f.querySelector('select')?.addEventListener('change', (e) => this.onSource(i, (e.target as HTMLSelectElement).value as ViewSource));
+      ).join('')}</select><button type="button" class="st-lock"></button></div><div class="st-host"></div>`;
+      const sel = f.querySelector('select') as HTMLSelectElement;
+      sel.addEventListener('change', () => {
+        this.onSource(i, sel.value as ViewSource);
+        // Give the keyboard back to the pilot: arrows must drive the winch, not this list.
+        sel.blur();
+      });
+      const lock = f.querySelector('.st-lock') as HTMLButtonElement;
+      lock.addEventListener('click', () => {
+        this.onLock(i, !this.locks[i]);
+        lock.blur();
+      });
+      f.querySelector('.st-head')?.addEventListener('pointerdown', () => this.onActivate(i));
       this.root.appendChild(f);
       this.frames.push(f);
     }
@@ -37,9 +52,18 @@ export class StationUi {
       f.hidden = !r || rects.length <= 1;
       if (!r) return;
       Object.assign(f.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
-      const sel = f.querySelector('select');
-      if (sel && document.activeElement !== sel) sel.value = sources[i];
-      void mainSource;
+      f.classList.toggle('active', i === active);
+      f.classList.toggle('locked', !!locks[i]);
+      const sel = f.querySelector('select') as HTMLSelectElement;
+      if (document.activeElement !== sel && sel.value !== sources[i]) sel.value = sources[i];
+      sel.disabled = !!locks[i];
+      const lock = f.querySelector('.st-lock') as HTMLButtonElement;
+      const lbl = t(locks[i] ? 'station.lockedShort' : 'station.freeShort');
+      if (lock.textContent !== lbl) {
+        lock.textContent = lbl;
+        lock.title = t(locks[i] ? 'station.unlock' : 'station.lock');
+        lock.setAttribute('aria-pressed', String(!!locks[i]));
+      }
     });
     return this.frames.map((f) => f.querySelector('.st-host') as HTMLDivElement);
   }

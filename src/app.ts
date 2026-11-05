@@ -1,5 +1,5 @@
 import { ACESFilmicToneMapping, PCFSoftShadowMap, SRGBColorSpace, Vector3, WebGLRenderer } from 'three';
-import { SettingsStore, type Settings } from './config/settings';
+import { SettingsStore, type CameraStates, type Settings } from './config/settings';
 import { t } from './i18n';
 import { InputManager } from './input/inputManager';
 import { KeyboardDevice } from './input/keyboard';
@@ -24,13 +24,14 @@ import { SecondaryWindow } from './render/secondaryWindow';
 import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
-import { COLLIDERS } from './sim/site';
+import { COLLIDERS, INSPECTION_POINTS } from './sim/site';
 import type { ViewSource } from './config/settings';
 
 type AppState = 'menu' | 'running' | 'paused' | 'report';
 
 const PIXEL_RATIO = { low: 1, medium: 1.5, high: 2 } as const;
 const MSAA = { low: 0, medium: 2, high: 4 } as const;
+const SECONDARY_SCALE = { low: 0.7, medium: 0.85, high: 1 } as const;
 
 export class App {
   private readonly renderer: WebGLRenderer;
@@ -40,7 +41,16 @@ export class App {
   private readonly gamepad = new GamepadDevice();
   private readonly spacemouse: SpaceMouseDevice | null;
   private readonly sim: Simulation;
+  /** Panel 0 rig (main view). Other panels own their rig in `secondary[i]`. */
   private readonly rig: CameraRig;
+  /** Main-menu orbit camera (never touches the station panels). */
+  private readonly menuRig: CameraRig;
+  /** Pan/tilt/zoom of each physical camera, shared by every panel showing it; persisted. */
+  private readonly camStates: CameraStates;
+  private camJson = '';
+  private camSaveT = 0;
+  /** Panel that receives camera commands (keyboard, SpaceMouse buttons, gamepad). */
+  activePanel = 0;
   private pass: UnderwaterPass;
   private world: World;
   private readonly hud: Hud;
@@ -57,13 +67,18 @@ export class App {
   private readonly tmp = new Vector3();
   private readonly camDir = new Vector3();
   /** Draw calls / triangles of the last frame (all passes). */
-  frameStats = { calls: 0, triangles: 0 };
+  frameStats = { calls: 0, triangles: 0, monitorCalls: 0, monitorTriangles: 0, secondaryScale: 1 };
+  /** Smoothed measured frame time (ms) and adaptive resolution factor of the secondary views. */
+  private frameMs = 16;
+  private secAdapt = 1;
   private markers = new MissionMarkers();
   private readonly tetherPts: Vector3[] = [];
   private tmsModel: TmsModel | null = null;
   private tetherLamp: SpotLight | null = null;
+  private readonly tmsLamps: SpotLight[] = [];
   private readonly instr = new InstrumentPanel();
-  private readonly monitor2 = new SecondaryWindow(terrainHeight, COLLIDERS, (doc) => new InstrumentPanel(doc));
+  private readonly monitor2: SecondaryWindow;
+  private monitorJson = '';
   /** SpaceMouse/gamepad button latches for the winch (toggle semantics). */
   private tmsLatch = { pay: false, haul: false };
   private readonly secondary: SecondaryView[] = [];
@@ -86,13 +101,21 @@ export class App {
 
     const s = this.store.get();
     this.sim = new Simulation(s.defaultMode);
-    this.rig = new CameraRig(window.innerWidth / window.innerHeight);
+    this.camStates = structuredClone(s.camState);
+    this.camJson = JSON.stringify(this.camStates);
+    this.rig = new CameraRig(window.innerWidth / window.innerHeight, this.camStates);
+    this.menuRig = new CameraRig(window.innerWidth / window.innerHeight);
+    this.menuRig.setMode('external');
+    this.monitor2 = new SecondaryWindow(terrainHeight, COLLIDERS, (doc) => new InstrumentPanel(doc), this.camStates, structuredClone(s.monitor));
+    this.monitorJson = JSON.stringify(s.monitor);
     this.pass = this.makePass(s);
     this.world = new World(this.renderer, s.graphics, this.pass);
     this.attachExtras();
     this.configureRenderer(s);
 
     this.keyboard = new KeyboardDevice(s.bindings);
+    // Keys typed while a menu is open go to the menu's form controls, not the ROV.
+    this.keyboard.uiActive = () => this.state !== 'running';
     this.input.add(this.keyboard);
     this.input.add(this.gamepad);
     this.spacemouse = SpaceMouseDevice.isSupported() ? new SpaceMouseDevice() : null;
@@ -129,10 +152,16 @@ export class App {
     this.hud = new Hud(container);
     this.station = new StationUi(container);
     this.station.onSource = (i, src) => {
-      const panels = [...this.store.get().panels];
-      panels[i] = src;
-      this.store.update({ panels });
+      this.activePanel = i;
+      this.setPanelSource(i, src, true);
     };
+    this.station.onLock = (i, locked) => {
+      const panelLocks = [...this.store.get().panelLocks];
+      panelLocks[i] = locked;
+      this.store.update({ panelLocks });
+      this.hud.toast(t(locked ? 'station.lockedOn' : 'station.lockedOff', { n: i + 1 }));
+    };
+    this.station.onActivate = (i) => (this.activePanel = i);
     this.sonar = new Sonar(terrainHeight, COLLIDERS);
     this.hud.onTmsAction = (a: PilotAction) => this.handleAction(a);
     this.menus = new Menus(container, this.store, MISSIONS, {
@@ -141,10 +170,18 @@ export class App {
       restart: () => this.restart(),
       mainMenu: () => this.toMainMenu(),
       spaceMouse: () => this.spacemouse,
-      openMonitor: () => this.monitor2.open(this.store.get().monitorSource),
+      openMonitor: () => this.monitor2.open(),
     });
-    this.monitor2.onSourceChange = (src) => this.store.update({ monitorSource: src });
-    window.addEventListener('beforeunload', () => this.monitor2.dispose());
+    this.monitor2.onChange = (m) => {
+      this.monitorJson = JSON.stringify(m);
+      this.store.update({ monitor: structuredClone(m) });
+    };
+    // Keys typed in the monitor window drive the same (single) keyboard device.
+    this.monitor2.onAttach = (w) => this.keyboard.attachWindow(w);
+    this.monitor2.onDetach = (w) => this.keyboard.detachWindow(w);
+    // The monitor page adopts itself on load, after its own reload and after this window's reload.
+    (window as unknown as Record<string, unknown>).__rovAdoptMonitor = (w: Window) => this.monitor2.adopt(w);
+    window.addEventListener('beforeunload', () => this.monitor2.unlink());
 
     this.applySettings(s);
     this.store.subscribe((ns) => this.applySettings(ns));
@@ -155,7 +192,7 @@ export class App {
     });
     this.resize();
     // Expose a read-only handle for automated browser tests.
-    (window as unknown as Record<string, unknown>).__ROV__ = { sim: this.sim, app: this };
+    (window as unknown as Record<string, unknown>).__ROV__ = { sim: this.sim, app: this, site: { inspectionPoints: INSPECTION_POINTS } };
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
@@ -187,23 +224,34 @@ export class App {
     this.keyboard.ramp = s.keyRamp;
     this.gamepad.deadzone = s.gamepadDeadzone;
     this.input.shaping = { sensitivity: s.sensitivity, invert: s.invert, fineGain: 0.35 };
-    this.rig.mouseSensitivity = s.mouseSensitivity;
-    this.rig.invertTilt = s.invert.camTilt;
+    for (const r of this.allRigs()) {
+      r.mouseSensitivity = s.mouseSensitivity;
+      r.invertTilt = s.invert.camTilt;
+    }
+    // Camera states changed from outside (settings reset / another tab): copy in place.
+    const cj = JSON.stringify(s.camState);
+    if (cj !== this.camJson) {
+      copyCamStates(this.camStates, s.camState);
+      this.camJson = cj;
+    }
     this.sim.setConditionChoice({ current: s.current, visibility: s.visibility, light: s.light, sea: s.sea });
     this.world.setConditions(this.sim.conditions);
     this.audio.setVolume(s.volume);
     this.sim.tether.setBuoyancy(s.tetherBuoyancy);
     this.sim.tmsDepth = s.tmsDepth;
     this.sim.lars.assist = s.dockAssist;
+    const mj = JSON.stringify(s.monitor);
+    if (mj !== this.monitorJson) {
+      this.monitorJson = mj;
+      this.monitor2.setSettings(structuredClone(s.monitor));
+    }
+    this.sonar.configure(s.sonar);
+    this.monitor2.setSonar(s.sonar);
   }
 
   private start(missionId = this.store.get().mission): void {
-    // Fresh state: no camera/sonar/panel state carried over from a previous operation.
-    this.secondary.forEach((v) => v.dispose());
-    this.secondary.length = 0;
-    this.rig.pan = 0;
-    this.rig.zoom = 1;
-    this.rig.tetherPan = this.rig.tetherTilt = this.rig.auxPan = this.rig.auxTilt = 0;
+    // Station configuration (layout, panel sources, locks, camera pan/tilt/zoom) is
+    // operator setup and survives mission start/restart; only vehicle state resets.
     this.tmsLatch = { pay: false, haul: false };
     this.audio.init();
     if (missionId !== this.store.get().mission) this.store.update({ mission: missionId });
@@ -212,8 +260,8 @@ export class App {
     this.world.setConditions(this.sim.conditions);
     this.fineLatched = false;
     this.pass.resetAdaptation();
-    this.rig.setMode(def.start === 'crane' ? 'external' : 'operational');
-    this.rig.tilt = def.start === 'crane' ? -10 : -22;
+    this.secondary.forEach((v) => v.pass?.resetAdaptation());
+    this.activePanel = Math.min(this.activePanel, this.panelCount() - 1);
     this.reportShown = false;
     this.state = 'running';
     this.menus.show(null);
@@ -262,30 +310,118 @@ export class App {
     this.rig.camera.updateProjectionMatrix();
   }
 
+  // ---------- Station panels ----------
+  private panelCount(): number {
+    return layoutRects(this.store.get().layout, 1, 1).length;
+  }
+
+  private allRigs(): CameraRig[] {
+    return [this.rig, ...this.secondary.filter(Boolean).map((v) => v.rig)];
+  }
+
+  /** Index of the panel under a client point (current layout). */
+  private panelAt(x: number, y: number): number {
+    const rects = layoutRects(this.store.get().layout, window.innerWidth, window.innerHeight);
+    const i = rects.findIndex((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+    return Math.max(0, i);
+  }
+
+  /** Camera rig of panel i (null when the panel shows sonar/instruments). */
+  rigFor(i: number): CameraRig | null {
+    const src = this.store.get().panels[i];
+    if (!isCameraSource(src)) return null;
+    if (i === 0) return this.rig;
+    const v = (this.secondary[i] ??= this.makeView(src));
+    if (v.source !== src) v.setSource(src);
+    return v.rig;
+  }
+
+  private makeView(src: ViewSource): SecondaryView {
+    const v = new SecondaryView(src, this.camStates);
+    v.rig.mouseSensitivity = this.store.get().mouseSensitivity;
+    v.rig.invertTilt = this.store.get().invert.camTilt;
+    return v;
+  }
+
+  private activeIndex(): number {
+    return Math.min(this.activePanel, this.panelCount() - 1);
+  }
+
+  /**
+   * Change a panel's source. Implicit changes (shortcuts, SpaceMouse, gamepad)
+   * are refused on a locked panel; explicit ones come from the panel selector.
+   */
+  setPanelSource(i: number, src: ViewSource, explicit = false): boolean {
+    const st = this.store.get();
+    if (!explicit && st.panelLocks[i]) {
+      this.hud.toast(t('station.lockedRefused', { n: i + 1 }), 'warn');
+      return false;
+    }
+    if (st.panels[i] === src) return true;
+    const panels = [...st.panels];
+    panels[i] = src;
+    this.store.update({ panels });
+    if (i === 0) this.pass.resetAdaptation();
+    else this.secondary[i]?.pass?.resetAdaptation();
+    return true;
+  }
+
+  /** Camera shortcut / device button: put a camera on the active panel (if unlocked). */
+  private selectCamera(m: CameraMode): void {
+    const i = this.activeIndex();
+    if (!this.setPanelSource(i, m)) return;
+    this.sim.mission.notifyCameraToggled();
+    const n = this.panelCount();
+    this.hud.toast(n > 1 ? t('msg.cameraPanel', { c: t('view.' + m), n: i + 1 }) : t('msg.camera', { c: t('view.' + m) }));
+  }
+
+  /** Secondary-view resolution factor (quantised to avoid reallocating targets every frame). */
+  private secScale(): number {
+    return Math.round(this.secAdapt * 4) / 4;
+  }
+
+  /** Persist camera pan/tilt/zoom (throttled; only when changed). */
+  private saveCamStates(force = false): void {
+    if (!force && this.time - this.camSaveT < 1) return;
+    this.camSaveT = this.time;
+    const j = JSON.stringify(this.camStates);
+    if (j === this.camJson) return;
+    this.store.update({ camState: structuredClone(this.camStates) });
+    copyCamStates(this.camStates, this.store.get().camState);
+    this.camJson = JSON.stringify(this.camStates);
+  }
+
+  /**
+   * Mouse acts on the panel under the pointer: a press selects it as the active
+   * panel and the drag stays bound to it (dragging panel 3 never moves panel 1).
+   */
   private bindPointer(canvas: HTMLCanvasElement): void {
-    let dragging = false;
+    let dragPanel = -1;
     let lx = 0;
     let ly = 0;
     canvas.addEventListener('pointerdown', (e) => {
-      dragging = true;
+      dragPanel = this.panelAt(e.clientX, e.clientY);
+      if (this.state === 'running') this.activePanel = dragPanel;
       lx = e.clientX;
       ly = e.clientY;
       canvas.setPointerCapture(e.pointerId);
     });
     canvas.addEventListener('pointermove', (e) => {
-      if (!dragging || this.state !== 'running') return;
-      this.rig.drag(e.clientX - lx, e.clientY - ly);
+      if (dragPanel < 0 || this.state !== 'running') return;
+      this.rigFor(dragPanel)?.drag(e.clientX - lx, e.clientY - ly);
       lx = e.clientX;
       ly = e.clientY;
     });
-    const end = () => (dragging = false);
+    const end = () => (dragPanel = -1);
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', end);
     canvas.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
-        if (this.state === 'running') this.rig.wheel(e.deltaY);
+        if (this.state !== 'running') return;
+        // Wheel = tilt (as in v2); Ctrl/Alt + wheel = zoom. External view: distance.
+        this.rigFor(this.panelAt(e.clientX, e.clientY))?.wheel(e.deltaY, e.ctrlKey || e.altKey);
       },
       { passive: false },
     );
@@ -321,16 +457,18 @@ export class App {
         break;
       }
       case 'toggleCamera': {
-        const m = this.rig.toggle();
-        this.setPanel0(m);
-        this.pass.resetAdaptation();
-        sim.mission.notifyCameraToggled();
-        this.hud.toast(t('msg.camera', { c: t('view.' + m) }));
+        // Operational ⇄ external on the active panel (as in v2), if not locked.
+        const cur = this.store.get().panels[this.activeIndex()];
+        this.selectCamera(cur === 'operational' ? 'external' : 'operational');
         break;
       }
-      case 'camTiltCenter':
-        this.rig.tilt = 0;
+      case 'camTiltCenter': {
+        const r = this.rigFor(this.activeIndex());
+        if (r && r.mode === 'operational') r.tilt = 0;
+        else if (r && r.mode === 'auxiliary') r.auxTilt = 0;
+        else if (r && r.mode === 'tether') r.tetherTilt = 0;
         break;
+      }
       case 'cycleMode':
         this.modeToast(sim.cycleMode());
         break;
@@ -355,21 +493,27 @@ export class App {
       case 'camTms':
       case 'camTether': {
         const m = ({ camOp: 'operational', camAux: 'auxiliary', camExt: 'external', camTms: 'tms', camTether: 'tether' } as const)[a];
-        this.rig.setMode(m);
-        this.setPanel0(m);
-        this.pass.resetAdaptation();
-        sim.mission.notifyCameraToggled();
-        this.hud.toast(t('msg.camera', { c: t('view.' + m) }));
+        this.selectCamera(m);
         break;
       }
       case 'monitorOpen':
-        if (!this.monitor2.open(this.store.get().monitorSource)) this.hud.toast(t('settings.monitorBlocked'), 'warn', 5000);
+        if (!this.monitor2.open()) this.hud.toast(t('settings.monitorBlocked'), 'warn', 5000);
         return;
       case 'layoutCycle': {
         const order = ['single', 'dual', 'quad'] as const;
         const next = order[(order.indexOf(this.store.get().layout) + 1) % order.length];
         this.store.update({ layout: next });
         this.hud.toast(t('msg.layout.' + next));
+        break;
+      }
+      case 'tmsRecover': {
+        // Free mode only (missions drive launch/recovery themselves).
+        if (sim.missionDef.id !== 'free') {
+          this.hud.toast(t('msg.recover.missionOnly'), 'warn');
+          break;
+        }
+        const r = sim.toggleAssembly();
+        this.hud.toast(t(r ? 'msg.recover.' + r : 'msg.recover.dockFirst'), r ? 'ok' : 'warn', 4000);
         break;
       }
       case 'tmsAuto':
@@ -414,10 +558,13 @@ export class App {
   // ---------- Frame ----------
   private frame(): void {
     const now = performance.now();
-    const dt = Math.min(0.1, (now - this.last) / 1000);
+    const realMs = now - this.last;
+    const dt = Math.min(0.1, realMs / 1000);
     this.last = now;
     this.time += dt;
-    this.fps += (1 / Math.max(dt, 1e-3) - this.fps) * 0.05;
+    // Measured (unclamped) frame rate / time.
+    this.fps += (1000 / Math.max(realMs, 1) - this.fps) * 0.05;
+    this.frameMs += (Math.min(realMs, 1000) - this.frameMs) * 0.05;
 
     const actions = this.input.poll();
     for (const a of actions) this.handleAction(a);
@@ -432,8 +579,12 @@ export class App {
       }
       this.sim.tms.setCommand(pay, haul);
       if (live) {
+        // Camera commands act on the active panel's camera (allowed even when locked).
+        const ar = this.rigFor(this.activeIndex());
         const z = (this.keyboard.held('zoomIn') ? 1 : 0) - (this.keyboard.held('zoomOut') ? 1 : 0);
-        if (z) this.rig.adjustZoom(z * dt * 8);
+        if (z) ar?.adjustZoom(z * dt * 8);
+        const p = (this.keyboard.held('camPan+') ? 1 : 0) - (this.keyboard.held('camPan-') ? 1 : 0);
+        if (p) ar?.panBy(p * 40 * dt);
       }
     }
     // Fine control: Shift held, or latched by a device button.
@@ -444,7 +595,7 @@ export class App {
     if (running) {
       const c = this.input.command;
       Object.assign(sim.command, c);
-      this.rig.adjustTilt(c.camTilt * 40 * dt);
+      this.rigFor(this.activeIndex())?.tiltBy(c.camTilt * 40 * dt);
       const ev = sim.advance(dt);
       for (const imp of ev.impacts) {
         this.audio.knock(imp.speed);
@@ -470,18 +621,21 @@ export class App {
     const levels = sim.rov.params.thrusters.map((_, i) => sim.rov.thrusters.level(i));
     rov.setThrust(levels, running ? dt : 0);
 
-    // Cameras: in the main menu, slowly orbit the vehicle on the crane.
-    if (this.state === 'menu') {
+    // Cameras: in the main menu a separate rig slowly orbits the vehicle on the crane.
+    const menu = this.state === 'menu';
+    if (menu) {
       this.menuOrbit += dt * 0.08;
-      this.rig.setMode('external');
-      this.rig.orbitYaw = 2.2 + Math.sin(this.menuOrbit) * 0.6;
-      this.rig.orbitPitch = 0.12;
-      this.rig.orbitDist = 7;
+      this.menuRig.orbitYaw = 2.2 + Math.sin(this.menuOrbit) * 0.6;
+      this.menuRig.orbitPitch = 0.12;
+      this.menuRig.orbitDist = 7;
     }
+    const st = this.store.get();
+    if (isCameraSource(st.panels[0]) && st.panels[0] !== this.rig.mode) this.rig.setMode(st.panels[0] as CameraMode);
+    const rig0 = menu ? this.menuRig : this.rig;
     const headingRad = (sim.rov.heading * Math.PI) / 180;
-    this.rig.tmsMount = this.tmsModel?.cameraMount ?? null;
-    this.rig.update(dt, rov.root, rov.cameraEye, headingRad);
-    const cam = this.rig.camera;
+    rig0.tmsMount = this.tmsModel?.cameraMount ?? null;
+    rig0.update(dt, rov.root, rov.cameraEye, headingRad);
+    const cam = rig0.camera;
 
     // Mission (uses the operational camera geometry even when viewing externally).
     rov.cameraEye.getWorldPosition(this.tmp);
@@ -507,9 +661,11 @@ export class App {
     // Observer-mode light: a non-physical visual aid used ONLY while rendering
     // external views (set per panel below), never for the operational cameras.
     const obs = this.world.observerLight;
+    const lighting = st.lighting;
+    const assisted = lighting.observer === 'assisted';
     const observer = (mode: string, pos: Vector3) => {
       obs.position.copy(pos);
-      obs.intensity = mode === 'external' && pos.y < -15 ? 45 : 0;
+      obs.intensity = assisted && mode === 'external' && pos.y < -8 ? 60 : 0;
     };
     const camUnder = camDepth > 0;
     if (camUnder !== this.lastCamUnder) {
@@ -538,20 +694,27 @@ export class App {
       const ph = (tms.payout / 6) % 2;
       this.tmsModel.setLevelWind(ph < 1 ? ph * 2 - 1 : 3 - ph * 2);
     }
-    if (this.tetherLamp) this.tetherLamp.intensity = 7 * sim.effectiveLight;
-    const fx = this.store.get().cameraFx;
+    // Top/aft lamp of the ROV (tether termination + first metres) and the TMS lamps.
+    if (this.tetherLamp) {
+      this.tetherLamp.intensity = 30 * lighting.top * sim.effectiveLight;
+      this.tetherLamp.visible = this.tetherLamp.intensity > 0;
+    }
+    for (const l of this.tmsLamps) l.intensity = 30 * lighting.tms;
+    this.world.frontGain = lighting.front;
+    this.world.setTetherAssist(lighting.tetherAssist);
+    const fx = st.cameraFx;
+    // Observer (external) camera, assisted: +0.6 EV on that view only.
+    const fxExt = assisted ? { ...fx, exposureBias: fx.exposureBias + 0.6 } : fx;
+    const fxFor = (mode: string) => (mode === 'external' ? fxExt : fx);
     const wbFor = (depth: number) => Math.min(1, Math.max(0, (depth - 25) / 40)) * (sim.effectiveLight > 0 ? 1 : 0.35);
-    const st = this.store.get();
     const W = window.innerWidth;
     const H = window.innerHeight;
     const pr = this.renderer.getPixelRatio();
-    const rects = layoutRects(st.layout, W, H);
-    const multi = rects.length > 1;
-    // Panel 0 follows the interactive rig; in multi-view it can show any source.
-    const src0 = multi ? st.panels[0] : this.rig.mode;
-    if (multi && isCameraSource(st.panels[0]) && st.panels[0] !== this.rig.mode) this.rig.setMode(st.panels[0] as CameraMode);
-    const hosts = this.station.layout(rects, st.panels, this.rig.mode);
-    this.hud.root.dataset.layout = st.layout;
+    const rects = layoutRects(menu ? 'single' : st.layout, W, H);
+    const src0: ViewSource = menu ? 'external' : st.panels[0];
+    const active = this.activeIndex();
+    const hosts = this.station.layout(rects, st.panels, st.panelLocks, active);
+    this.hud.root.dataset.layout = menu ? 'single' : st.layout;
     const info = this.renderer.info;
     info.autoReset = false;
     info.reset();
@@ -590,8 +753,8 @@ export class App {
         cam.aspect = r.w / r.h;
         cam.updateProjectionMatrix();
         usePanel(this.renderer, vp);
-        observer(this.rig.mode, cam.position);
-        this.pass.setCameraFx(fx, this.rig.mode === 'operational');
+        observer(rig0.mode, cam.position);
+        this.pass.setCameraFx(fxFor(src0), rig0.mode === 'operational');
         this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wbFor(camDepth) });
         this.world.effects.update(cam, {
           time: this.time,
@@ -610,9 +773,11 @@ export class App {
         this.renderer.autoClear = true;
       } else {
         // Secondary views (shared simulation & scene; no particle overlay).
-        const view = (this.secondary[i] ??= new SecondaryView(src));
+        const view = (this.secondary[i] ??= this.makeView(src));
         if (view.source !== src) view.setSource(src);
-        const sp = view.ensurePass(Math.round(vp.w * 0.75), Math.round(vp.h * 0.75));
+        // Resolution of the secondary panels follows the quality preset (parity with the main view on 'high').
+        const k = SECONDARY_SCALE[st.graphics] * this.secScale();
+        const sp = view.ensurePass(Math.round(vp.w * k), Math.round(vp.h * k));
         sp.setWater(this.pass.optics);
         view.rig.tmsMount = this.tmsModel?.cameraMount ?? null;
         view.rig.camera.aspect = r.w / r.h;
@@ -620,7 +785,7 @@ export class App {
         const vc = view.rig.camera;
         const d = -vc.position.y;
         observer(view.rig.mode, vc.position);
-        sp.setCameraFx(fx, src === 'operational' || src === 'auxiliary');
+        sp.setCameraFx(fxFor(src), src === 'operational' || src === 'auxiliary');
         sp.update(vc, { camDepth: d, seabedDepth: -terrainHeight(vc.position.x, vc.position.z) || SITE_BASE_DEPTH, time: this.time, wet: 0, whiteBalance: wbFor(d) });
         usePanel(this.renderer, vp);
         sp.render(this.renderer, this.world.scene, vc);
@@ -629,6 +794,13 @@ export class App {
     }
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, W, H);
+    // Free the render targets of panels that are hidden or show sonar/instruments
+    // (their rig — camera orientation — is kept).
+    for (let i = 1; i < this.secondary.length; i++) {
+      const v = this.secondary[i];
+      if (v?.pass && (i >= rects.length || !isCameraSource(st.panels[i]))) v.dispose();
+    }
+    if (running) this.saveCamStates();
     // Sonar: scan the real geometry only while it is visible.
     if (sonarHost && sonarRect) {
       if (this.sonar.canvas.parentElement !== sonarHost) sonarHost.appendChild(this.sonar.canvas);
@@ -645,21 +817,32 @@ export class App {
       headingRad,
       tmsMount: this.tmsModel?.cameraMount ?? null,
       mainPass: this.pass,
-      fx,
+      fxFor,
+      scale: this.secScale(),
       terrainHeight,
       whiteBalance: wbFor,
-      observer: (mode, _y, pos) => observer(mode, pos as Vector3),
+      observer,
       rovPos: sim.rov.position,
       heading: sim.rov.heading,
       running,
     });
-    if (this.monitor2.instruments && this.hud.lastData) this.monitor2.instruments.update(this.hud.lastData, this.hud);
+    if (this.hud.lastData) {
+      this.monitor2.instruments?.update(this.hud.lastData, this.hud);
+      this.monitor2.updateBar(this.hud.lastData);
+    }
     // Instrumentation panel.
     if (instrHost && instrRect && this.hud.lastData) {
       if (this.instr.root.parentElement !== instrHost) instrHost.appendChild(this.instr.root);
       this.instr.update(this.hud.lastData, this.hud);
     } else if (this.instr.root.parentElement) this.instr.root.remove();
-    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles };
+    // Graceful degradation: with several views, lower the secondary views' resolution
+    // (in 25 % steps) while frames are slow, and restore it when there is headroom.
+    if (running && (rects.length > 1 || this.monitor2.isOpen)) {
+      if (this.frameMs > 40) this.secAdapt = Math.max(0.5, this.secAdapt - dt * 0.1);
+      else if (this.frameMs < 24) this.secAdapt = Math.min(1, this.secAdapt + dt * 0.05);
+    }
+    const ms = this.monitor2.stats;
+    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles, monitorCalls: ms.calls, monitorTriangles: ms.triangles, secondaryScale: this.secScale() };
 
     // Audio & HUD.
     const load = levels.reduce((s, l) => s + Math.abs(l), 0) / levels.length;
@@ -673,20 +856,9 @@ export class App {
     return t(o.key, params);
   }
 
-  /** Keep panel 0's stored source in sync with the interactive camera. */
-  private setPanel0(m: CameraMode): void {
-    const panels = [...this.store.get().panels];
-    if (panels[0] !== m) {
-      panels[0] = m;
-      this.store.update({ panels });
-    }
-  }
-
   /** True if the ROV pilot camera is visible in any station panel. */
   private operationalVisible(): boolean {
-    const st = this.store.get();
-    const n = layoutRects(st.layout, 1, 1).length;
-    return this.rig.mode === 'operational' || (n > 1 && st.panels.slice(0, n).includes('operational' as ViewSource));
+    return this.store.get().panels.slice(0, this.panelCount()).includes('operational');
   }
 
   /** TMS model, its lamp and the main umbilical (re-attached when the World is rebuilt). */
@@ -698,17 +870,22 @@ export class App {
     m.root.position.copy(this.sim.lars.position);
     m.root.rotation.y = this.sim.lars.yaw;
     scene.add(m.root);
-    // TMS mechanism lamp (lights the drum, level-wind and exit guide for the TMS camera at any depth).
-    const lamp = new SpotLight(0xfff2d8, 22, 0, (55 * Math.PI) / 180, 0.5, 2);
-    const target = new Object3D();
-    target.position.set(0, 0, -5);
-    m.lightMounts[0].add(lamp, target);
-    lamp.target = target;
-    // Tether-camera lamp on the ROV top, aimed aft/up along the tether termination.
-    const tl = new SpotLight(0xf3f0e8, 0, 0, (60 * Math.PI) / 180, 0.6, 2);
+    // TMS mechanism lamps (both mounts): light the drum, level wind and exit guide
+    // for the TMS camera at any depth. Powered by the TMS, independent of ROV lights.
+    this.tmsLamps.length = 0;
+    for (const mount of m.lightMounts) {
+      const lamp = new SpotLight(0xfff2d8, 30, 0, (60 * Math.PI) / 180, 0.6, 2);
+      const target = new Object3D();
+      target.position.set(0, 0, -5);
+      mount.add(lamp, target);
+      lamp.target = target;
+      this.tmsLamps.push(lamp);
+    }
+    // Top/aft lamp on the ROV, aimed aft/up along the tether termination and first metres.
+    const tl = new SpotLight(0xf3f0e8, 0, 0, (70 * Math.PI) / 180, 0.7, 2);
     const tt = new Object3D();
-    tl.position.set(0.5, 1.0, 0.3);
-    tt.position.set(-3, 2.2, 0);
+    tl.position.set(0.2, 1.2, 0);
+    tt.position.set(-4, 3.4, 0);
     this.world.rov.root.add(tl, tt);
     tl.target = tt;
     this.tetherLamp = tl;
@@ -805,4 +982,8 @@ export class App {
       fps: this.store.get().showFps ? this.fps : null,
     };
   }
+}
+
+function copyCamStates(dst: CameraStates, src: CameraStates): void {
+  for (const k of Object.keys(dst) as (keyof CameraStates)[]) Object.assign(dst[k], src[k]);
 }

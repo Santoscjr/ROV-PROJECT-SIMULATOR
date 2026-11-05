@@ -15,6 +15,8 @@ export const BINDABLE = [
   'yaw-',
   'camTilt+',
   'camTilt-',
+  'camPan-',
+  'camPan+',
   'pitch+',
   'pitch-',
   'fineControl',
@@ -42,6 +44,7 @@ export const BINDABLE = [
   'camTether',
   'zoomIn',
   'zoomOut',
+  'tmsRecover',
   'layoutCycle',
   'monitorOpen',
 ] as const;
@@ -54,6 +57,8 @@ type PresetKeys = 'surge+' | 'surge-' | 'sway+' | 'sway-' | 'heave+' | 'heave-' 
 const COMMON: Omit<KeyBindings, PresetKeys> = {
   'camTilt+': ['KeyT'],
   'camTilt-': ['KeyG'],
+  'camPan-': ['KeyB'],
+  'camPan+': ['KeyN'],
   fineControl: ['ShiftLeft', 'ShiftRight'],
   toggleLights: ['KeyL'],
   lightsUp: ['BracketRight', 'Equal'],
@@ -77,6 +82,7 @@ const COMMON: Omit<KeyBindings, PresetKeys> = {
   camTether: ['Digit0'],
   zoomIn: ['KeyZ'],
   zoomOut: ['KeyX'],
+  tmsRecover: ['KeyO'],
   layoutCycle: ['KeyY'],
   monitorOpen: ['F8'],
 };
@@ -161,7 +167,20 @@ export interface Settings {
   /** Tether wet weight preset. */
   tetherBuoyancy: 'positive' | 'neutral' | 'negative';
   /** Source shown on the secondary monitor window. */
+  /** @deprecated v3.1 single-source monitor (migrated into `monitor.sources[0]`). */
   monitorSource: ViewSource;
+  /** Panel source lock: a locked panel never changes source from shortcuts/devices. */
+  panelLocks: boolean[];
+  /** Orientation of the physical cameras (shared by every panel showing them). */
+  camState: CameraStates;
+  /** Secondary monitor window. */
+  monitor: MonitorSettings;
+  /** Lighting multipliers (1 = default). */
+  lighting: LightingSettings;
+  /** Sonar display/processing preferences. */
+  sonar: SonarSettings;
+  /** Settings schema version (for migrations). */
+  version: number;
   /** Beginner docking assistance (larger capture envelope). */
   dockAssist: boolean;
   /** Default Top-Hat operating depth (m). */
@@ -170,6 +189,43 @@ export interface Settings {
 
 export type ViewLayout = 'single' | 'dual' | 'quad';
 export type ViewSource = 'operational' | 'auxiliary' | 'external' | 'tms' | 'tether' | 'sonar' | 'instruments';
+
+export interface CamPose {
+  pan: number;
+  tilt: number;
+  zoom: number;
+}
+export interface CameraStates {
+  operational: CamPose;
+  auxiliary: CamPose;
+  tether: CamPose;
+}
+export const DEFAULT_CAM_STATES: CameraStates = {
+  operational: { pan: 0, tilt: -10, zoom: 1 },
+  auxiliary: { pan: 0, tilt: 0, zoom: 1 },
+  tether: { pan: 0, tilt: 0, zoom: 1 },
+};
+export interface MonitorSettings {
+  layout: 'single' | 'dual';
+  sources: ViewSource[];
+  instruments: 'full' | 'compact' | 'hidden';
+}
+export interface LightingSettings {
+  front: number;
+  top: number;
+  tms: number;
+  /** Observer (external camera) assistance: non-physical light + exposure, external views only. */
+  observer: 'normal' | 'assisted';
+  /** Optional non-physical high-visibility rendering of the tether. */
+  tetherAssist: boolean;
+}
+export interface SonarSettings {
+  range: 10 | 20 | 40 | 60;
+  gain: number;
+  quality: 'low' | 'medium' | 'high';
+  tilt: number;
+}
+export const SETTINGS_VERSION = 311;
 export const VIEW_SOURCES: ViewSource[] = ['operational', 'auxiliary', 'external', 'tms', 'tether', 'sonar', 'instruments'];
 const DEFAULT_PANELS: ViewSource[] = ['operational', 'sonar', 'tether', 'auxiliary'];
 
@@ -196,8 +252,14 @@ export const DEFAULT_SETTINGS: Settings = {
   panels: [...DEFAULT_PANELS],
   tetherBuoyancy: 'neutral',
   dockAssist: true,
-  tmsDepth: 80,
+  tmsDepth: 50,
   monitorSource: 'sonar',
+  panelLocks: [false, true, true, true],
+  camState: structuredClone(DEFAULT_CAM_STATES),
+  monitor: { layout: 'dual', sources: ['external', 'tms'], instruments: 'compact' },
+  lighting: { front: 1, top: 1, tms: 1, observer: 'assisted', tetherAssist: false },
+  sonar: { range: 40, gain: 1, quality: 'medium', tilt: 15 },
+  version: SETTINGS_VERSION,
 };
 
 const STORAGE_KEY = 'rov.settings.v1';
@@ -256,8 +318,60 @@ export function sanitizeSettings(raw: unknown): Settings {
     panels: DEFAULT_PANELS.map((def, i) => pick(Array.isArray(r.panels) ? r.panels[i] : undefined, VIEW_SOURCES, def)),
     dockAssist: r.dockAssist !== false,
     monitorSource: pick(r.monitorSource, VIEW_SOURCES, d.monitorSource),
-    tmsDepth: num(r.tmsDepth, 40, 100, d.tmsDepth),
+    // v3.1 → v3.1.1: the old default release depth (80 m) was found too deep; only migrate the untouched default.
+    tmsDepth: typeof r.version !== 'number' && r.tmsDepth === 80 ? d.tmsDepth : num(r.tmsDepth, 20, 100, d.tmsDepth),
+    panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
+    camState: sanitizeCamStates(r.camState),
+    monitor: sanitizeMonitor(r.monitor, r.monitorSource),
+    lighting: sanitizeLighting(r.lighting),
+    sonar: sanitizeSonar(r.sonar),
+    version: SETTINGS_VERSION,
     tetherBuoyancy: pick(r.tetherBuoyancy, ['positive', 'neutral', 'negative'] as const, d.tetherBuoyancy),
+  };
+}
+
+function obj(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+}
+function sanitizeCamStates(raw: unknown): CameraStates {
+  const r = obj(raw);
+  const pose = (k: keyof CameraStates): CamPose => {
+    const p = obj(r[k]);
+    const d = DEFAULT_CAM_STATES[k];
+    return { pan: num(p.pan, -150, 150, d.pan), tilt: num(p.tilt, -70, 60, d.tilt), zoom: num(p.zoom, 0.35, 1, d.zoom) };
+  };
+  return { operational: pose('operational'), auxiliary: pose('auxiliary'), tether: pose('tether') };
+}
+function sanitizeMonitor(raw: unknown, legacySource: unknown): MonitorSettings {
+  const r = obj(raw);
+  const d = DEFAULT_SETTINGS.monitor;
+  const legacy = VIEW_SOURCES.includes(legacySource as ViewSource) ? (legacySource as ViewSource) : null;
+  const src = Array.isArray(r.sources) ? r.sources : legacy ? [legacy, d.sources[1]] : d.sources;
+  return {
+    layout: pick(r.layout, ['single', 'dual'] as const, legacy && !raw ? 'single' : d.layout),
+    sources: [0, 1].map((i) => pick(src[i], VIEW_SOURCES, d.sources[i])),
+    instruments: pick(r.instruments, ['full', 'compact', 'hidden'] as const, d.instruments),
+  };
+}
+function sanitizeLighting(raw: unknown): LightingSettings {
+  const r = obj(raw);
+  const d = DEFAULT_SETTINGS.lighting;
+  return {
+    front: num(r.front, 0.25, 2, d.front),
+    top: num(r.top, 0, 3, d.top),
+    tms: num(r.tms, 0.25, 3, d.tms),
+    observer: pick(r.observer, ['normal', 'assisted'] as const, d.observer),
+    tetherAssist: r.tetherAssist === true,
+  };
+}
+function sanitizeSonar(raw: unknown): SonarSettings {
+  const r = obj(raw);
+  const d = DEFAULT_SETTINGS.sonar;
+  return {
+    range: pick(r.range, [10, 20, 40, 60] as const, d.range),
+    gain: num(r.gain, 0.3, 3, d.gain),
+    quality: pick(r.quality, ['low', 'medium', 'high'] as const, d.quality),
+    tilt: num(r.tilt, 0, 45, d.tilt),
   };
 }
 

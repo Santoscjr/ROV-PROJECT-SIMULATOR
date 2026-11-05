@@ -80,6 +80,7 @@ export interface HudData {
 
 const fmt = (v: number, d = 1) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);
 const pad3 = (v: number) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0');
+const cardinal = (v: number) => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round((((v % 360) + 360) % 360) / 45) % 8];
 const hms = (s: number) => {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -343,17 +344,25 @@ export class Hud {
     e.ibar.innerHTML = [
       [t('hud.depth'), `${fmt(Math.max(0, d.depth), 1)} m`],
       [t('hud.altitude'), d.altitude === null ? '---' : `${fmt(d.altitude, 1)} m`],
-      [t('hud.heading'), `${pad3(d.heading)}°`],
+      [t('hud.heading'), `${pad3(d.heading)}° ${cardinal(d.heading)}`],
       [t('hud.pitch'), `${fmt(d.pitch, 1)}°`],
       [t('hud.roll'), `${fmt(d.roll, 1)}°`],
       [t('hud.speed'), d.dvl ? `${fmt(Math.hypot(d.dvl.surge, d.dvl.sway), 2)} m/s` : '---'],
       [t('hud.vspeed'), `${fmt(d.verticalSpeed, 2)} m/s`],
       [t('hud.mode'), t('hud.mode.' + d.mode)],
-      [t('hud.lights'), d.lightsOn ? `${Math.round(d.lightLevel * 100)}%` : t('hud.off')],
+      ['TETHER', `${fmt(tm.payout, 0)} m · ${fmt(tm.tension / 1000, 1)} kN`, tm.tension > tm.tensionWarn || tm.slack > tm.slackWarn ? 'warn' : ''],
+      ['TMS', `${tm.mode === 'auto' ? 'AUTO' : 'MAN'} · ${t('lars.' + d.larsState)}`],
     ]
-      .map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`)
+      .map(([k, v, c]) => `<div${c ? ` class="${c}"` : ''}><span>${k}</span><b>${v}</b></div>`)
       .join('');
     this.lastData = d;
+    // Multi-view: the mission box sits right below the instrument bar (which may wrap).
+    const missionBox = this.root.querySelector<HTMLElement>('.panel.mission');
+    if (missionBox) {
+      const multi = this.root.dataset.layout === 'dual' || this.root.dataset.layout === 'quad';
+      const top = multi ? `${e.ibar.offsetTop + e.ibar.offsetHeight + 6}px` : '';
+      if (missionBox.style.top !== top) missionBox.style.top = top;
+    }
     e.limit.style.color = COLORS.warn;
     if (d.tetherAtMax) {
       e.tether.textContent += ` · ${t('hud.tetherMax')}`;

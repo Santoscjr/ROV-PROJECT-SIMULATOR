@@ -153,6 +153,14 @@ export class Sonar {
     this.restartPing();
   }
 
+  /** Apply operator settings (range, gain, quality, tilt); restarts the ping only on change. */
+  configure(c: { range: number; gain: number; quality: SonarQuality; tilt: number }): void {
+    this.setRange(c.range);
+    this.setGain(c.gain);
+    this.setQuality(c.quality);
+    if (Math.abs(c.tilt - this.tilt) > 1e-6) this.setTilt(c.tilt);
+  }
+
   /** Last complete ping (read-only view), or null before the first ping finishes. */
   lastPing(): Readonly<Ping> | null {
     return this.front;

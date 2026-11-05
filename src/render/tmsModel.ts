@@ -121,8 +121,10 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
   root.name = 'tms';
   const mats: Record<Key, Material> = {
     paint: new MeshStandardMaterial({ color: 0xd9a21b, roughness: 0.6, metalness: 0.15 }),
-    dark: new MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.55, metalness: 0.45 }),
-    steel: new MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.4, metalness: 0.75 }),
+    dark: new MeshStandardMaterial({ color: 0x565d63, roughness: 0.55, metalness: 0.2 }),
+    // Low metalness: without a bright environment to reflect, high-metalness steel renders
+    // almost black at depth; painted/galvanised steel is mostly diffuse anyway.
+    steel: new MeshStandardMaterial({ color: 0xa9afb4, roughness: 0.45, metalness: 0.35 }),
     orange: new MeshStandardMaterial({ color: 0xd2621e, roughness: 0.55, metalness: 0.15 }),
     rubber: new MeshStandardMaterial({ color: 0x151617, roughness: 0.9 }),
   };
@@ -183,9 +185,10 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
   // Anodes.
   for (const x of [-hx, hx]) P.box('steel', 0.12, 0.4, 0.12, x * 0.97, 0, hz * 0.97);
   // Camera housing (forward +Z corner, inside the frame) looking aft at the drum, level-wind and exit guide.
-  const camPos = new Vector3(1.12, 0.08, 0.62);
+  const camPos = new Vector3(1.03, 0.52, 0.72);
   P.cyl('dark', 0.08, 0.3, camPos.x + 0.1, camPos.y, camPos.z, new Euler(0, 0, Math.PI / 2), 12);
-  P.box('paint', 0.12, 0.35, 0.12, camPos.x - 0.05, camPos.y - 0.2, camPos.z);
+  // Bracket up to the top rail (kept above the lens, out of the picture).
+  P.box('paint', 0.1, 0.16, 0.1, camPos.x + 0.12, camPos.y + 0.13, camPos.z);
   P.build(mats, root);
 
   // Label.
@@ -252,20 +255,23 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
   const liftPoint = new Object3D();
   liftPoint.position.set(0, top + 0.73, 0);
   const cameraMount = new Object3D();
-  cameraMount.position.copy(camPos).add(new Vector3(0.26, 0, 0));
+  // High on the forward/+Z corner (inside the frame, clear of the valve pack and
+  // junction box), looking diagonally down/aft: frames the drum, the level wind,
+  // the exit guide and the tether leaving the TMS.
+  cameraMount.position.set(1.18, 0.52, 0.72);
   root.add(exitPoint, liftPoint, cameraMount);
-  // Aim at a point between the drum and the level wind (frames drum, carriage and fairlead path).
-  cameraMount.lookAt(new Vector3(-0.5, DRUM_Y - 0.4, 0));
+  cameraMount.lookAt(new Vector3(-0.65, -0.55, -0.05));
   cameraMount.rotateY(Math.PI); // lookAt points +Z; cameras look along −Z
   const lightMounts: Object3D[] = [];
-  for (const dz of [-0.22, 0.22]) {
+  // Two lamps high on the forward frame, beside (not in front of) the camera.
+  for (const lp of [new Vector3(1.12, 0.66, 0.4), new Vector3(1.2, 0.66, -0.25)]) {
     const m = new Object3D();
-    m.position.copy(camPos).add(new Vector3(-0.05, 0.2, dz));
+    m.position.copy(lp);
     root.add(m);
-    m.lookAt(new Vector3(-0.4, DRUM_Y - 0.2, 0));
+    m.lookAt(new Vector3(-0.5, -0.35, 0));
     m.rotateY(Math.PI);
     lightMounts.push(m);
-    const lamp = new Mesh(new CylinderGeometry(0.05, 0.05, 0.08, 10), new MeshStandardMaterial({ color: 0x222222, emissive: 0xfff2d8, emissiveIntensity: 2 }));
+    const lamp = new Mesh(new CylinderGeometry(0.05, 0.05, 0.08, 10), new MeshStandardMaterial({ color: 0x222222, emissive: 0xfff2d8, emissiveIntensity: 0.8 }));
     lamp.rotation.x = Math.PI / 2;
     m.add(lamp);
   }

@@ -7,10 +7,25 @@ const css = `
 html,body{margin:0;height:100%;background:#05090c;color:#c9d4dc;font:13px 'IBM Plex Sans',Segoe UI,Arial,sans-serif;overflow:hidden}
 #bar{position:fixed;top:0;left:0;right:0;height:30px;display:flex;gap:12px;align-items:center;padding:0 10px;background:#0e161d;border-bottom:1px solid #24323d;z-index:2}
 #bar strong{font:600 11px 'IBM Plex Mono',monospace;letter-spacing:.14em;color:#f2a93b}
+#bar label{display:flex;gap:6px;align-items:center;font-size:11px;color:#7d8d99}
 #bar select{background:#0f171e;color:#c9d4dc;border:1px solid #34495a;border-radius:3px;padding:3px 6px}
 #status{font:11px 'IBM Plex Mono',monospace;color:#7d8d99}
 #host{position:fixed;top:31px;left:0;right:0;bottom:0}
-#view,.sonar-view{width:100%;height:100%;display:block}
+#view{position:absolute;inset:0;width:100%;height:100%;display:block}
+.sonar-view{width:100%;height:100%;display:block}
+.mp{position:absolute;box-sizing:border-box;border:1px solid rgba(52,73,90,.9);pointer-events:none}
+.mp[hidden]{display:none}
+.mp-head{position:absolute;left:6px;top:6px;display:flex;gap:6px;align-items:center;font:600 11px 'IBM Plex Mono',monospace;color:#f2a93b;pointer-events:auto;z-index:2}
+.mp-head select{font-size:11px;background:rgba(14,22,29,.85);color:#c9d4dc;border:1px solid #34495a;border-radius:3px;padding:2px 4px}
+.mp-host{position:absolute;inset:0}
+.mbar{position:absolute;left:50%;bottom:0;transform:translateX(-50%);display:flex;flex-wrap:wrap;justify-content:center;max-width:calc(100% - 12px);box-sizing:border-box;background:rgba(10,16,21,.86);border:1px solid rgba(52,73,90,.9);border-bottom:0;padding:3px 6px;font-family:'IBM Plex Mono',monospace;z-index:3;white-space:nowrap}
+.mbar[hidden]{display:none}
+.mbar div{display:flex;flex-direction:column;padding:0 8px;border-right:1px solid #1f2c36}
+.mbar div:last-child{border-right:0}
+.mbar span{font-size:9px;letter-spacing:.12em;color:#7d8d99}
+.mbar b{font-size:14px;font-weight:600;color:#e9eff3}
+.mbar[data-mode=full] b{font-size:17px}
+.mbar div.warn b{color:#f0b040}
 #lost{position:fixed;inset:31px 0 0 0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;background:rgba(5,9,12,.88);font-size:15px;z-index:3}
 #lost[hidden]{display:none}
 .instr{position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px;background:#070c10;font-family:'IBM Plex Mono',monospace;color:#e9eff3}
@@ -23,12 +38,35 @@ const style = document.createElement('style');
 style.textContent = css;
 document.head.appendChild(style);
 
+type Opener = Window & { __rovAdoptMonitor?: (w: Window) => void };
 const w = window as unknown as { __rovHeartbeat?: number };
 const lost = document.getElementById('lost')!;
 const statusEl = document.getElementById('status')!;
+/** Ask the main window to (re)adopt this page — on first load, after a reload of
+ *  this page, and after the main window itself was reloaded. */
+const adopt = (): boolean => {
+  try {
+    const op = window.opener as Opener | null;
+    if (op && !op.closed && typeof op.__rovAdoptMonitor === 'function') {
+      op.__rovAdoptMonitor(window);
+      return true;
+    }
+  } catch {
+    /* opener navigated away / cross-origin */
+  }
+  return false;
+};
+adopt();
+let lastAdopt = performance.now();
 setInterval(() => {
   const beat = w.__rovHeartbeat ?? 0;
-  const alive = !!window.opener && !(window.opener as Window).closed && performance.timeOrigin + performance.now() - beat < 2500;
+  const now = performance.timeOrigin + performance.now();
+  const alive = !!window.opener && !(window.opener as Window).closed && now - beat < 2500;
   lost.hidden = alive || beat === 0;
   if (!alive && beat !== 0) statusEl.textContent = 'sem conexão';
+  // Link lost (main window reloaded): try to be adopted again every 2 s.
+  if (!alive && performance.now() - lastAdopt > 2000) {
+    lastAdopt = performance.now();
+    adopt();
+  }
 }, 1000);

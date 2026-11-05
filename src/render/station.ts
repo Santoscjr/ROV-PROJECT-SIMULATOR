@@ -1,7 +1,7 @@
 import type { WebGLRenderer } from 'three';
 import { CameraRig } from './cameras';
 import { UnderwaterPass } from './underwaterPass';
-import type { ViewLayout, ViewSource } from '../config/settings';
+import type { CameraStates, ViewLayout, ViewSource } from '../config/settings';
 
 export type CameraSource = Exclude<ViewSource, 'sonar' | 'instruments'>;
 export const isCameraSource = (s: ViewSource): s is CameraSource => s !== 'sonar' && s !== 'instruments';
@@ -51,10 +51,12 @@ export class SecondaryView {
   pass: UnderwaterPass | null = null;
   private w = 0;
   private h = 0;
-  constructor(public source: ViewSource) {
-    this.rig = new CameraRig(1);
+  constructor(
+    public source: ViewSource,
+    states?: CameraStates,
+  ) {
+    this.rig = new CameraRig(1, states);
     if (isCameraSource(source)) this.rig.setMode(source);
-    this.rig.tilt = -25;
   }
 
   setSource(s: ViewSource): void {

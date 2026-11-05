@@ -8,7 +8,7 @@ Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no 
 
 | Operação | O que o piloto faz | Condições |
 |---|---|---|
-| **Treinamento de pilotagem** | Começa submerso. Exercícios verificados pela simulação: avanço, recuo, lateral, rumo, profundidade, manter rumo, estabilização, portais e aproximação de alvo | Corrente fraca, água clara (impostas) |
+| **Treinamento de pilotagem** | Começa submerso, já liberado do Top-Hat, com o tether pago. Exercícios verificados pela simulação: avanço, recuo, lateral, rumo, profundidade, manter rumo, estabilização, portais e aproximação de alvo | Corrente fraca, água clara (impostas) |
 | **Inspeção de estrutura offshore** | Checklist, lançamento pelo guindaste e descida a ~120 m. Depois, inspeção de três pontos (jumper no manifold, vão livre do duto, painel da árvore de natal) com procedimento de aproximação e iluminação mínima, retorno e recuperação | Escolhidas pelo piloto |
 | **Navegação em condições adversas** | Rota ao longo do duto até o PLET, manutenção de posição em estação, inspeção da válvula e retorno | Corrente forte, água turva, céu nublado (impostas) |
 
@@ -28,10 +28,10 @@ As condições ambientais são **corrente**, **visibilidade**, **luz natural** e
 | Lateral | `A` / `D` | analógico direito ↔ |
 | Subir / descer | `R` / `F` | analógico esquerdo ↕, gatilhos |
 | Giro (rumo) | `Q` / `E` | analógico esquerdo ↔ |
-| Tilt da câmera | `T` / `G`, arrastar o mouse, roda | direcional ↑/↓ |
+| Tilt / pan da câmera do painel ativo | `T` / `G` · `B` / `N`, arrastar o mouse, roda (Ctrl/Alt + roda = zoom) | direcional ↑/↓ |
 | Controle fino | segurar `Shift` | — |
 | Luzes on/off, intensidade | `L`, `[` `]` | Y, LB/RB |
-| Câmera operacional / externa | `C` | B |
+| Câmera operacional / externa (painel ativo) | `C` | B |
 | Modos MANUAL / STABILIZE / DEPTH HOLD | `1` `2` `3` (`M` alterna) | X |
 | Confirmar / registrar inspeção | `Enter` | A |
 | Pausa · Ajuda | `Esc` · `H` | Start · Back |
@@ -40,8 +40,14 @@ As condições ambientais são **corrente**, **visibilidade**, **luz natural** e
 | Pagar / recolher tether (segurar) | `↑` / `↓` | — |
 | Parar guincho · AUTO/MANUAL | `K` · `J` | — |
 | Pitch (nariz para cima / para baixo) | `PgUp` / `PgDn` | — |
-| Câmeras: auxiliar · principal · externa · TMS · tether | `6` `7` `8` `9` `0` | — |
+| Câmeras: auxiliar · principal · externa · TMS · tether (painel ativo) | `6` `7` `8` `9` `0` | — |
+| Zoom da câmera do painel ativo | `Z` / `X` | — |
 | Layout de telas (1/2/4) · monitor secundário | `Y` · `F8` | — |
+| Recolher / descer o conjunto ROV + Top-Hat (pilotagem livre) | `O` | — |
+
+**Estação de pilotagem (v3.1.1).** Clicar num painel o torna **ativo** (borda destacada): atalhos de câmera, SpaceMouse e gamepad agem nele, e o mouse sempre age no painel sob o ponteiro. Cada painel pode ficar **FIXO** (botão no cabeçalho): atalhos e dispositivos não trocam a fonte de um painel fixo, mas pan/tilt/zoom continuam disponíveis. Por padrão, o painel 1 é livre e os painéis 2–4 são fixos. Layout, fontes, bloqueios, pan/tilt/zoom de cada câmera, monitor secundário, iluminação e sonar ficam salvos e são restaurados ao reiniciar a missão, trocar de modo, mudar o layout ou recarregar a página. Depois de escolher uma fonte num seletor, o foco volta ao piloto: as setas continuam pagando/recolhendo o tether.
+
+**Monitor secundário (`F8`).** É uma janela independente com 1 ou 2 painéis, cada um com a sua fonte, e barra de instrumentos completa, compacta ou oculta. Ela usa a mesma simulação, sem segunda física. Teclas digitadas nela comandam o ROV normalmente. Se ela ou a janela principal forem recarregadas, a reconexão é automática.
 
 As teclas usam a posição física (funcionam em ABNT2, AZERTY etc.) e podem ser remapeadas em **Configurações**.
 
@@ -58,11 +64,14 @@ npm test           # testes unitários (física, modos, missão, entrada, config
 npm run build      # build de produção em dist/
 ```
 
-Teste de navegador (Playwright/Chromium, com o build servido em `localhost:4173`):
+Testes de navegador (Playwright/Chromium, com o build servido em `localhost:4173`):
 
 ```bash
 npx vite preview --port 4173 &
-node scripts/e2e.mjs http://localhost:4173/ test-results
+node scripts/e2e.mjs http://localhost:4173/ test-results          # operações
+node scripts/e2e-station.mjs http://localhost:4173/                # estação, painéis, monitor secundário
+node scripts/visual.mjs http://localhost:4173/                     # capturas de cada câmera (água clara e turva)
+node scripts/perf.mjs http://localhost:4173/ low,medium            # tempo de quadro com 1, 2, 4 e 4+2 painéis
 ```
 
 A publicação é automática: cada push em `main` executa typecheck, testes e build, e publica `dist/` no GitHub Pages (`.github/workflows/deploy.yml`). Em **Settings → Pages**, a fonte precisa estar como **GitHub Actions**.
