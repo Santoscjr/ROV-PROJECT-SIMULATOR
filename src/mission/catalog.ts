@@ -28,6 +28,16 @@ class FreeMission extends TaskMission {
   override stageKey(): string {
     return 'op.free.title';
   }
+  /** No tasks: only keep time/statistics (the base class expects a current task). */
+  override update(s: MissionInput): void {
+    this.time += s.dt;
+    this.warning = null;
+    if (this.stats.startTime === null) this.stats.startTime = this.time;
+    this.stats.maxDepth = Math.max(this.stats.maxDepth, s.depth);
+  }
+  override holdProgress(): number | null {
+    return null;
+  }
 }
 
 // --- TMS training: start just below the TMS -------------------------------------
@@ -62,8 +72,8 @@ export function tmsTrainingTasks(): Task[] {
       kind: 'check',
       id: 'M7',
       labelKey: 'tmsTrain.finish',
-      hold: 3,
-      test: (s) => tmsOf(s).command === 'stop' && Math.abs(tmsOf(s).speed) < 0.01 && tmsOf(s).chord <= 7 && Math.hypot(s.velocity.x, s.velocity.y, s.velocity.z) < 0.15,
+      hold: 0.5,
+      test: (s) => s.docked === true,
       hintKey: 'hint.tms.finish',
     },
   ];
@@ -180,6 +190,7 @@ export const MISSIONS: MissionDefinition[] = [
     difficulty: 1,
     forcedConditions: { current: 'low', visibility: 'clear' },
     start: { position: TRAINING_START, heading: 0, lights: true },
+    tms: { mode: 'auto', depth: 95 },
     create: () => new TaskMission({ id: 'training', tasks: trainingTasks(), stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0.3 }),
   },
   {
@@ -195,7 +206,7 @@ export const MISSIONS: MissionDefinition[] = [
         locateRange: 25,
         stableSpeed: 0.15,
         stableRate: 4,
-        recoveryPoint: { x: LAUNCH_POINT.x, y: 0, z: LAUNCH_POINT.z },
+        recoveryPoint: { x: LAUNCH_POINT.x, y: -80, z: LAUNCH_POINT.z },
         recoveryRadius: RECOVERY_RADIUS,
         recoveryDepth: RECOVERY_DEPTH,
         points: INSPECTION_POINTS,
@@ -211,6 +222,7 @@ export const MISSIONS: MissionDefinition[] = [
     difficulty: 3,
     forcedConditions: { current: 'strong', visibility: 'turbid', light: 'overcast' },
     start: { position: ADVERSE_START, heading: 100, lights: true },
+    tms: { mode: 'auto', depth: 92 },
     create: () => new TaskMission({ id: 'adverse', tasks: adverseTasks(), stableSpeed: 0.18, stableRate: 5, minLightForRecord: 0.4 }),
   },
 ];
@@ -223,7 +235,7 @@ MISSIONS.push(
     difficulty: 2,
     forcedConditions: { current: 'low', visibility: 'clear' },
     start: { position: TMS_START, heading: 0, lights: true },
-    tms: { mode: 'auto', payout: 8 },
+    tms: { mode: 'auto', depth: 80 },
     create: () => new TaskMission({ id: 'tms', tasks: tmsTrainingTasks(), stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0, monitor: tmsMonitor }),
   },
   {
@@ -232,7 +244,7 @@ MISSIONS.push(
     descKey: 'op.free.desc',
     difficulty: 1,
     start: { position: TMS_START, heading: 0, lights: true },
-    tms: { mode: 'auto', payout: 12 },
+    tms: { mode: 'auto' },
     create: () => new FreeMission({ id: 'free', tasks: [], stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0 }),
   },
 );

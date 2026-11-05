@@ -2,13 +2,15 @@ import { MathUtils, PerspectiveCamera, Quaternion, Vector3, type Object3D } from
 import { terrainHeight } from '../sim/terrain';
 
 /** ROV pilot camera, external observer, TMS monitoring camera, ROV top (tether) camera. */
-export type CameraMode = 'operational' | 'external' | 'tms' | 'tether';
-export const CAMERA_MODES: CameraMode[] = ['operational', 'external', 'tms', 'tether'];
+export type CameraMode = 'operational' | 'auxiliary' | 'external' | 'tms' | 'tether';
+export const CAMERA_MODES: CameraMode[] = ['operational', 'auxiliary', 'external', 'tms', 'tether'];
 
 const _v = new Vector3();
 const _q = new Quaternion();
 /** Tether camera position in the ROV body frame (top, forward of the termination). */
 const TETHER_CAM_OFFSET = new Vector3(0.55, 1.02, 0.35);
+/** Auxiliary camera in the ROV body frame (lower starboard bow, clear of the arms). */
+const AUX_CAM_OFFSET = new Vector3(1.28, -0.42, 0.62);
 
 /**
  * Camera rig. The operational camera rides on the ROV pan/tilt unit; the
@@ -35,6 +37,9 @@ export class CameraRig {
   /** Tether camera pan/tilt (deg) relative to its default aft-looking aim. */
   tetherPan = 0;
   tetherTilt = 0;
+  /** Auxiliary camera pan/tilt (deg). */
+  auxPan = 0;
+  auxTilt = 0;
   /** TMS monitoring camera mount (local −Z = view), set by the app. */
   tmsMount: Object3D | null = null;
 
@@ -69,6 +74,9 @@ export class CameraRig {
     } else if (this.mode === 'operational') {
       this.adjustTilt(-dy * k * 30 * (this.invertTilt ? -1 : 1));
       this.pan = MathUtils.clamp(this.pan + dx * k * 30, -60, 60);
+    } else if (this.mode === 'auxiliary') {
+      this.auxPan = MathUtils.clamp(this.auxPan + dx * k * 30, -40, 40);
+      this.auxTilt = MathUtils.clamp(this.auxTilt - dy * k * 30, -40, 30);
     } else if (this.mode === 'tether') {
       this.tetherPan = MathUtils.clamp(this.tetherPan - dx * k * 30, -150, 150);
       this.tetherTilt = MathUtils.clamp(this.tetherTilt - dy * k * 30, -30, 60);
@@ -103,6 +111,17 @@ export class CameraRig {
       cam.quaternion
         .copy(_q)
         .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI / 2 - MathUtils.degToRad(this.pan)));
+    } else if (this.mode === 'auxiliary') {
+      // Auxiliary camera: lower starboard bow, wide angle, looking forward-down
+      // (complements the pilot camera for close approaches and the work area).
+      cam.fov = 82;
+      cam.position.copy(AUX_CAM_OFFSET).applyMatrix4(rovRoot.matrixWorld);
+      rovRoot.getWorldQuaternion(_q);
+      const yaw = MathUtils.degToRad(-8 + this.auxPan);
+      const pitch = MathUtils.degToRad(-28 + this.auxTilt);
+      const dir = new Vector3(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), Math.sin(yaw) * Math.cos(pitch)).applyQuaternion(_q);
+      cam.up.set(0, 1, 0).applyQuaternion(_q);
+      cam.lookAt(_v.copy(cam.position).add(dir));
     } else if (this.mode === 'tms' && this.tmsMount) {
       cam.fov = 70;
       this.tmsMount.getWorldPosition(cam.position);

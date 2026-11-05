@@ -64,6 +64,7 @@ export class Mission implements OperationMission {
   private recoveryRequested = false;
   private lastSpeedDeviation = -100;
   private lightLevel = 0;
+  private lars: MissionInput['lars'] = 'deck';
 
   constructor(readonly config: MissionConfig) {}
 
@@ -150,6 +151,7 @@ export class Mission implements OperationMission {
     this.time += s.dt;
     this.warning = null;
     this.lightLevel = s.lightLevel;
+    this.lars = s.lars ?? this.lars;
 
     if (this.stage !== 'prep' && this.stage !== 'complete') {
       this.stats.maxDepth = Math.max(this.stats.maxDepth, s.depth);
@@ -182,9 +184,9 @@ export class Mission implements OperationMission {
         this.updateInspection(s);
         break;
       case 'return': {
-        const r = this.config.recoveryPoint;
-        const h = Math.hypot(s.position.x - r.x, s.position.z - r.z);
-        if (h < this.config.recoveryRadius && s.depth < this.config.recoveryDepth) {
+        // Recovery requires the ROV to be latched again under the Top-Hat.
+        const docked = s.docked ?? false;
+        if (docked) {
           this.stage = 'recovery';
           this.recoveryRequested = true;
         }
@@ -271,7 +273,7 @@ export class Mission implements OperationMission {
       case 'prep':
         return { key: this.checklistDone ? 'mission.prep.launch' : 'mission.prep.waiting' };
       case 'launch':
-        return { key: 'mission.launch' };
+        return { key: this.lars === 'atDepth' ? 'mission.launch.release' : 'mission.launch' };
       case 'descent':
         return { key: 'mission.descent', params: { depth: c.workingDepth } };
       case 'bottom':
@@ -294,7 +296,7 @@ export class Mission implements OperationMission {
         break;
       }
       case 'return':
-        return { key: 'mission.return', params: { depth: c.recoveryDepth, r: c.recoveryRadius } };
+        return { key: 'mission.return.tophat' };
       case 'recovery':
         return { key: 'mission.recovery' };
       case 'complete':

@@ -1,7 +1,7 @@
 import type { Bindable, KeyBindings } from '../config/settings';
 import type { AxisCommand, InputDevice, PilotAction } from './types';
 
-const AXIS_KEYS = ['surge', 'sway', 'heave', 'yaw', 'camTilt'] as const;
+const AXIS_KEYS = ['surge', 'sway', 'heave', 'yaw', 'pitch', 'camTilt'] as const;
 type KeyAxis = (typeof AXIS_KEYS)[number];
 
 const ACTIONS: PilotAction[] = [
@@ -21,6 +21,7 @@ const ACTIONS: PilotAction[] = [
   'tetherStop',
   'tmsAuto',
   'camOp',
+  'camAux',
   'camExt',
   'camTms',
   'camTether',
@@ -43,7 +44,7 @@ export class KeyboardDevice implements InputDevice {
   readonly label = 'Teclado';
   private readonly down = new Set<string>();
   private pending: PilotAction[] = [];
-  private readonly values: Record<KeyAxis, number> = { surge: 0, sway: 0, heave: 0, yaw: 0, camTilt: 0 };
+  private readonly values: Record<KeyAxis, number> = { surge: 0, sway: 0, heave: 0, yaw: 0, pitch: 0, camTilt: 0 };
   private codeToBinding = new Map<string, Bindable[]>();
   private lastPoll = -1;
   /** Seconds to ramp from 0 to full command (0 = instantaneous). */

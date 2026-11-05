@@ -28,7 +28,10 @@ import { sunTransmission, waterOptics, type WaterOptics } from './optics';
 import { WaterEffects } from './effects';
 import type { UnderwaterPass } from './underwaterPass';
 
-const LAMP_ANGLE = (36 * Math.PI) / 180;
+/** Half-angle of each LED lamp beam. Wider beams + splayed lamps light a useful work area, not a central spot. */
+const LAMP_ANGLE = (52 * Math.PI) / 180;
+/** Horizontal splay of each lamp (deg, + = towards port), order: upper-port, upper-stbd, lower-port, lower-stbd. */
+const LAMP_SPLAY = [14, -14, 26, -26];
 /** Luminous intensity of each lamp at 100 % (cd, scene units). */
 const LAMP_CD = 55;
 /** Contrast threshold for the visibility culling (fraction of the blue/green transmission). */
@@ -102,8 +105,9 @@ export class World {
 
     const shadowLamps = quality === 'high' ? 2 : quality === 'medium' ? 1 : 0;
     this.rov.lightMounts.forEach((mount, i) => {
-      // Wide penumbra: LED arrays have a soft-edged beam.
-      const l = new SpotLight(0xf3f0e8, 0, 0, LAMP_ANGLE, 0.7, 2);
+      mount.rotateY(((LAMP_SPLAY[i] ?? 0) * Math.PI) / 180);
+      // Soft-edged LED beam (penumbra) with a broad useful core.
+      const l = new SpotLight(0xf3f0e8, 0, 0, LAMP_ANGLE, 0.45, 2);
       const target = new Object3D();
       target.position.set(10, 0, 0);
       mount.add(target);

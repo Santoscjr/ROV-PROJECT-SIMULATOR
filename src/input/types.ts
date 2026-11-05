@@ -51,6 +51,7 @@ export type PilotAction =
   | 'tetherStop'
   | 'tmsAuto'
   | 'camOp'
+  | 'camAux'
   | 'camExt'
   | 'camTms'
   | 'camTether'

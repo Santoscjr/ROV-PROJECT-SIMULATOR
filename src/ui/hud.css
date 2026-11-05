@@ -543,40 +543,47 @@
   opacity: 0.85;
 }
 
-/* v3: TMS panel */
+/* v3.1: compact TMS / docking indicator (no on-screen buttons) */
 .hud .tmsp {
   left: 50%;
-  bottom: 56px;
+  bottom: 30px;
   transform: translateX(-50%);
-  width: min(460px, 40vw);
-  padding: 0 0 8px;
-  pointer-events: auto;
+  width: auto;
+  min-width: 360px;
+  max-width: 46vw;
+  padding: 4px 10px 5px;
 }
-.hud .tms-row {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-  padding: 6px 10px 0;
-  font-size: 12px;
+.hud .tms-line {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 11.5px;
+  white-space: nowrap;
 }
-.hud .tms-row .k {
-  display: block;
-  color: var(--muted);
+.hud .tms-line .tl {
   font-size: 9px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.14em;
+  color: var(--muted);
 }
-.hud .tms-row b {
-  font-weight: 500;
+.hud .tms-line .st {
+  color: var(--accent);
 }
-.hud .tms-row b.warn {
+.hud .tms-line .warn,
+.hud .tms-line span.warn {
   color: var(--warn);
 }
-.hud .tms-row b.alarm {
+.hud .tms-line .alarm {
   color: var(--alarm);
 }
+.hud .tms-line .ok {
+  color: var(--ok);
+}
+.hud .tms-line.dock {
+  margin-top: 3px;
+}
 .hud .tms-bar {
-  margin: 6px 10px 0;
-  height: 4px;
+  margin: 4px 0 0;
+  height: 3px;
   background: #18232c;
 }
 .hud .tms-bar i {
@@ -584,38 +591,73 @@
   height: 100%;
   background: var(--data);
 }
-.hud .tms-btns {
-  display: flex;
-  gap: 6px;
-  padding: 8px 10px 0;
-}
-.hud .tms-btns button {
-  flex: 1;
-  padding: 5px 6px;
-  font: 600 11px var(--mono);
-  user-select: none;
-  touch-action: none;
-}
-.hud .tms-btns button.on,
-.hud .tms-btns button.act {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: #2a2112;
-}
 .hud .tms-warn {
-  padding: 4px 10px 0;
   font-size: 11px;
   color: var(--warn);
-  min-height: 14px;
 }
-.hud[data-density='compact'] .tmsp .tms-row {
-  grid-template-columns: repeat(3, 1fr);
+.hud .tms-warn:empty {
+  display: none;
 }
 .hud[data-density='minimal'] .tmsp {
   display: none;
 }
 .hud .osd {
-  bottom: 6px;
+  bottom: 4px;
+}
+/* Instrument bar: shown in multi-view layouts so essential data is never lost. */
+.hud .ibar {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 2px;
+  background: rgba(10, 16, 21, 0.86);
+  border: 1px solid rgba(52, 73, 90, 0.9);
+  border-top: 0;
+  padding: 3px 6px;
+}
+.hud .ibar div {
+  display: flex;
+  flex-direction: column;
+  padding: 0 7px;
+  border-right: 1px solid #1f2c36;
+}
+.hud .ibar div:last-child {
+  border-right: 0;
+}
+.hud .ibar span {
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+.hud .ibar b {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e9eff3;
+}
+.hud[data-layout='dual'] .ibar,
+.hud[data-layout='quad'] .ibar {
+  display: flex;
+}
+.hud[data-layout='dual'] .heading,
+.hud[data-layout='quad'] .heading,
+.hud[data-layout='dual'] .reticle,
+.hud[data-layout='quad'] .reticle,
+.hud[data-layout='quad'] .thrust,
+.hud[data-layout='quad'] .attitude,
+.hud[data-layout='quad'] .depth,
+.hud[data-layout='quad'] .nav,
+.hud[data-layout='quad'] .status,
+.hud[data-layout='dual'] .osd .hint {
+  display: none;
+}
+.hud[data-layout='quad'] .mission {
+  top: 46px;
+  width: 300px;
+}
+.hud[data-layout='quad'] .mission .mhint {
+  display: none;
 }
 /* Station panels */
 .station {
@@ -665,10 +707,38 @@
   display: block;
 }
 
-.hud[data-layout='dual'] .reticle,
-.hud[data-layout='quad'] .reticle,
-.hud[data-layout='quad'] .thrust,
-.hud[data-layout='quad'] .attitude,
-.hud[data-layout='quad'] .depth {
-  display: none;
+
+/* Instrumentation panel (station source) */
+.instr {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px;
+  background: #070c10;
+  font-family: var(--mono);
+  color: #e9eff3;
+  overflow: hidden;
+}
+.instr .rd {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 10px;
+  align-content: start;
+}
+.instr .rd div span {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+.instr .rd div b {
+  font-size: 17px;
+  font-weight: 600;
+}
+.instr canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
