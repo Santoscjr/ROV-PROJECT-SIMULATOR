@@ -55,12 +55,12 @@ export class InstrumentPanel {
   private readonly nav: HTMLCanvasElement;
   private timer = 0;
 
-  constructor() {
-    this.root = document.createElement('div');
+  constructor(doc: Document = document) {
+    this.root = doc.createElement('div');
     this.root.className = 'instr';
-    this.rd = document.createElement('div');
+    this.rd = doc.createElement('div');
     this.rd.className = 'rd';
-    this.nav = document.createElement('canvas');
+    this.nav = doc.createElement('canvas');
     this.root.append(this.rd, this.nav);
   }
 

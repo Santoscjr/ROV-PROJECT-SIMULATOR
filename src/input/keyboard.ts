@@ -26,6 +26,7 @@ const ACTIONS: PilotAction[] = [
   'camTms',
   'camTether',
   'layoutCycle',
+  'monitorOpen',
 ];
 
 export interface KeySource {

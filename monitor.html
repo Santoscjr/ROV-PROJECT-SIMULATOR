@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ROV Offshore Simulator — Monitor secundário</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div id="bar">
+      <strong>MONITOR 2</strong>
+      <select id="src" aria-label="Fonte"></select>
+      <span id="status">Aguardando a janela principal…</span>
+    </div>
+    <div id="host"><canvas id="view"></canvas></div>
+    <div id="lost" hidden>Conexão com a janela principal perdida. Reabra o monitor secundário pela janela principal (Configurações → Gráficos e câmera → Estação).</div>
+    <script type="module" src="/src/monitor.ts"></script>
+  </body>
+</html>

@@ -43,6 +43,7 @@ export const BINDABLE = [
   'zoomIn',
   'zoomOut',
   'layoutCycle',
+  'monitorOpen',
 ] as const;
 export type Bindable = (typeof BINDABLE)[number];
 export type KeyBindings = Record<Bindable, string[]>;
@@ -77,6 +78,7 @@ const COMMON: Omit<KeyBindings, PresetKeys> = {
   zoomIn: ['KeyZ'],
   zoomOut: ['KeyX'],
   layoutCycle: ['KeyY'],
+  monitorOpen: ['F8'],
 };
 
 export const KEYBOARD_PRESETS: Record<KeyboardPreset, KeyBindings> = {
@@ -158,6 +160,8 @@ export interface Settings {
   panels: ViewSource[];
   /** Tether wet weight preset. */
   tetherBuoyancy: 'positive' | 'neutral' | 'negative';
+  /** Source shown on the secondary monitor window. */
+  monitorSource: ViewSource;
   /** Beginner docking assistance (larger capture envelope). */
   dockAssist: boolean;
   /** Default Top-Hat operating depth (m). */
@@ -193,6 +197,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tetherBuoyancy: 'neutral',
   dockAssist: true,
   tmsDepth: 80,
+  monitorSource: 'sonar',
 };
 
 const STORAGE_KEY = 'rov.settings.v1';
@@ -250,6 +255,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     layout: pick(r.layout, ['single', 'dual', 'quad'] as const, d.layout),
     panels: DEFAULT_PANELS.map((def, i) => pick(Array.isArray(r.panels) ? r.panels[i] : undefined, VIEW_SOURCES, def)),
     dockAssist: r.dockAssist !== false,
+    monitorSource: pick(r.monitorSource, VIEW_SOURCES, d.monitorSource),
     tmsDepth: num(r.tmsDepth, 40, 100, d.tmsDepth),
     tetherBuoyancy: pick(r.tetherBuoyancy, ['positive', 'neutral', 'negative'] as const, d.tetherBuoyancy),
   };

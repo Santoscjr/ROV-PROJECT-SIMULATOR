@@ -39,9 +39,9 @@ export interface TmsConfig {
 export const DEFAULT_TMS: TmsConfig = {
   maxLength: 300,
   minLength: 3,
-  payRate: 0.8,
-  haulRate: 0.6,
-  accel: 0.6,
+  payRate: 1.5,
+  haulRate: 1.0,
+  accel: 0.5,
   tensionWarn: 2500,
   tensionLimit: 4500,
   slipTension: 7000,

@@ -20,6 +20,7 @@ import { MissionMarkers } from './render/markers';
 import { createTmsModel, type TmsModel } from './render/tmsModel';
 import { SecondaryView, glViewport, isCameraSource, layoutRects, usePanel } from './render/station';
 import { Sonar } from './render/sonar';
+import { SecondaryWindow } from './render/secondaryWindow';
 import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
@@ -62,6 +63,7 @@ export class App {
   private tmsModel: TmsModel | null = null;
   private tetherLamp: SpotLight | null = null;
   private readonly instr = new InstrumentPanel();
+  private readonly monitor2 = new SecondaryWindow(terrainHeight, COLLIDERS, (doc) => new InstrumentPanel(doc));
   /** SpaceMouse/gamepad button latches for the winch (toggle semantics). */
   private tmsLatch = { pay: false, haul: false };
   private readonly secondary: SecondaryView[] = [];
@@ -139,7 +141,10 @@ export class App {
       restart: () => this.restart(),
       mainMenu: () => this.toMainMenu(),
       spaceMouse: () => this.spacemouse,
+      openMonitor: () => this.monitor2.open(this.store.get().monitorSource),
     });
+    this.monitor2.onSourceChange = (src) => this.store.update({ monitorSource: src });
+    window.addEventListener('beforeunload', () => this.monitor2.dispose());
 
     this.applySettings(s);
     this.store.subscribe((ns) => this.applySettings(ns));
@@ -357,6 +362,9 @@ export class App {
         this.hud.toast(t('msg.camera', { c: t('view.' + m) }));
         break;
       }
+      case 'monitorOpen':
+        if (!this.monitor2.open(this.store.get().monitorSource)) this.hud.toast(t('settings.monitorBlocked'), 'warn', 5000);
+        return;
       case 'layoutCycle': {
         const order = ['single', 'dual', 'quad'] as const;
         const next = order[(order.indexOf(this.store.get().layout) + 1) % order.length];
@@ -530,7 +538,7 @@ export class App {
       const ph = (tms.payout / 6) % 2;
       this.tmsModel.setLevelWind(ph < 1 ? ph * 2 - 1 : 3 - ph * 2);
     }
-    if (this.tetherLamp) this.tetherLamp.intensity = 18 * sim.effectiveLight;
+    if (this.tetherLamp) this.tetherLamp.intensity = 7 * sim.effectiveLight;
     const fx = this.store.get().cameraFx;
     const wbFor = (depth: number) => Math.min(1, Math.max(0, (depth - 25) / 40)) * (sim.effectiveLight > 0 ? 1 : 0.35);
     const st = this.store.get();
@@ -627,6 +635,25 @@ export class App {
       if (running) this.sonar.scan(sim.rov.position, sim.rov.heading);
       this.sonar.draw(sonarRect.w, sonarRect.h - 22);
     } else if (this.sonar.canvas.parentElement) this.sonar.canvas.remove();
+    // Secondary monitor window (same simulation, same frame).
+    this.monitor2.render({
+      scene: this.world.scene,
+      dt,
+      time: this.time,
+      rovRoot: rov.root,
+      eye: rov.cameraEye,
+      headingRad,
+      tmsMount: this.tmsModel?.cameraMount ?? null,
+      mainPass: this.pass,
+      fx,
+      terrainHeight,
+      whiteBalance: wbFor,
+      observer: (mode, _y, pos) => observer(mode, pos as Vector3),
+      rovPos: sim.rov.position,
+      heading: sim.rov.heading,
+      running,
+    });
+    if (this.monitor2.instruments && this.hud.lastData) this.monitor2.instruments.update(this.hud.lastData, this.hud);
     // Instrumentation panel.
     if (instrHost && instrRect && this.hud.lastData) {
       if (this.instr.root.parentElement !== instrHost) instrHost.appendChild(this.instr.root);
@@ -672,7 +699,7 @@ export class App {
     m.root.rotation.y = this.sim.lars.yaw;
     scene.add(m.root);
     // TMS mechanism lamp (lights the drum, level-wind and exit guide for the TMS camera at any depth).
-    const lamp = new SpotLight(0xfff2d8, 60, 0, (55 * Math.PI) / 180, 0.5, 2);
+    const lamp = new SpotLight(0xfff2d8, 22, 0, (55 * Math.PI) / 180, 0.5, 2);
     const target = new Object3D();
     target.position.set(0, 0, -5);
     m.lightMounts[0].add(lamp, target);

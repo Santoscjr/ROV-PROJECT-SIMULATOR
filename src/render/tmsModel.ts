@@ -183,7 +183,7 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
   // Anodes.
   for (const x of [-hx, hx]) P.box('steel', 0.12, 0.4, 0.12, x * 0.97, 0, hz * 0.97);
   // Camera housing (forward +Z corner, inside the frame) looking aft at the drum, level-wind and exit guide.
-  const camPos = new Vector3(0.95, -0.38, 0.62);
+  const camPos = new Vector3(1.12, 0.08, 0.62);
   P.cyl('dark', 0.08, 0.3, camPos.x + 0.1, camPos.y, camPos.z, new Euler(0, 0, Math.PI / 2), 12);
   P.box('paint', 0.12, 0.35, 0.12, camPos.x - 0.05, camPos.y - 0.2, camPos.z);
   P.build(mats, root);
@@ -255,7 +255,7 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
   cameraMount.position.copy(camPos).add(new Vector3(0.26, 0, 0));
   root.add(exitPoint, liftPoint, cameraMount);
   // Aim at a point between the drum and the level wind (frames drum, carriage and fairlead path).
-  cameraMount.lookAt(new Vector3(-0.45, DRUM_Y - 0.35, 0));
+  cameraMount.lookAt(new Vector3(-0.5, DRUM_Y - 0.4, 0));
   cameraMount.rotateY(Math.PI); // lookAt points +Z; cameras look along −Z
   const lightMounts: Object3D[] = [];
   for (const dz of [-0.22, 0.22]) {

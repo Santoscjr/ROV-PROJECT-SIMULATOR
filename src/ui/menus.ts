@@ -25,6 +25,7 @@ export interface MenuCallbacks {
   restart(): void;
   mainMenu(): void;
   spaceMouse(): SpaceMouseDevice | null;
+  openMonitor(): boolean;
 }
 
 /** Human-readable label for a KeyboardEvent.code. */
@@ -305,6 +306,8 @@ export class Menus {
               <div class="field"><label for="s-layout">${t('settings.layout.views')}</label>
                 <select id="s-layout" data-s="layout">${['single', 'dual', 'quad'].map((l) => `<option value="${l}">${t('msg.layout.' + l)}</option>`).join('')}</select></div>
               <p class="muted small">${t('settings.stationNote')}</p>
+              <div class="field"><span>${t('settings.monitor')}</span><button data-a="monitor">${t('settings.monitorOpen')}</button></div>
+              <p class="muted small">${t('settings.monitorNote')}</p>
             </div>
             <div>
               <h3>${t('settings.camera')}</h3>
@@ -351,6 +354,10 @@ export class Menus {
                 <select data-s="${key}">${options.map((o) => `<option value="${o}">${t(`settings.${key}.${o}`)}</option>`).join('')}</select></div>`,
               ).join('')}
               <p class="muted small">${t('settings.condNote')}</p>
+              <h3 style="margin-top:18px">${t('settings.tophat')}</h3>
+              <div class="field"><label for="s-tdep">${t('settings.tmsDepth')}</label><span class="ctl"><input id="s-tdep" type="range" min="40" max="100" step="5" data-s="tmsDepth"><output data-o="tmsDepth"></output></span></div>
+              <div class="field"><label for="s-dock">${t('settings.dockAssist')}</label><input id="s-dock" type="checkbox" data-s="dockAssist"></div>
+              <p class="muted small">${t('settings.tophatNote')}</p>
               <h3 style="margin-top:18px">${t('settings.tether')}</h3>
               <div class="field"><label for="s-tb">${t('settings.tetherBuoyancy')}</label>
                 <select id="s-tb" data-s="tetherBuoyancy">${['positive', 'neutral', 'negative'].map((b) => `<option value="${b}">${t('settings.tetherBuoyancy.' + b)}</option>`).join('')}</select></div>
@@ -368,6 +375,9 @@ export class Menus {
       </div>`;
     s.querySelectorAll<HTMLElement>('[data-a="back"]').forEach((b) => b.addEventListener('click', () => this.back()));
     on(s, 'reset', () => this.store.reset());
+    on(s, 'monitor', () => {
+      if (!this.cb.openMonitor()) alert(t('settings.monitorBlocked'));
+    });
     s.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((b) => b.addEventListener('click', () => this.setTab(b.dataset.tab as SettingsTab)));
     this.smPanel = new SpaceMousePanel(this.cb.spaceMouse());
     s.querySelector('[data-pane="spacemouse"]')!.appendChild(this.smPanel.el);

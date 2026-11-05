@@ -652,9 +652,19 @@
 .hud[data-layout='dual'] .osd .hint {
   display: none;
 }
-.hud[data-layout='quad'] .mission {
-  top: 46px;
-  width: 300px;
+.hud[data-layout='quad'] .mission,
+.hud[data-layout='dual'] .mission {
+  top: 44px;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  width: min(560px, 60vw);
+  padding-bottom: 6px;
+}
+.hud[data-layout='quad'] .mission .stages,
+.hud[data-layout='quad'] .mission .ptitle,
+.hud[data-layout='dual'] .mission .mhint {
+  display: none;
 }
 .hud[data-layout='quad'] .mission .mhint {
   display: none;
@@ -712,6 +722,7 @@
 .instr {
   position: absolute;
   inset: 0;
+  padding-top: 52px !important;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
