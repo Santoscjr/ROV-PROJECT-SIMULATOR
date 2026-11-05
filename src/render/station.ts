@@ -169,4 +169,5 @@ export function renderCameraPanel(
   renderer.autoClear = false;
   renderer.render(fx.scene, cam);
   renderer.autoClear = ac;
+  world.panelDraws++;
 }

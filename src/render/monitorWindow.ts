@@ -315,7 +315,7 @@ export class MonitorWindow {
         const el = sonar.canvas;
         if (el.ownerDocument !== doc) doc.adoptNode(el);
         if (el.parentElement !== panelHost) panelHost?.appendChild(el);
-        if (f.running) sonar.scan(f.rovPos, f.heading);
+        if (f.running) sonar.scanFor(f.dt, f.rovPos, f.heading);
         sonar.draw(r.w, r.h - 30);
       } else this.sonars[i]?.canvas.remove();
       // Instrumentation (one instance per window).

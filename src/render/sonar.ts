@@ -492,6 +492,32 @@ export class Sonar {
    * a smaller `count` is raised to that minimum so pings stay fast). Position/heading are
    * latched at the start of each ping.
    */
+  /** Sensor ping rate (Hz) — independent of the display frame rate. */
+  sensorRate = 5;
+  private beamCarry = 0;
+
+  /**
+   * Advance the scan by elapsed time `dt` (s) at the sensor's ping rate, so a
+   * slow GPU never slows the sonar and a fast one never speeds it up. The work
+   * per call is capped (a long stall resumes the ping instead of freezing).
+   */
+  scanFor(dt: number, pos: Vector3, headingDeg: number): void {
+    this.beamCarry += Math.min(0.25, Math.max(0, dt)) * this.sensorRate * this.beams;
+    const n = Math.floor(this.beamCarry);
+    if (n <= 0) return;
+    this.beamCarry -= n;
+    this.scanBeams(pos, headingDeg, n);
+  }
+
+  private scanBeams(pos: Vector3, headingDeg: number, n: number): void {
+    for (let k = 0; k < n; k++) {
+      if (this.beam === 0) this.beginPing(pos, headingDeg);
+      this.scanBeam(this.beam);
+      this.beam++;
+      if (this.beam >= this.beams) this.endPing();
+    }
+  }
+
   scan(pos: Vector3, headingDeg: number, count?: number): void {
     const minCount = Math.ceil(this.beams / PING_FRAMES);
     const n = Math.max(minCount, count ?? 0);

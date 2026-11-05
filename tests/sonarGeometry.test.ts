@@ -384,3 +384,29 @@ describe('Sonar reference scenes (geometry-driven)', () => {
     }
   });
 });
+
+describe('sonar update rate is the sensor rate, not the frame rate (v3.2)', () => {
+  it('completes pings at ~sensorRate Hz whether frames are fast or slow', async () => {
+    const { Sonar } = await import('../src/render/sonar');
+    const { Vector3 } = await import('three');
+    const pings = (fps: number) => {
+      const s = new Sonar(() => -200, []);
+      let n = 0;
+      let last = s.lastPing();
+      const dt = 1 / fps;
+      for (let t = 0; t < 4; t += dt) {
+        s.scanFor(dt, new Vector3(0, -100, 0), 0);
+        if (s.lastPing() !== last) {
+          n++;
+          last = s.lastPing();
+        }
+      }
+      return n / 4;
+    };
+    const fast = pings(120);
+    const slow = pings(8);
+    expect(fast).toBeGreaterThan(3.5);
+    expect(fast).toBeLessThan(6.5);
+    expect(Math.abs(fast - slow)).toBeLessThan(1.5);
+  });
+});

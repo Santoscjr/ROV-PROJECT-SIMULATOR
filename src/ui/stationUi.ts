@@ -292,7 +292,7 @@ function drawRose(c: HTMLCanvasElement, heading: number, setpoint: number | null
   g.beginPath();
   g.arc(cx, cy, r, 0, Math.PI * 2);
   g.stroke();
-  g.font = '600 11px "IBM Plex Mono", monospace';
+  g.font = `600 ${Math.max(8, Math.min(12, Math.round(r * 0.14)))}px "IBM Plex Mono", monospace`;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   for (let a = 0; a < 360; a += 10) {
@@ -306,7 +306,7 @@ function drawRose(c: HTMLCanvasElement, heading: number, setpoint: number | null
     if (major) {
       const lbl = a === 0 ? 'N' : a === 90 ? 'E' : a === 180 ? 'S' : a === 270 ? 'W' : String(a / 10);
       g.fillStyle = a % 90 === 0 ? '#f2a93b' : '#e9eff3';
-      g.fillText(lbl, cx + Math.cos(t2) * (r - 20), cy + Math.sin(t2) * (r - 20));
+      g.fillText(lbl, cx + Math.cos(t2) * (r * 0.78), cy + Math.sin(t2) * (r * 0.78));
     }
   }
   if (setpoint !== null) {
@@ -323,24 +323,23 @@ function drawRose(c: HTMLCanvasElement, heading: number, setpoint: number | null
   g.lineTo(cx - 6, cy - r - 6);
   g.lineTo(cx + 6, cy - r - 6);
   g.fill();
-  g.font = '600 18px "IBM Plex Mono", monospace';
+  g.font = `600 ${Math.max(10, Math.round(r * 0.26))}px "IBM Plex Mono", monospace`;
   g.fillStyle = '#ffffff';
   g.fillText(`${String(Math.round(((heading % 360) + 360) % 360) % 360).padStart(3, '0')}°`, cx, cy);
 }
 
 export const INSTRUMENT_CSS = `
-.instr{position:absolute;inset:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);grid-template-rows:minmax(0,1.1fr) auto minmax(0,1fr);grid-template-areas:"g nav" "rd rd" "al al";gap:8px;padding:8px 10px;box-sizing:border-box;background:#070c10;font-family:'IBM Plex Mono',ui-monospace,monospace;color:#e9eff3;overflow:hidden}
+.instr{position:absolute;inset:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr) auto;grid-template-areas:"g rd" "nav rd" "al al";gap:8px 14px;padding:8px 10px;box-sizing:border-box;background:#070c10;font-family:'IBM Plex Mono',ui-monospace,monospace;color:#e9eff3;overflow:hidden;container-type:size}
 .instr .ig{grid-area:g;display:grid;grid-template-columns:1fr 1fr;gap:6px;min-height:0}
 .instr .ig canvas,.instr .inav{width:100%;height:100%;min-height:0;display:block}
 .instr .inav{grid-area:nav}
-.instr .rd{grid-area:rd;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 14px;align-content:start}
-.instr .rd h4{margin:0 0 4px;font-size:10px;letter-spacing:.16em;color:#f2a93b;border-bottom:1px solid #1f2c36;padding-bottom:2px}
-.instr .rd div{display:flex;justify-content:space-between;gap:8px;line-height:1.5}
+.instr .rd{grid-area:rd;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px 14px;align-content:start;overflow:hidden;min-height:0}
+.instr .rd h4{margin:0 0 3px;font-size:10px;letter-spacing:.16em;color:#f2a93b;border-bottom:1px solid #1f2c36;padding-bottom:2px}
+.instr .rd div{display:flex;justify-content:space-between;gap:8px;line-height:1.45}
 .instr .rd span{font-size:10px;letter-spacing:.1em;color:#7d8d99;white-space:nowrap}
-.instr .rd b{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.instr .rd b{font-size:clamp(11px,2.2cqh,16px);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .instr .rd div.warn b{color:#f0b040}
-.instr .ial{grid-area:al;font-size:12px;color:#7d8d99;align-self:start}
+.instr .ial{grid-area:al;font-size:12px;color:#7d8d99}
 .instr .ial.on{color:#ffb347;font-weight:600}
-@container (max-width: 560px){.instr .rd{grid-template-columns:1fr 1fr}}
-@media (max-width: 700px){.instr{grid-template-columns:1fr;grid-template-areas:"g" "rd" "al";grid-template-rows:minmax(0,1fr) auto auto}.instr .inav{display:none}}
+@container (max-width: 520px){.instr .rd{grid-template-columns:1fr}}
 `;

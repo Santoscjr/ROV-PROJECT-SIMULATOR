@@ -304,6 +304,9 @@ export class World {
     this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(path as Vector3[], false, 'centripetal'), Math.max(40, path.length * 4), 0.03, 8);
   }
 
+  /** Camera panels drawn with the full water pipeline (composite + particles/beams) since the last reset — diagnostics/tests. */
+  panelDraws = 0;
+
   /** Water optics of the current conditions (shared by every camera, panel and window). */
   get waterOptics(): WaterOptics {
     return this.optics;

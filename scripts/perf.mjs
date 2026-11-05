@@ -60,7 +60,7 @@ for (const q of qualities) {
               times.sort((a, b) => a - b);
               const avg = times.reduce((a, b) => a + b, 0) / times.length;
               const f = window.__ROV__.app.frameStats;
-              res({ frames: times.length, avgMs: +avg.toFixed(1), p95Ms: +times[Math.floor(times.length * 0.95)].toFixed(1), fps: +(1000 / avg).toFixed(1), calls: f.calls + f.monitorCalls, tris: f.triangles + f.monitorTriangles, secScale: f.secondaryScale });
+              res({ frames: times.length, avgMs: +avg.toFixed(1), p95Ms: +times[Math.floor(times.length * 0.95)].toFixed(1), fps: +(1000 / avg).toFixed(1), calls: f.calls + f.monitorCalls, tris: f.triangles + f.monitorTriangles, waterPanels: f.waterPanels, secScale: f.secondaryScale });
             }
           };
           requestAnimationFrame(tick);
@@ -76,10 +76,10 @@ for (const q of qualities) {
   await measure('2 painéis (op + externa)');
   await set({ layout: 'quad', panels: ['operational', 'external', 'tether', 'auxiliary'] });
   await measure('4 painéis (op, ext, tether, aux)');
-  await set({ monitor: { layout: 'dual', sources: ['tms', 'external'], instruments: 'compact' } });
+  await set({ monitors: [{ layout: 'dual', sources: ['tms', 'external', 'sonar', 'instruments'], locks: [true, true, true, true], instruments: 'compact' }] });
   const [popup] = await Promise.all([context.waitForEvent('page', { timeout: 10000 }), page.keyboard.press('F8')]);
   await popup.waitForLoadState();
-  await page.bringToFront();
+  await page.bringToFront(); // the main window drives every window; keep it visible
   await measure('4 + 2 (monitor: tms + externa)');
   await set({ panels: ['operational', 'sonar', 'tether', 'auxiliary'] });
   await measure('4 + 2 com sonar no painel 2');

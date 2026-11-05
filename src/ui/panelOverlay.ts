@@ -14,11 +14,14 @@ const sgn = (v: number, n = 1) => (v >= 0 ? '+' : '') + v.toFixed(n);
 const pad3 = (v: number) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0');
 
 /** Which overlay elements fit a panel of this size (explicit compaction policy). */
-export function overlayPolicy(w: number, h: number): { line: 'full' | 'short'; compass: boolean; corners: boolean } {
+export function overlayPolicy(w: number, h: number): { line: 'full' | 'short'; compass: boolean; corners: boolean; raised: boolean } {
+  const compass = w >= 260 && h >= 180;
   return {
     line: w >= 520 ? 'full' : 'short',
-    compass: w >= 260 && h >= 180,
-    corners: w >= 420 && h >= 220,
+    compass,
+    corners: w >= 420 && h >= 260,
+    // Below ~760 px the corner blocks would meet the compass tape: lift them above it.
+    raised: compass && w < 760,
   };
 }
 
@@ -90,6 +93,9 @@ export class PanelOverlay {
     if (items.camera && cam) bl.push(`${source === 'external' ? 'ÓRBITA' : 'PAN'} <b>${fmt(cam.pan, 0)}°</b> TILT <b>${fmt(cam.tilt, 0)}°</b> ${source === 'external' ? `DIST <b>${fmt(cam.zoom)} m</b>` : `ZOOM <b>${fmt(1 / cam.zoom)}×</b>`}`);
     if (pilotCam && items.camera) bl.push(`${t('hud.mode')} <b>${t('hud.mode.' + d.mode)}</b>`);
     this.bl.innerHTML = bl.join('<br>');
+    const cornerBottom = pol.raised ? '52px' : '8px';
+    this.bl.style.bottom = cornerBottom;
+    this.br.style.bottom = cornerBottom;
     this.bl.hidden = !showCorners || bl.length === 0;
     const tm = d.tms;
     this.br.innerHTML = items.tether
@@ -159,8 +165,8 @@ export const PANEL_OVERLAY_CSS = `
 .pov b{font-weight:600;color:#fff}
 .pov b.warn{color:#f0b040}
 .pov .sep{margin:0 7px;color:#9fb0bb}
-.pov-top{position:absolute;top:6px;left:50%;transform:translateX(-50%);white-space:nowrap;letter-spacing:.04em}
-.pov-alarm{position:absolute;top:24px;left:50%;transform:translateX(-50%);white-space:nowrap;color:#ffb347;font-weight:600;letter-spacing:.06em}
+.pov-top{position:absolute;top:36px;left:50%;transform:translateX(-50%);white-space:nowrap;letter-spacing:.04em}
+.pov-alarm{position:absolute;top:54px;left:50%;transform:translateX(-50%);white-space:nowrap;color:#ffb347;font-weight:600;letter-spacing:.06em}
 .pov-bl{position:absolute;left:8px;bottom:8px}
 .pov-br{position:absolute;right:8px;bottom:8px;text-align:right}
 .pov-compass{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center}

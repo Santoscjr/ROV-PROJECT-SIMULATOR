@@ -83,7 +83,7 @@ export class App {
   private readonly tmp = new Vector3();
   private readonly camDir = new Vector3();
   /** Draw calls / triangles of the last frame (all passes). */
-  frameStats = { calls: 0, triangles: 0, monitorCalls: 0, monitorTriangles: 0, secondaryScale: 1 };
+  frameStats = { calls: 0, triangles: 0, monitorCalls: 0, monitorTriangles: 0, secondaryScale: 1, waterPanels: 0 };
   /** Smoothed measured frame time (ms) and adaptive resolution factor of the secondary views. */
   private frameMs = 16;
   private secAdapt = 1;
@@ -867,6 +867,7 @@ export class App {
     const info = this.renderer.info;
     info.autoReset = false;
     info.reset();
+    this.world.panelDraws = 0;
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.setScissorTest(true);
@@ -939,7 +940,7 @@ export class App {
     // Sonar: scan the real geometry only while it is visible.
     if (sonarHost && sonarRect) {
       if (this.sonar.canvas.parentElement !== sonarHost) sonarHost.appendChild(this.sonar.canvas);
-      if (running) this.sonar.scan(sim.rov.position, sim.rov.heading);
+      if (running) this.sonar.scanFor(dt, sim.rov.position, sim.rov.heading);
       this.sonar.draw(sonarRect.w, sonarRect.h - 30);
     } else if (this.sonar.canvas.parentElement) this.sonar.canvas.remove();
     // Monitor windows (same simulation, same frame, same panel renderer).
@@ -979,7 +980,7 @@ export class App {
       if (this.frameMs > 40) this.secAdapt = Math.max(0.5, this.secAdapt - dt * 0.1);
       else if (this.frameMs < 24) this.secAdapt = Math.min(1, this.secAdapt + dt * 0.05);
     }
-    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles, monitorCalls: monCalls, monitorTriangles: monTris, secondaryScale: this.secScale() };
+    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles, monitorCalls: monCalls, monitorTriangles: monTris, secondaryScale: this.secScale(), waterPanels: this.world.panelDraws };
 
     // Audio & HUD.
     const load = levels.reduce((s, l) => s + Math.abs(l), 0) / levels.length;
