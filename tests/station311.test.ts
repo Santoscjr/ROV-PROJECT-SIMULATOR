@@ -49,11 +49,11 @@ describe('station settings persistence & migration (v3.1.1)', () => {
     // The v3.1 default (80 m) was the "TMS descends too much" complaint → new default.
     expect(s.tmsDepth).toBe(DEFAULT_SETTINGS.tmsDepth);
     // The single monitor source carries over as panel 1 of the secondary monitor.
-    expect(s.monitor.sources[0]).toBe('tms');
-    expect(s.monitor.layout).toBe('single');
+    expect(s.monitors[0].sources[0]).toBe('tms');
+    expect(s.monitors[0].layout).toBe('single');
     expect(s.panelLocks).toEqual([false, true, true, true]);
     expect(s.camState).toEqual(DEFAULT_CAM_STATES);
-    expect(s.version).toBeGreaterThanOrEqual(311);
+    expect(s.version).toBeGreaterThanOrEqual(312);
   });
 
   it('a depth chosen by the user in v3.1.1 is kept', () => {
@@ -66,17 +66,21 @@ describe('station settings persistence & migration (v3.1.1)', () => {
       ...DEFAULT_SETTINGS,
       panelLocks: [true, false, 'x', true],
       camState: { operational: { pan: 400, tilt: -10, zoom: 0.5 }, auxiliary: { pan: 12, tilt: 5, zoom: 9 }, tether: 'bad' },
+      // v3.1.1 single-monitor object (migrated into monitors[0]).
       monitor: { layout: 'dual', sources: ['external', 'nope'], instruments: 'full' },
+      monitors: undefined,
       lighting: { front: 5, top: 1.5, tms: 0, observer: 'normal', tetherAssist: true },
       sonar: { range: 20, gain: 9, quality: 'high', tilt: 30 },
     });
     expect(s.panelLocks).toEqual([true, false, true, true]);
-    expect(s.camState.operational).toEqual({ pan: 150, tilt: -10, zoom: 0.5 });
+    // Operational pan is limited to ±60° (the pan/tilt unit's range, CAM_LIMITS).
+    expect(s.camState.operational).toEqual({ pan: 60, tilt: -10, zoom: 0.5 });
     expect(s.camState.auxiliary).toEqual({ pan: 12, tilt: 5, zoom: 1 });
     expect(s.camState.tether).toEqual(DEFAULT_CAM_STATES.tether);
-    expect(s.monitor).toEqual({ layout: 'dual', sources: ['external', DEFAULT_SETTINGS.monitor.sources[1]], instruments: 'full' });
+    expect(s.monitors[0]).toEqual({ layout: 'dual', sources: ['external', 'instruments', 'external', 'tms'], locks: [true, true, true, true], instruments: 'full' });
     expect(s.lighting).toEqual({ front: 2, top: 1.5, tms: 0.25, observer: 'normal', tetherAssist: true });
     expect(s.sonar).toEqual({ range: 20, gain: 3, quality: 'high', tilt: 30 });
+    expect(s.monitors).toHaveLength(1);
     // JSON round trip (localStorage) is lossless.
     expect(sanitizeSettings(JSON.parse(JSON.stringify(s)))).toEqual(s);
   });
@@ -128,6 +132,10 @@ describe('per-panel cameras sharing physical camera state', () => {
     const d0 = rig.orbitDist;
     rig.wheel(100);
     expect(rig.orbitDist).toBeGreaterThan(d0);
-    expect(states).toEqual(DEFAULT_CAM_STATES);
+    // v3.2: the external camera's orbit is its own persisted state; other cameras untouched.
+    expect(states.external.zoom).toBeCloseTo(d0 * 1.1, 6);
+    const { external: _e, ...others } = states;
+    const { external: _d, ...defaults } = DEFAULT_CAM_STATES;
+    expect(others).toEqual(defaults);
   });
 });

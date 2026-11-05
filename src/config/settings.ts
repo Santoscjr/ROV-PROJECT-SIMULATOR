@@ -173,8 +173,14 @@ export interface Settings {
   panelLocks: boolean[];
   /** Orientation of the physical cameras (shared by every panel showing them). */
   camState: CameraStates;
-  /** Secondary monitor window. */
-  monitor: MonitorSettings;
+  /** Additional monitor windows (0–3), each with its own layout, sources and locks. */
+  monitors: MonitorSettings[];
+  /** Station profile last applied ('custom' once the operator changes it). */
+  stationProfile: StationProfileId;
+  /** Operator-saved station ("Personalizado"). */
+  customStation: StationSnapshot | null;
+  /** Camera-panel HUD overlay items (multi-panel layouts and monitor windows). */
+  hudItems: HudItems;
   /** Lighting multipliers (1 = default). */
   lighting: LightingSettings;
   /** Sonar display/processing preferences. */
@@ -223,9 +229,30 @@ export const DEFAULT_CAM_STATES: CameraStates = {
   tms: { pan: 0, tilt: 0, zoom: 1 },
 };
 export interface MonitorSettings {
-  layout: 'single' | 'dual';
+  layout: ViewLayout;
+  /** Source of each panel (always 4 entries; only the first N are shown). */
   sources: ViewSource[];
+  locks: boolean[];
+  /** Instrument strip of this window. */
   instruments: 'full' | 'compact' | 'hidden';
+}
+export const MAX_MONITORS = 3;
+export type StationProfileId = 'pilotagem' | 'tms' | 'inspecao' | 'offshore' | 'custom';
+export const STATION_PROFILES: StationProfileId[] = ['pilotagem', 'tms', 'inspecao', 'offshore', 'custom'];
+/** Everything that defines a station (main window + monitor windows). */
+export interface StationSnapshot {
+  layout: ViewLayout;
+  panels: ViewSource[];
+  panelLocks: boolean[];
+  monitors: MonitorSettings[];
+}
+export interface HudItems {
+  compass: boolean;
+  depth: boolean;
+  attitude: boolean;
+  tether: boolean;
+  camera: boolean;
+  alarms: boolean;
 }
 export interface LightingSettings {
   front: number;
@@ -242,7 +269,7 @@ export interface SonarSettings {
   quality: 'low' | 'medium' | 'high';
   tilt: number;
 }
-export const SETTINGS_VERSION = 311;
+export const SETTINGS_VERSION = 312;
 export const VIEW_SOURCES: ViewSource[] = ['operational', 'auxiliary', 'external', 'tms', 'tether', 'sonar', 'instruments'];
 const DEFAULT_PANELS: ViewSource[] = ['operational', 'sonar', 'tether', 'auxiliary'];
 
@@ -273,7 +300,10 @@ export const DEFAULT_SETTINGS: Settings = {
   monitorSource: 'sonar',
   panelLocks: [false, true, true, true],
   camState: structuredClone(DEFAULT_CAM_STATES),
-  monitor: { layout: 'dual', sources: ['external', 'tms'], instruments: 'compact' },
+  monitors: [{ layout: 'dual', sources: ['sonar', 'instruments', 'external', 'tms'], locks: [true, true, true, true], instruments: 'compact' }],
+  stationProfile: 'pilotagem',
+  customStation: null,
+  hudItems: { compass: true, depth: true, attitude: true, tether: true, camera: true, alarms: true },
   lighting: { front: 1, top: 1, tms: 1, observer: 'assisted', tetherAssist: false },
   sonar: { range: 40, gain: 1, quality: 'medium', tilt: 15 },
   version: SETTINGS_VERSION,
@@ -339,7 +369,10 @@ export function sanitizeSettings(raw: unknown): Settings {
     tmsDepth: typeof r.version !== 'number' && r.tmsDepth === 80 ? d.tmsDepth : num(r.tmsDepth, 20, 100, d.tmsDepth),
     panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
     camState: sanitizeCamStates(r.camState),
-    monitor: sanitizeMonitor(r.monitor, r.monitorSource),
+    monitors: sanitizeMonitors(r.monitors, r.monitor, r.monitorSource),
+    stationProfile: pick(r.stationProfile, STATION_PROFILES, d.stationProfile),
+    customStation: sanitizeSnapshot(r.customStation),
+    hudItems: sanitizeHudItems(r.hudItems),
     lighting: sanitizeLighting(r.lighting),
     sonar: sanitizeSonar(r.sonar),
     version: SETTINGS_VERSION,
@@ -360,16 +393,49 @@ function sanitizeCamStates(raw: unknown): CameraStates {
   };
   return { operational: pose('operational'), auxiliary: pose('auxiliary'), tether: pose('tether'), external: pose('external'), tms: pose('tms') };
 }
-function sanitizeMonitor(raw: unknown, legacySource: unknown): MonitorSettings {
+const LAYOUTS: ViewLayout[] = ['single', 'dual', 'quad'];
+const DEFAULT_MONITOR: MonitorSettings = { layout: 'dual', sources: ['sonar', 'instruments', 'external', 'tms'], locks: [true, true, true, true], instruments: 'compact' };
+export function sanitizeMonitor(raw: unknown): MonitorSettings {
   const r = obj(raw);
-  const d = DEFAULT_SETTINGS.monitor;
-  const legacy = VIEW_SOURCES.includes(legacySource as ViewSource) ? (legacySource as ViewSource) : null;
-  const src = Array.isArray(r.sources) ? r.sources : legacy ? [legacy, d.sources[1]] : d.sources;
+  const d = DEFAULT_MONITOR;
+  const src = Array.isArray(r.sources) ? r.sources : [];
+  const locks = Array.isArray(r.locks) ? r.locks : [];
   return {
-    layout: pick(r.layout, ['single', 'dual'] as const, legacy && !raw ? 'single' : d.layout),
-    sources: [0, 1].map((i) => pick(src[i], VIEW_SOURCES, d.sources[i])),
+    layout: pick(r.layout, LAYOUTS, d.layout),
+    sources: [0, 1, 2, 3].map((i) => pick(src[i], VIEW_SOURCES, d.sources[i])),
+    locks: [0, 1, 2, 3].map((i) => (typeof locks[i] === 'boolean' ? (locks[i] as boolean) : d.locks[i])),
     instruments: pick(r.instruments, ['full', 'compact', 'hidden'] as const, d.instruments),
   };
+}
+/** v3.1.1 had one `monitor` (1–2 panels); v3.1 one `monitorSource`. Both migrate into `monitors[0]`. */
+function sanitizeMonitors(raw: unknown, legacy311: unknown, legacySource: unknown): MonitorSettings[] {
+  if (Array.isArray(raw)) return raw.slice(0, MAX_MONITORS).map(sanitizeMonitor);
+  if (legacy311 && typeof legacy311 === 'object') {
+    const o = legacy311 as Record<string, unknown>;
+    const src = Array.isArray(o.sources) ? o.sources : [];
+    return [sanitizeMonitor({ layout: o.layout, sources: [src[0], src[1], 'external', 'tms'], instruments: o.instruments })];
+  }
+  if (VIEW_SOURCES.includes(legacySource as ViewSource) && legacySource !== 'sonar')
+    return [sanitizeMonitor({ layout: 'single', sources: [legacySource, 'instruments', 'external', 'tms'] })];
+  return structuredClone(DEFAULT_SETTINGS.monitors);
+}
+function sanitizeSnapshot(raw: unknown): StationSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const panels = Array.isArray(r.panels) ? r.panels : [];
+  const locks = Array.isArray(r.panelLocks) ? r.panelLocks : [];
+  return {
+    layout: pick(r.layout, LAYOUTS, 'single'),
+    panels: DEFAULT_PANELS.map((def, i) => pick(panels[i], VIEW_SOURCES, def)),
+    panelLocks: [0, 1, 2, 3].map((i) => (typeof locks[i] === 'boolean' ? (locks[i] as boolean) : i > 0)),
+    monitors: Array.isArray(r.monitors) ? r.monitors.slice(0, MAX_MONITORS).map(sanitizeMonitor) : [],
+  };
+}
+function sanitizeHudItems(raw: unknown): HudItems {
+  const r = obj(raw);
+  const d = DEFAULT_SETTINGS.hudItems;
+  const b = (k: keyof HudItems) => (typeof r[k] === 'boolean' ? (r[k] as boolean) : d[k]);
+  return { compass: b('compass'), depth: b('depth'), attitude: b('attitude'), tether: b('tether'), camera: b('camera'), alarms: b('alarms') };
 }
 function sanitizeLighting(raw: unknown): LightingSettings {
   const r = obj(raw);
@@ -460,4 +526,23 @@ function safeStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+/** Categories for a selective "restore defaults" (the scope is shown to the operator before confirming). */
+export const RESET_CATEGORIES = {
+  station: ['layout', 'panels', 'panelLocks', 'monitors', 'stationProfile', 'monitorSource'],
+  cameras: ['camState'],
+  graphics: ['graphics', 'cameraFx', 'lighting', 'showFps'],
+  controls: ['bindings', 'keyboardPreset', 'sensitivity', 'keyRamp', 'mouseSensitivity', 'invert', 'gamepadDeadzone', 'defaultMode'],
+  sonar: ['sonar'],
+  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'dockAssist'],
+  interface: ['hudItems', 'showHints', 'volume'],
+} as const satisfies Record<string, readonly (keyof Settings)[]>;
+export type ResetCategory = keyof typeof RESET_CATEGORIES;
+
+/** Settings patch restoring the defaults of ONE category (everything else untouched). */
+export function resetPatch(cat: ResetCategory): Partial<Settings> {
+  const patch: Record<string, unknown> = {};
+  for (const k of RESET_CATEGORIES[cat]) patch[k] = structuredClone(DEFAULT_SETTINGS[k]);
+  return patch as Partial<Settings>;
 }

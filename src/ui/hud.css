@@ -645,50 +645,18 @@
   font-weight: 600;
   color: #e9eff3;
 }
-.hud[data-layout='dual'] .ibar,
-.hud[data-layout='quad'] .ibar {
-  display: flex;
+/*
+ * Multi-panel layouts (2/4): no boxes over the pictures. Each camera panel has
+ * its own operational overlay (PanelOverlay) and the essentials live in the
+ * station strip reserved below the panels. Only toasts remain from the HUD.
+ */
+.hud[data-layout='dual'] > :not(.toasts),
+.hud[data-layout='quad'] > :not(.toasts) {
+  display: none !important;
 }
-.hud[data-layout='dual'] .heading,
-.hud[data-layout='quad'] .heading,
-.hud[data-layout='dual'] .reticle,
-.hud[data-layout='quad'] .reticle,
-.hud[data-layout='quad'] .thrust,
-.hud[data-layout='quad'] .attitude,
-.hud[data-layout='quad'] .depth,
-.hud[data-layout='quad'] .nav,
-.hud[data-layout='quad'] .status,
-.hud[data-layout='dual'] .osd .hint {
-  display: none;
-}
-.hud[data-layout='quad'] .mission,
-.hud[data-layout='dual'] .mission {
-  top: 44px;
-  left: 50%;
-  right: auto;
-  transform: translateX(-50%);
-  width: min(560px, 60vw);
-  padding-bottom: 6px;
-}
-.hud[data-layout='quad'] .mission .stages,
-.hud[data-layout='quad'] .mission .ptitle,
-.hud[data-layout='dual'] .mission .mhint {
-  display: none;
-}
-.hud[data-layout='quad'] .mission .mhint {
-  display: none;
-}
-/* Multi-view: keep the bottom OSD and TMS line above the panel headers (selectors). */
-.hud[data-layout='dual'] .osd,
-.hud[data-layout='quad'] .osd {
-  bottom: 32px;
-}
-.hud[data-layout='quad'] .osd .hint {
-  display: none;
-}
-.hud[data-layout='dual'] .tmsp,
-.hud[data-layout='quad'] .tmsp {
-  bottom: 52px;
+.hud[data-layout='dual'] .toasts,
+.hud[data-layout='quad'] .toasts {
+  bottom: 56px;
 }
 /* Station panels */
 .station {
@@ -710,9 +678,10 @@
 }
 .st-head {
   position: absolute;
-  left: 50%;
-  bottom: 4px;
-  transform: translateX(-50%);
+  left: 6px;
+  top: 6px;
+  z-index: 2;
+  opacity: 0.85;
   display: flex;
   gap: 6px;
   align-items: center;
@@ -765,38 +734,96 @@
 }
 
 
-/* Instrumentation panel (station source) */
-.instr {
+
+
+.st-head:hover {
+  opacity: 1;
+}
+.st-host {
+  /* Sonar / instrumentation content starts below the panel header row (no text over text). */
+  inset: 30px 0 0 0 !important;
+}
+/* Station strip: band reserved under the panels (2/4 layouts). */
+.st-strip {
   position: absolute;
-  inset: 0;
-  padding-top: 52px !important;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 10px;
-  background: #070c10;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(150px, 0.6fr);
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 40px;
+  padding: 3px 10px;
+  box-sizing: border-box;
+  background: #0a1015;
+  border-top: 1px solid #24323d;
   font-family: var(--mono);
-  color: #e9eff3;
+  color: #dfe8ee;
+}
+.st-strip[hidden] {
+  display: none;
+}
+.ss-mission {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 11px;
+}
+.ss-mission span {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.instr .rd {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px 10px;
-  align-content: start;
+.ss-stage {
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.08em;
 }
-.instr .rd div span {
-  display: block;
+.ss-read {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.ss-read div {
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px;
+  border-right: 1px solid #1f2c36;
+  white-space: nowrap;
+}
+.ss-read div:last-child {
+  border-right: 0;
+}
+.ss-read span {
   font-size: 9px;
   letter-spacing: 0.12em;
   color: var(--muted);
 }
-.instr .rd div b {
-  font-size: 17px;
+.ss-read b {
+  font-size: 13px;
   font-weight: 600;
 }
-.instr canvas {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
+.ss-read div.warn b {
+  color: #f0b040;
+}
+.ss-alarm {
+  justify-self: end;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+.ss-alarm.on {
+  color: #ffb347;
+  font-weight: 600;
+}
+@media (max-width: 1100px) {
+  .st-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+  .ss-read {
+    grid-column: 1 / -1;
+    order: -1;
+  }
 }
