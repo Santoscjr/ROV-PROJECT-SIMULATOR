@@ -195,15 +195,32 @@ export interface CamPose {
   tilt: number;
   zoom: number;
 }
+/**
+ * One state per PHYSICAL camera, independent of the panel, window or layout
+ * that shows it. External: pan/tilt = orbit yaw/pitch around the ROV (deg),
+ * zoom = orbit distance (m). Others: pan/tilt of the camera head (deg) and
+ * zoom factor (1 = wide).
+ */
 export interface CameraStates {
   operational: CamPose;
   auxiliary: CamPose;
   tether: CamPose;
+  external: CamPose;
+  tms: CamPose;
 }
+export const CAM_LIMITS: Record<keyof CameraStates, { pan: [number, number]; tilt: [number, number]; zoom: [number, number] }> = {
+  operational: { pan: [-60, 60], tilt: [-70, 30], zoom: [0.35, 1] },
+  auxiliary: { pan: [-40, 40], tilt: [-40, 30], zoom: [0.35, 1] },
+  tether: { pan: [-150, 150], tilt: [-30, 60], zoom: [0.5, 1] },
+  external: { pan: [-180, 180], tilt: [-60, 80], zoom: [3.5, 40] },
+  tms: { pan: [-45, 45], tilt: [-35, 35], zoom: [0.5, 1] },
+};
 export const DEFAULT_CAM_STATES: CameraStates = {
   operational: { pan: 0, tilt: -10, zoom: 1 },
   auxiliary: { pan: 0, tilt: 0, zoom: 1 },
   tether: { pan: 0, tilt: 0, zoom: 1 },
+  external: { pan: 150, tilt: 12, zoom: 7.5 },
+  tms: { pan: 0, tilt: 0, zoom: 1 },
 };
 export interface MonitorSettings {
   layout: 'single' | 'dual';
@@ -338,9 +355,10 @@ function sanitizeCamStates(raw: unknown): CameraStates {
   const pose = (k: keyof CameraStates): CamPose => {
     const p = obj(r[k]);
     const d = DEFAULT_CAM_STATES[k];
-    return { pan: num(p.pan, -150, 150, d.pan), tilt: num(p.tilt, -70, 60, d.tilt), zoom: num(p.zoom, 0.35, 1, d.zoom) };
+    const l = CAM_LIMITS[k];
+    return { pan: num(p.pan, l.pan[0], l.pan[1], d.pan), tilt: num(p.tilt, l.tilt[0], l.tilt[1], d.tilt), zoom: num(p.zoom, l.zoom[0], l.zoom[1], d.zoom) };
   };
-  return { operational: pose('operational'), auxiliary: pose('auxiliary'), tether: pose('tether') };
+  return { operational: pose('operational'), auxiliary: pose('auxiliary'), tether: pose('tether'), external: pose('external'), tms: pose('tms') };
 }
 function sanitizeMonitor(raw: unknown, legacySource: unknown): MonitorSettings {
   const r = obj(raw);

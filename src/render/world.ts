@@ -221,6 +221,16 @@ export class World {
     return new Vector3(0.16 * tr.r * veil, 0.42 * tr.g * veil, 0.52 * tr.b * veil);
   }
 
+  /**
+   * Per-panel scene preparation (called before each camera panel is drawn, in
+   * any window): sky only above the surface and visibility culling from THAT
+   * camera — so a view never depends on which panel is the "main" one.
+   */
+  preparePanel(camPos: Vector3): void {
+    this.sky.visible = camPos.y >= 0;
+    this.cull(camPos);
+  }
+
   /** Hide seabed tiles / rock groups beyond what the water lets the camera see. */
   private cull(cam: Vector3): void {
     const o = this.optics;
@@ -293,6 +303,11 @@ export class World {
     pts.push(end);
     this.tether.geometry.dispose();
     this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), Math.max(40, pts.length * 5), 0.03, 8);
+  }
+
+  /** Water optics of the current conditions (shared by every camera, panel and window). */
+  get waterOptics(): WaterOptics {
+    return this.optics;
   }
 
   /** Optional assisted visibility of the tether (non-physical glow, clearly a display aid). */
