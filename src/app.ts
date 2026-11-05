@@ -18,9 +18,15 @@ import type { Objective } from './mission/types';
 import { MISSIONS, missionById } from './mission/catalog';
 import { MissionMarkers } from './render/markers';
 import { createTmsModel, type TmsModel } from './render/tmsModel';
-import { SecondaryView, glViewport, isCameraSource, layoutRects, usePanel } from './render/station';
+import { SecondaryView, glViewport, isCameraSource, layoutRects, renderCameraPanel, type PanelEnv } from './render/station';
 import { Sonar } from './render/sonar';
-import { SecondaryWindow } from './render/secondaryWindow';
+import { MonitorWindow } from './render/monitorWindow';
+import { PANEL_OVERLAY_CSS, PanelOverlay, type CamReadout } from './ui/panelOverlay';
+import { profilePatch, stationOf } from './config/profiles';
+import { BUILD, buildLabel, checkPublished, runtimeEnvironment, shortCommit, type PublishedCheck } from './diagnostics/buildInfo';
+import { capturedErrors } from './diagnostics/errors';
+import { ArrowHelper, BufferAttribute, BufferGeometry, Group, Line, LineBasicMaterial, Points, PointsMaterial } from 'three';
+import { DEFAULT_SETTINGS, MAX_MONITORS, type MonitorSettings, type StationProfileId } from './config/settings';
 import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
@@ -49,8 +55,18 @@ export class App {
   private readonly camStates: CameraStates;
   private camJson = '';
   private camSaveT = 0;
-  /** Panel that receives camera commands (keyboard, SpaceMouse buttons, gamepad). */
-  activePanel = 0;
+  /**
+   * Panel that receives camera commands (keyboard, SpaceMouse buttons, gamepad):
+   * window w (0 = main, k+1 = monitor k) and panel p of that window.
+   */
+  active = { w: 0, p: 0 };
+  /** Main-window active panel (compatibility for tests/tools). */
+  get activePanel(): number {
+    return this.active.w === 0 ? this.active.p : -1;
+  }
+  set activePanel(p: number) {
+    this.active = { w: 0, p };
+  }
   private pass: UnderwaterPass;
   private world: World;
   private readonly hud: Hud;
@@ -67,7 +83,7 @@ export class App {
   private readonly tmp = new Vector3();
   private readonly camDir = new Vector3();
   /** Draw calls / triangles of the last frame (all passes). */
-  frameStats = { calls: 0, triangles: 0, monitorCalls: 0, monitorTriangles: 0, secondaryScale: 1 };
+  frameStats = { calls: 0, triangles: 0, monitorCalls: 0, monitorTriangles: 0, secondaryScale: 1, waterPanels: 0 };
   /** Smoothed measured frame time (ms) and adaptive resolution factor of the secondary views. */
   private frameMs = 16;
   private secAdapt = 1;
@@ -77,8 +93,13 @@ export class App {
   private tetherLamp: SpotLight | null = null;
   private readonly tmsLamps: SpotLight[] = [];
   private readonly instr = new InstrumentPanel();
-  private readonly monitor2: SecondaryWindow;
+  /** Additional monitor windows (index k → "MONITOR k+2"), mirrored from settings.monitors. */
+  readonly monitors: MonitorWindow[] = [];
   private monitorJson = '';
+  /** Camera overlays of the main-window panels. */
+  private readonly overlays: (PanelOverlay | null)[] = [null, null, null, null];
+  /** Published-build check (cache vs old code), filled asynchronously at start-up. */
+  published: PublishedCheck | null = null;
   /** SpaceMouse/gamepad button latches for the winch (toggle semantics). */
   private tmsLatch = { pay: false, haul: false };
   private readonly secondary: SecondaryView[] = [];
@@ -106,8 +127,6 @@ export class App {
     this.rig = new CameraRig(window.innerWidth / window.innerHeight, this.camStates);
     this.menuRig = new CameraRig(window.innerWidth / window.innerHeight);
     this.menuRig.setMode('external');
-    this.monitor2 = new SecondaryWindow(terrainHeight, COLLIDERS, (doc) => new InstrumentPanel(doc), this.camStates, structuredClone(s.monitor));
-    this.monitorJson = JSON.stringify(s.monitor);
     this.pass = this.makePass(s);
     this.world = new World(this.renderer, s.graphics, this.pass);
     this.attachExtras();
@@ -150,6 +169,9 @@ export class App {
     });
 
     this.hud = new Hud(container);
+    const ovCss = document.createElement('style');
+    ovCss.textContent = PANEL_OVERLAY_CSS;
+    document.head.appendChild(ovCss);
     this.station = new StationUi(container);
     this.station.onSource = (i, src) => {
       this.activePanel = i;
@@ -161,7 +183,7 @@ export class App {
       this.store.update({ panelLocks });
       this.hud.toast(t(locked ? 'station.lockedOn' : 'station.lockedOff', { n: i + 1 }));
     };
-    this.station.onActivate = (i) => (this.activePanel = i);
+    this.station.onActivate = (i) => (this.active = { w: 0, p: i });
     this.sonar = new Sonar(terrainHeight, COLLIDERS);
     this.hud.onTmsAction = (a: PilotAction) => this.handleAction(a);
     this.menus = new Menus(container, this.store, MISSIONS, {
@@ -170,18 +192,19 @@ export class App {
       restart: () => this.restart(),
       mainMenu: () => this.toMainMenu(),
       spaceMouse: () => this.spacemouse,
-      openMonitor: () => this.monitor2.open(),
+      openMonitor: () => this.openNextMonitor(),
+      applyProfile: (id) => this.applyProfile(id),
+      saveProfile: () => this.store.update({ customStation: stationOf(this.store.get()), stationProfile: 'custom' }),
+      diagnostics: () => this.diagnostics(),
+      toggleTetherDebug: () => this.toggleTetherDebug(),
     });
-    this.monitor2.onChange = (m) => {
-      this.monitorJson = JSON.stringify(m);
-      this.store.update({ monitor: structuredClone(m) });
-    };
-    // Keys typed in the monitor window drive the same (single) keyboard device.
-    this.monitor2.onAttach = (w) => this.keyboard.attachWindow(w);
-    this.monitor2.onDetach = (w) => this.keyboard.detachWindow(w);
-    // The monitor page adopts itself on load, after its own reload and after this window's reload.
-    (window as unknown as Record<string, unknown>).__rovAdoptMonitor = (w: Window) => this.monitor2.adopt(w);
-    window.addEventListener('beforeunload', () => this.monitor2.unlink());
+    // The monitor pages adopt themselves on load, after their own reload and after this window's reload.
+    (window as unknown as Record<string, unknown>).__rovAdoptMonitor = (w: Window, k: number) => this.monitorAt(k)?.adopt(w);
+    window.addEventListener('beforeunload', () => this.monitors.forEach((m) => m.unlink()));
+    void checkPublished().then((r) => {
+      this.published = r;
+      this.menus.setBuildCheck(r);
+    });
 
     this.applySettings(s);
     this.store.subscribe((ns) => this.applySettings(ns));
@@ -240,13 +263,13 @@ export class App {
     this.sim.tether.setBuoyancy(s.tetherBuoyancy);
     this.sim.tmsDepth = s.tmsDepth;
     this.sim.lars.assist = s.dockAssist;
-    const mj = JSON.stringify(s.monitor);
+    const mj = JSON.stringify(s.monitors);
     if (mj !== this.monitorJson) {
       this.monitorJson = mj;
-      this.monitor2.setSettings(structuredClone(s.monitor));
+      this.syncMonitors(s.monitors);
     }
     this.sonar.configure(s.sonar);
-    this.monitor2.setSonar(s.sonar);
+    this.monitors.forEach((m) => m.setSonar(s.sonar));
   }
 
   private start(missionId = this.store.get().mission): void {
@@ -261,7 +284,7 @@ export class App {
     this.fineLatched = false;
     this.pass.resetAdaptation();
     this.secondary.forEach((v) => v.pass?.resetAdaptation());
-    this.activePanel = Math.min(this.activePanel, this.panelCount() - 1);
+    this.activeTarget();
     this.reportShown = false;
     this.state = 'running';
     this.menus.show(null);
@@ -319,14 +342,97 @@ export class App {
     return [this.rig, ...this.secondary.filter(Boolean).map((v) => v.rig)];
   }
 
-  /** Index of the panel under a client point (current layout). */
-  private panelAt(x: number, y: number): number {
-    const rects = layoutRects(this.store.get().layout, window.innerWidth, window.innerHeight);
-    const i = rects.findIndex((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-    return Math.max(0, i);
+  /** Height (CSS px) reserved at the bottom of the main window for the station strip. */
+  private stripHeight(): number {
+    return this.stationMode() ? this.station.stripHeight : 0;
   }
 
-  /** Camera rig of panel i (null when the panel shows sonar/instruments). */
+  /**
+   * True when the main window works as a station (2/4 panels, or one panel with
+   * sonar/instrumentation): per-panel overlays + reserved strip instead of the
+   * full-screen v2 HUD.
+   */
+  private stationMode(): boolean {
+    const st = this.store.get();
+    return this.state !== 'menu' && (st.layout !== 'single' || !isCameraSource(st.panels[0]));
+  }
+
+  /** Main-window panel rectangles (CSS px), above the reserved station strip. */
+  private mainRects() {
+    const layout = this.state === 'menu' ? 'single' : this.store.get().layout;
+    return layoutRects(layout, window.innerWidth, Math.max(1, window.innerHeight - this.stripHeight()));
+  }
+
+  /** Index of the main-window panel under a client point (-1: none, e.g. the strip). */
+  private panelAt(x: number, y: number): number {
+    return this.mainRects().findIndex((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  }
+
+  private monitorAt(k: number): MonitorWindow | null {
+    return this.monitors[k] ?? null;
+  }
+
+  /** Create/remove MonitorWindow objects to match settings.monitors (open windows are kept). */
+  private syncMonitors(list: MonitorSettings[]): void {
+    while (this.monitors.length > list.length) this.monitors.pop()!.dispose();
+    list.forEach((m, k) => {
+      let w = this.monitors[k];
+      if (!w) {
+        w = this.monitors[k] = new MonitorWindow(k, terrainHeight, COLLIDERS, (doc) => new InstrumentPanel(doc), this.camStates, structuredClone(m));
+        w.setSonar(this.store.get().sonar);
+        w.onChange = (ms) => {
+          const monitors = structuredClone(this.store.get().monitors);
+          monitors[k] = structuredClone(ms);
+          this.store.update({ monitors, stationProfile: 'custom' });
+        };
+        // Keys typed in a monitor window drive the same (single) keyboard device.
+        w.onAttach = (win) => this.keyboard.attachWindow(win);
+        w.onDetach = (win) => this.keyboard.detachWindow(win);
+        w.onActivate = (p) => (this.active = { w: k + 1, p });
+      } else w.setSettings(structuredClone(m));
+    });
+  }
+
+  /** F8 / menu: open the next configured monitor window that is not open yet (one per user action). */
+  private openNextMonitor(): boolean {
+    if (this.monitors.length === 0) {
+      const monitors = [...this.store.get().monitors, structuredClone(DEFAULT_SETTINGS.monitors[0])].slice(0, MAX_MONITORS);
+      this.store.update({ monitors });
+    }
+    const next = this.monitors.find((m) => !m.isOpen) ?? this.monitors[this.monitors.length - 1];
+    const ok = !!next && next.open();
+    if (!ok) this.hud.toast(t('settings.monitorBlocked'), 'warn', 5000);
+    else if (this.monitors.every((m) => m.isOpen) || next === this.monitors[this.monitors.length - 1]) this.hud.toast(t('msg.monitorOpened', { n: next.index + 2 }), 'ok');
+    return ok;
+  }
+
+  private applyProfile(id: StationProfileId): boolean {
+    const patch = profilePatch(id, this.store.get());
+    if (!patch) return false;
+    this.store.update(patch);
+    this.active = { w: 0, p: 0 };
+    this.hud.toast(t('msg.profileApplied', { p: t('profile.' + id) }), 'ok');
+    return true;
+  }
+
+  /** Sources / locks / panel count of window w (0 = main). */
+  private windowPanels(w: number): { sources: ViewSource[]; locks: boolean[]; count: number } | null {
+    const st = this.store.get();
+    if (w === 0) return { sources: st.panels, locks: st.panelLocks, count: this.panelCount() };
+    const m = st.monitors[w - 1];
+    if (!m || !this.monitors[w - 1]?.isOpen) return null;
+    return { sources: m.sources, locks: m.locks, count: layoutRects(m.layout, 1, 1).length };
+  }
+
+  /** Active target, validated (falls back to main panel 0 if its window closed or the layout shrank). */
+  private activeTarget(): { w: number; p: number } {
+    const wp = this.windowPanels(this.active.w);
+    if (!wp) this.active = { w: 0, p: 0 };
+    else if (this.active.p >= wp.count) this.active = { w: this.active.w, p: wp.count - 1 };
+    return this.active;
+  }
+
+  /** Camera rig of panel i of the main window (null when the panel shows sonar/instruments). */
   rigFor(i: number): CameraRig | null {
     const src = this.store.get().panels[i];
     if (!isCameraSource(src)) return null;
@@ -336,44 +442,66 @@ export class App {
     return v.rig;
   }
 
+  /** Rig of the active target, in whichever window it is. */
+  private activeRig(): CameraRig | null {
+    const a = this.activeTarget();
+    return a.w === 0 ? this.rigFor(a.p) : (this.monitors[a.w - 1]?.rigFor(a.p) ?? null);
+  }
+
   private makeView(src: ViewSource): SecondaryView {
-    const v = new SecondaryView(src, this.camStates);
+    const v = new SecondaryView(src, this.camStates, Math.min(2, MSAA[this.store.get().graphics]));
     v.rig.mouseSensitivity = this.store.get().mouseSensitivity;
     v.rig.invertTilt = this.store.get().invert.camTilt;
     return v;
   }
 
-  private activeIndex(): number {
-    return Math.min(this.activePanel, this.panelCount() - 1);
-  }
-
   /**
-   * Change a panel's source. Implicit changes (shortcuts, SpaceMouse, gamepad)
-   * are refused on a locked panel; explicit ones come from the panel selector.
+   * Change the source of panel p of window w. Implicit changes (shortcuts,
+   * SpaceMouse, gamepad) are refused on a locked panel; explicit ones come
+   * from the panel selector.
    */
-  setPanelSource(i: number, src: ViewSource, explicit = false): boolean {
+  setPanelSource(p: number, src: ViewSource, explicit = false, w = 0): boolean {
     const st = this.store.get();
-    if (!explicit && st.panelLocks[i]) {
-      this.hud.toast(t('station.lockedRefused', { n: i + 1 }), 'warn');
+    const wp = this.windowPanels(w);
+    if (!wp) return false;
+    const label = w === 0 ? `${p + 1}` : `M${w + 1}·${p + 1}`;
+    if (!explicit && wp.locks[p]) {
+      this.hud.toast(t('station.lockedRefused', { n: label }), 'warn');
       return false;
     }
-    if (st.panels[i] === src) return true;
-    const panels = [...st.panels];
-    panels[i] = src;
-    this.store.update({ panels });
-    if (i === 0) this.pass.resetAdaptation();
-    else this.secondary[i]?.pass?.resetAdaptation();
+    if (wp.sources[p] === src) return true;
+    if (w === 0) {
+      const panels = [...st.panels];
+      panels[p] = src;
+      this.store.update({ panels, stationProfile: 'custom' });
+      if (p === 0) this.pass.resetAdaptation();
+      else this.secondary[p]?.pass?.resetAdaptation();
+    } else {
+      const monitors = structuredClone(st.monitors);
+      monitors[w - 1].sources[p] = src;
+      this.store.update({ monitors, stationProfile: 'custom' });
+    }
     return true;
   }
 
   /** Camera shortcut / device button: put a camera on the active panel (if unlocked). */
   private selectCamera(m: CameraMode): void {
-    const i = this.activeIndex();
-    if (!this.setPanelSource(i, m)) return;
+    const a = this.activeTarget();
+    if (!this.setPanelSource(a.p, m, false, a.w)) return;
     this.sim.mission.notifyCameraToggled();
-    const n = this.panelCount();
-    this.hud.toast(n > 1 ? t('msg.cameraPanel', { c: t('view.' + m), n: i + 1 }) : t('msg.camera', { c: t('view.' + m) }));
+    const n = this.windowPanels(a.w)?.count ?? 1;
+    const label = a.w === 0 ? `${a.p + 1}` : `M${a.w + 1}·${a.p + 1}`;
+    this.hud.toast(n > 1 || a.w > 0 ? t('msg.cameraPanel', { c: t('view.' + m), n: label }) : t('msg.camera', { c: t('view.' + m) }));
   }
+
+  /** Source currently shown in the active panel. */
+  private activeSource(): ViewSource {
+    const a = this.activeTarget();
+    return this.windowPanels(a.w)?.sources[a.p] ?? this.store.get().panels[0];
+  }
+
+  /** Camera head readout for overlays (from the shared physical-camera state). */
+  private camReadout = (src: ViewSource): CamReadout | null => (isCameraSource(src) ? { ...this.camStates[src] } : null);
 
   /** Secondary-view resolution factor (quantised to avoid reallocating targets every frame). */
   private secScale(): number {
@@ -401,7 +529,7 @@ export class App {
     let ly = 0;
     canvas.addEventListener('pointerdown', (e) => {
       dragPanel = this.panelAt(e.clientX, e.clientY);
-      if (this.state === 'running') this.activePanel = dragPanel;
+      if (this.state === 'running' && dragPanel >= 0) this.active = { w: 0, p: dragPanel };
       lx = e.clientX;
       ly = e.clientY;
       canvas.setPointerCapture(e.pointerId);
@@ -421,7 +549,8 @@ export class App {
         e.preventDefault();
         if (this.state !== 'running') return;
         // Wheel = tilt (as in v2); Ctrl/Alt + wheel = zoom. External view: distance.
-        this.rigFor(this.panelAt(e.clientX, e.clientY))?.wheel(e.deltaY, e.ctrlKey || e.altKey);
+        const i = this.panelAt(e.clientX, e.clientY);
+        if (i >= 0) this.rigFor(i)?.wheel(e.deltaY, e.ctrlKey || e.altKey);
       },
       { passive: false },
     );
@@ -458,12 +587,11 @@ export class App {
       }
       case 'toggleCamera': {
         // Operational ⇄ external on the active panel (as in v2), if not locked.
-        const cur = this.store.get().panels[this.activeIndex()];
-        this.selectCamera(cur === 'operational' ? 'external' : 'operational');
+        this.selectCamera(this.activeSource() === 'operational' ? 'external' : 'operational');
         break;
       }
       case 'camTiltCenter': {
-        const r = this.rigFor(this.activeIndex());
+        const r = this.activeRig();
         if (r && r.mode === 'operational') r.tilt = 0;
         else if (r && r.mode === 'auxiliary') r.auxTilt = 0;
         else if (r && r.mode === 'tether') r.tetherTilt = 0;
@@ -497,7 +625,7 @@ export class App {
         break;
       }
       case 'monitorOpen':
-        if (!this.monitor2.open()) this.hud.toast(t('settings.monitorBlocked'), 'warn', 5000);
+        this.openNextMonitor();
         return;
       case 'layoutCycle': {
         const order = ['single', 'dual', 'quad'] as const;
@@ -580,7 +708,7 @@ export class App {
       this.sim.tms.setCommand(pay, haul);
       if (live) {
         // Camera commands act on the active panel's camera (allowed even when locked).
-        const ar = this.rigFor(this.activeIndex());
+        const ar = this.activeRig();
         const z = (this.keyboard.held('zoomIn') ? 1 : 0) - (this.keyboard.held('zoomOut') ? 1 : 0);
         if (z) ar?.adjustZoom(z * dt * 8);
         const p = (this.keyboard.held('camPan+') ? 1 : 0) - (this.keyboard.held('camPan-') ? 1 : 0);
@@ -595,7 +723,7 @@ export class App {
     if (running) {
       const c = this.input.command;
       Object.assign(sim.command, c);
-      this.rigFor(this.activeIndex())?.tiltBy(c.camTilt * 40 * dt);
+      this.activeRig()?.tiltBy(c.camTilt * 40 * dt);
       const ev = sim.advance(dt);
       for (const imp of ev.impacts) {
         this.audio.knock(imp.speed);
@@ -683,6 +811,7 @@ export class App {
     // Main umbilical: crane sheave → Top-Hat termination (always attached).
     this.world.vessel.setWire(sim.lars.liftWorld(this.tmp));
     this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
+    this.updateTetherDebug();
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     // TMS visuals follow the winch state.
     if (this.tmsModel) {
@@ -710,25 +839,64 @@ export class App {
     const W = window.innerWidth;
     const H = window.innerHeight;
     const pr = this.renderer.getPixelRatio();
-    const rects = layoutRects(menu ? 'single' : st.layout, W, H);
+    // Main-window panels sit above the reserved station strip (multi-panel layouts).
+    const rects = this.mainRects();
     const src0: ViewSource = menu ? 'external' : st.panels[0];
-    const active = this.activeIndex();
-    const hosts = this.station.layout(rects, st.panels, st.panelLocks, active);
-    this.hud.root.dataset.layout = menu ? 'single' : st.layout;
+    const act = this.activeTarget();
+    const hosts = this.station.layout(rects, st.panels, st.panelLocks, act.w === 0 ? act.p : -1, menu ? 'single' : st.layout);
+    const stationMode = this.stationMode();
+    this.hud.root.dataset.layout = stationMode ? (st.layout === 'single' ? 'dual' : st.layout) : 'single';
+    // One environment for every camera panel of every window (single simulation).
+    const env: PanelEnv = {
+      world: this.world,
+      dt,
+      time: this.time,
+      rovRoot: rov.root,
+      eye: rov.cameraEye,
+      headingRad,
+      tmsMount: this.tmsModel?.cameraMount ?? null,
+      terrainHeight,
+      fxFor,
+      whiteBalance: wbFor,
+      observer,
+      ambient,
+      lightLevel: sim.effectiveLight,
+      seabedBase: SITE_BASE_DEPTH,
+    };
+    void seabedDepth;
     const info = this.renderer.info;
     info.autoReset = false;
     info.reset();
+    this.world.panelDraws = 0;
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.setScissorTest(true);
+    if (rects.length > 0 && rects[0].y + rects[0].h < H) {
+      // Clear the strip band (it is DOM, but keep the canvas below it dark).
+      this.renderer.setViewport(0, 0, W, H);
+      this.renderer.setScissor(0, 0, W, H);
+      this.renderer.setClearColor(0x05090c, 1);
+      this.renderer.clear();
+    }
     let sonarHost: HTMLElement | null = null;
     let sonarRect: { w: number; h: number } | null = null;
     let instrHost: HTMLElement | null = null;
     let instrRect: { w: number; h: number } | null = null;
+    const multi = rects.length > 1;
+    const hudData = this.hud.lastData;
+    const secK = SECONDARY_SCALE[st.graphics] * this.secScale();
 
     for (let i = 0; i < rects.length; i++) {
       const src = i === 0 ? src0 : st.panels[i];
       const r = rects[i];
+      // Operational overlay over camera panels (multi-panel layouts; the single
+      // layout keeps the full v2 HUD instead).
+      const ov = this.overlays[i];
+      if (multi && isCameraSource(src) && hudData && this.state !== 'report') {
+        const o = (this.overlays[i] ??= new PanelOverlay(document));
+        if (o.root.parentElement !== this.station.frame(i)) this.station.frame(i)?.prepend(o.root);
+        o.update(hudData, src, this.camReadout(src), st.hudItems, r.w, r.h);
+      } else ov?.root.remove();
       if (src === 'sonar') {
         if (!sonarHost) {
           sonarHost = hosts[i];
@@ -745,53 +913,21 @@ export class App {
       }
       const vp = glViewport(r, H, pr);
       if (i === 0) {
-        // Main (interactive) view: full pipeline incl. particles/beams.
+        // Panel 1: full-resolution MSAA pass (and the lens "wet" transition).
         if (vp.w !== this.mainPassSize.w || vp.h !== this.mainPassSize.h) {
           this.pass.setSize(vp.w, vp.h);
           this.mainPassSize = { w: vp.w, h: vp.h };
         }
-        cam.aspect = r.w / r.h;
-        cam.updateProjectionMatrix();
-        usePanel(this.renderer, vp);
-        observer(rig0.mode, cam.position);
-        this.pass.setCameraFx(fxFor(src0), rig0.mode === 'operational');
-        this.pass.update(cam, { camDepth, seabedDepth, time: this.time, wet: this.wet, whiteBalance: wbFor(camDepth) });
-        this.world.effects.update(cam, {
-          time: this.time,
-          width: vp.w,
-          height: vp.h,
-          originX: vp.x,
-          originY: vp.y,
-          pixelRatio: pr,
-          ambient,
-          underwater: camUnder,
-          lightLevel: sim.effectiveLight,
-        });
-        this.pass.render(this.renderer, this.world.scene, cam);
-        this.renderer.autoClear = false;
-        this.renderer.render(this.world.effects.scene, cam);
-        this.renderer.autoClear = true;
+        renderCameraPanel(this.renderer, rig0, this.pass, src0, vp, r.w, r.h, env, this.wet);
       } else {
-        // Secondary views (shared simulation & scene; no particle overlay).
         const view = (this.secondary[i] ??= this.makeView(src));
         if (view.source !== src) view.setSource(src);
-        // Resolution of the secondary panels follows the quality preset (parity with the main view on 'high').
-        const k = SECONDARY_SCALE[st.graphics] * this.secScale();
-        const sp = view.ensurePass(Math.round(vp.w * k), Math.round(vp.h * k));
-        sp.setWater(this.pass.optics);
-        view.rig.tmsMount = this.tmsModel?.cameraMount ?? null;
-        view.rig.camera.aspect = r.w / r.h;
-        view.rig.update(dt, rov.root, rov.cameraEye, headingRad);
-        const vc = view.rig.camera;
-        const d = -vc.position.y;
-        observer(view.rig.mode, vc.position);
-        sp.setCameraFx(fxFor(src), src === 'operational' || src === 'auxiliary');
-        sp.update(vc, { camDepth: d, seabedDepth: -terrainHeight(vc.position.x, vc.position.z) || SITE_BASE_DEPTH, time: this.time, wet: 0, whiteBalance: wbFor(d) });
-        usePanel(this.renderer, vp);
-        sp.render(this.renderer, this.world.scene, vc);
+        const sp = view.ensurePass(Math.max(1, Math.round(vp.w * secK)), Math.max(1, Math.round(vp.h * secK)));
+        renderCameraPanel(this.renderer, view.rig, sp, src, vp, r.w, r.h, env);
       }
       this.renderer.shadowMap.needsUpdate = false;
     }
+    for (let i = rects.length; i < this.overlays.length; i++) this.overlays[i]?.root.remove();
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, W, H);
     // Free the render targets of panels that are hidden or show sonar/instruments
@@ -804,45 +940,47 @@ export class App {
     // Sonar: scan the real geometry only while it is visible.
     if (sonarHost && sonarRect) {
       if (this.sonar.canvas.parentElement !== sonarHost) sonarHost.appendChild(this.sonar.canvas);
-      if (running) this.sonar.scan(sim.rov.position, sim.rov.heading);
-      this.sonar.draw(sonarRect.w, sonarRect.h - 22);
+      if (running) this.sonar.scanFor(dt, sim.rov.position, sim.rov.heading);
+      this.sonar.draw(sonarRect.w, sonarRect.h - 30);
     } else if (this.sonar.canvas.parentElement) this.sonar.canvas.remove();
-    // Secondary monitor window (same simulation, same frame).
-    this.monitor2.render({
-      scene: this.world.scene,
-      dt,
-      time: this.time,
-      rovRoot: rov.root,
-      eye: rov.cameraEye,
-      headingRad,
-      tmsMount: this.tmsModel?.cameraMount ?? null,
-      mainPass: this.pass,
-      fxFor,
-      scale: this.secScale(),
-      terrainHeight,
-      whiteBalance: wbFor,
-      observer,
-      rovPos: sim.rov.position,
-      heading: sim.rov.heading,
-      running,
+    // Monitor windows (same simulation, same frame, same panel renderer).
+    let monCalls = 0;
+    let monTris = 0;
+    this.monitors.forEach((m, k) => {
+      if (!m.isOpen) return;
+      m.render({
+        ...env,
+        running,
+        rovPos: sim.rov.position,
+        heading: sim.rov.heading,
+        scale: secK,
+        pixelRatioCap: PIXEL_RATIO[st.graphics],
+        msaa: Math.min(2, MSAA[st.graphics]),
+        shadows: st.graphics !== 'low',
+        active: act.w === k + 1 ? act.p : -1,
+        hud: hudData,
+        hudRef: this.hud,
+        hudItems: st.hudItems,
+        camReadout: this.camReadout,
+      });
+      monCalls += m.stats.calls;
+      monTris += m.stats.triangles;
     });
-    if (this.hud.lastData) {
-      this.monitor2.instruments?.update(this.hud.lastData, this.hud);
-      this.monitor2.updateBar(this.hud.lastData);
-    }
     // Instrumentation panel.
-    if (instrHost && instrRect && this.hud.lastData) {
+    if (instrHost && instrRect && hudData) {
       if (this.instr.root.parentElement !== instrHost) instrHost.appendChild(this.instr.root);
-      this.instr.update(this.hud.lastData, this.hud);
+      this.instr.update(hudData, this.hud);
     } else if (this.instr.root.parentElement) this.instr.root.remove();
+    // Station strip (reserved band under the panels in multi-panel layouts).
+    if (hudData) this.station.updateStrip(hudData, stationMode);
     // Graceful degradation: with several views, lower the secondary views' resolution
     // (in 25 % steps) while frames are slow, and restore it when there is headroom.
-    if (running && (rects.length > 1 || this.monitor2.isOpen)) {
+    const anyMonitor = this.monitors.some((m) => m.isOpen);
+    if (running && (rects.length > 1 || anyMonitor)) {
       if (this.frameMs > 40) this.secAdapt = Math.max(0.5, this.secAdapt - dt * 0.1);
       else if (this.frameMs < 24) this.secAdapt = Math.min(1, this.secAdapt + dt * 0.05);
     }
-    const ms = this.monitor2.stats;
-    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles, monitorCalls: ms.calls, monitorTriangles: ms.triangles, secondaryScale: this.secScale() };
+    this.frameStats = { calls: info.render.calls, triangles: info.render.triangles, monitorCalls: monCalls, monitorTriangles: monTris, secondaryScale: this.secScale(), waterPanels: this.world.panelDraws };
 
     // Audio & HUD.
     const load = levels.reduce((s, l) => s + Math.abs(l), 0) / levels.length;
@@ -858,7 +996,9 @@ export class App {
 
   /** True if the ROV pilot camera is visible in any station panel. */
   private operationalVisible(): boolean {
-    return this.store.get().panels.slice(0, this.panelCount()).includes('operational');
+    const st = this.store.get();
+    if (st.panels.slice(0, this.panelCount()).includes('operational')) return true;
+    return this.monitors.some((m, k) => m.isOpen && st.monitors[k]?.sources.slice(0, layoutRects(st.monitors[k].layout, 1, 1).length).includes('operational'));
   }
 
   /** TMS model, its lamp and the main umbilical (re-attached when the World is rebuilt). */
@@ -889,6 +1029,122 @@ export class App {
     this.world.rov.root.add(tl, tt);
     tl.target = tt;
     this.tetherLamp = tl;
+  }
+
+  // ---------- Diagnostics ----------
+  private tetherDebug: { group: Group; points: Points; line: Line; arrow: ArrowHelper } | null = null;
+
+  /** Engineering view of the tether: physical nodes (red = in contact), segments and attach force. */
+  toggleTetherDebug(): boolean {
+    if (this.tetherDebug) {
+      this.tetherDebug.group.removeFromParent();
+      this.tetherDebug.points.geometry.dispose();
+      this.tetherDebug = null;
+      return false;
+    }
+    const n = this.sim.tether.debugState().nodes.length;
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(new Float32Array(n * 3), 3));
+    geo.setAttribute('color', new BufferAttribute(new Float32Array(n * 3), 3));
+    const points = new Points(geo, new PointsMaterial({ size: 6, sizeAttenuation: false, vertexColors: true, depthTest: false }));
+    const line = new Line(geo, new LineBasicMaterial({ color: 0x40e0ff, depthTest: false }));
+    const arrow = new ArrowHelper(new Vector3(1, 0, 0), new Vector3(), 1, 0xff4040);
+    const group = new Group();
+    group.add(points, line, arrow);
+    group.renderOrder = 999;
+    this.world.scene.add(group);
+    this.tetherDebug = { group, points, line, arrow };
+    return true;
+  }
+
+  private updateTetherDebug(): void {
+    const d = this.tetherDebug;
+    if (!d) return;
+    const tt = this.sim.tether.debugState();
+    const pos = d.points.geometry.getAttribute('position') as BufferAttribute;
+    const col = d.points.geometry.getAttribute('color') as BufferAttribute;
+    tt.nodes.forEach((p, i) => {
+      if (i >= pos.count) return;
+      pos.setXYZ(i, p.x, p.y, p.z);
+      const c = tt.nodeContact[i];
+      col.setXYZ(i, c ? 1 : 0.3, c ? 0.2 : 1, c ? 0.2 : 0.4);
+    });
+    pos.needsUpdate = col.needsUpdate = true;
+    d.points.geometry.computeBoundingSphere();
+    d.group.visible = this.sim.crane === 'released';
+    const f = tt.attachForce;
+    const mag = f.length();
+    if (mag > 1) {
+      this.sim.attachWorld(this.tmp);
+      d.arrow.position.copy(this.tmp);
+      d.arrow.setDirection(this.tmp.copy(f).normalize());
+      d.arrow.setLength(Math.min(6, 0.5 + mag / 500), 0.3, 0.15);
+      d.arrow.visible = true;
+    } else d.arrow.visible = false;
+  }
+
+  /** Plain-text report for the diagnostics screen (and to paste into a bug report). */
+  diagnostics(): string {
+    const st = this.store.get();
+    const sim = this.sim;
+    const gl = this.renderer.getContext();
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'n/d';
+    let stored = 'n/d';
+    try {
+      stored = String(JSON.parse(localStorage.getItem('rov.settings.v1') ?? '{}').version ?? 'sem versão (anterior à 3.1.1)');
+    } catch {
+      stored = 'ilegível';
+    }
+    const pub = this.published;
+    const pubTxt = !pub
+      ? 'verificando…'
+      : pub.state === 'same'
+        ? `igual ao publicado (${shortCommit(pub.published.commit)})`
+        : pub.state === 'newer'
+          ? `DESATUALIZADO: publicado v${pub.published.version} ${shortCommit(pub.published.commit)} (${pub.published.builtAt}) — recarregue a página`
+          : `indisponível (${pub.reason})`;
+    const a = this.activeTarget();
+    const mons = st.monitors
+      .map((m, k) => {
+        const w = this.monitors[k];
+        const age = w?.isOpen ? `${Math.round(performance.now() - w.lastFrame)} ms desde o último quadro` : 'fechado';
+        return `  M${k + 2}: ${m.layout} [${m.sources.slice(0, layoutRects(m.layout, 1, 1).length).join(', ')}] faixa=${m.instruments} — ${age}`;
+      })
+      .join('\n');
+    const tt = sim.tether.debugState();
+    const f = tt.attachForce;
+    const lines = [
+      '== BUILD ==',
+      `${buildLabel()}  (${BUILD.builder}${BUILD.ref ? ' ' + BUILD.ref : ''})`,
+      `commit completo: ${BUILD.commit}`,
+      `ambiente: ${runtimeEnvironment()}  ·  ${location.href.split('?')[0]}`,
+      `versão publicada: ${pubTxt}`,
+      `configurações: esquema salvo ${stored} → atual ${st.version}`,
+      `GPU: ${gpu}`,
+      '',
+      '== DESEMPENHO ==',
+      `FPS ${this.fps.toFixed(1)} · quadro ${this.frameMs.toFixed(1)} ms · draw calls ${this.frameStats.calls} (+${this.frameStats.monitorCalls} monitores) · triângulos ${this.frameStats.triangles} · escala secundária ${this.frameStats.secondaryScale}`,
+      '',
+      '== ESTAÇÃO ==',
+      `perfil ${st.stationProfile} · layout ${st.layout} [${st.panels.slice(0, this.panelCount()).join(', ')}] · fixos ${st.panelLocks.map((l) => (l ? 'F' : 'L')).join('')}`,
+      `painel ativo: ${a.w === 0 ? 'principal' : 'M' + (a.w + 1)} #${a.p + 1} (${this.activeSource()})`,
+      mons || '  (nenhum monitor adicional configurado)',
+      '',
+      '== ENTRADA ==',
+      `fontes ativas: ${JSON.stringify(this.input.sources)} · fino ${this.input.fine}`,
+      `SpaceMouse: ${!this.spacemouse ? 'WebHID indisponível' : this.spacemouse.connected() ? this.spacemouse.label : 'desconectado'} · gamepads: ${navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean).length : 0}`,
+      '',
+      '== SIMULAÇÃO ==',
+      `estado ${this.state} · missão ${sim.missionDef.id} · modo ${sim.controller.mode}`,
+      `ROV prof ${sim.rov.depth.toFixed(2)} m · rumo ${sim.rov.heading.toFixed(1)}° · pitch ${sim.rov.pitch.toFixed(1)}° · roll ${sim.rov.roll.toFixed(1)}° · alt ${sim.altitude?.toFixed(2) ?? '---'} m`,
+      `Top-Hat ${sim.lars.state} a ${(-sim.lars.position.y).toFixed(1)} m · TMS ${sim.tms.mode}/${sim.tms.state} · pago ${sim.tms.payout.toFixed(1)} m · v ${sim.tms.speed.toFixed(2)} m/s`,
+      `tether: tração ${tt.tension.toFixed(0)} N · folga ${tt.slack.toFixed(1)} m · corda ${tt.chord.toFixed(1)} m · força na terminação (${f.x.toFixed(0)}, ${f.y.toFixed(0)}, ${f.z.toFixed(0)}) N · contatos fundo/estr./ROV ${tt.contacts.seabed}/${tt.contacts.structure}/${tt.contacts.rov}`,
+      '',
+      `== ERROS (${capturedErrors.length}) ==`,
+      ...(capturedErrors.length ? capturedErrors.map((e) => `${e.time} [${e.kind}] ${e.message}`) : ['nenhum']),
+    ];
+    return lines.join('\n');
   }
 
   /** Docking guidance when the ROV is free and within 15 m of the Top-Hat. */

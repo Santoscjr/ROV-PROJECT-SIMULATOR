@@ -67,6 +67,49 @@ export const DEFAULT_SEGMENT_TETHER: SegmentTetherConfig = {
 
 /** ROV body box used for cable contact (body frame, centred on the CG). */
 const ROV_BOX = { cx: 0, cy: -0.05, cz: 0, hx: 1.35, hy: 0.85, hz: 0.85 };
+/**
+ * Margin (m) around the ROV box inside which the TMS exit counts as "at the
+ * vehicle" (latched / just released under the Top-Hat): the exit guide then
+ * lies within the contact box, so cable-on-ROV contact is suspended instead of
+ * projecting the first nodes out of the box (which stretched the chain and
+ * produced a full-scale tension spike at release).
+ */
+const ROV_ANCHOR_MARGIN = 0.3;
+
+/** Per-node contact flags in {@link TetherDebugState.nodeContact}. */
+export const TETHER_CONTACT = { seabed: 1, structure: 2, rov: 4 } as const;
+
+/**
+ * Engineering diagnostics of the tether (read-only snapshot, see
+ * {@link SegmentTether.debugState}). Arrays are reused between calls.
+ */
+export interface TetherDebugState {
+  /** Node positions (world, m), n+1 entries: [0] = TMS exit, [n] = ROV termination. */
+  nodes: Vector3[];
+  /** Per-segment tension estimate (N), n entries; [j] joins nodes j and j+1. */
+  segmentTension: Float64Array;
+  /** Per-segment strain (d/L − 1), negative when the segment is slack/compressed. */
+  segmentStrain: Float64Array;
+  /** Per-node contact bit flags (TETHER_CONTACT.seabed | structure | rov), last step. */
+  nodeContact: Uint8Array;
+  /** Force applied on the ROV at the termination (world, N). */
+  attachForce: Vector3;
+  /** Tension at the termination (N) — same value as `tension`. */
+  tension: number;
+  /** Paid-out length (m), straight TMS→ROV distance (m), slack (m), elastic stretch (m). */
+  payout: number;
+  chord: number;
+  slack: number;
+  stretch: number;
+  /** Rest length of one segment (m). */
+  restLength: number;
+  /** Contact counts of the last step. */
+  contacts: { seabed: number; structure: number; rov: number };
+  /** False while the tether is disabled (ROV latched): no force is applied. */
+  enabled: boolean;
+  /** True when cable-on-ROV contact is suspended because the TMS exit is at the vehicle. */
+  rovContactSuspended: boolean;
+}
 
 const _v = new Vector3();
 const _c = new Vector3();
@@ -83,6 +126,11 @@ export class SegmentTether implements TetherForceProvider {
   readonly p: Vector3[];
   private readonly prev: Vector3[];
   private readonly lambda: Float64Array;
+  /** Per-node contact flags of the last step (TETHER_CONTACT bits). */
+  private readonly nodeFlags: Uint8Array;
+  private lastDt = 1 / 120;
+  private rovContactSuspended = false;
+  private debug: TetherDebugState | null = null;
   /** Paid-out length (m), set by the TMS winch every step. */
   payout = 30;
   enabled = true;
@@ -112,6 +160,7 @@ export class SegmentTether implements TetherForceProvider {
     this.p = Array.from({ length: this.n + 1 }, () => new Vector3());
     this.prev = Array.from({ length: this.n + 1 }, () => new Vector3());
     this.lambda = new Float64Array(this.n);
+    this.nodeFlags = new Uint8Array(this.n + 1);
     this.bounds = colliders.map(colliderBounds);
   }
 
@@ -140,19 +189,32 @@ export class SegmentTether implements TetherForceProvider {
     return Math.max(0, this.payout - this.chordLength);
   }
 
-  /** Lay the chain out between anchor and attach, sagging to absorb extra length. */
-  reset(anchor: Vector3, attach: Vector3): void {
+  /**
+   * Lay the chain out between anchor and attach, sagging to absorb extra length.
+   * @param sagDirection direction of the bight (unit, world); default straight down.
+   *   The simulation lays it aft of the vehicle at release so the cable does not
+   *   start inside the ROV body.
+   */
+  reset(anchor: Vector3, attach: Vector3, sagDirection?: Vector3): void {
     this.anchor.copy(anchor);
     const chord = anchor.distanceTo(attach);
     const extra = Math.max(0, this.payout - chord);
-    const sag = Math.sqrt((3 * Math.max(chord, 1) * extra) / 8);
+    // Shallow-sag estimate, capped so that no segment starts stretched: the
+    // nodes are equally spaced in the parameter, and the end segments of a
+    // parabola are the longest (|dP/ds| = √(c² + 16a²) at s = 0, 1). Without the
+    // cap a short chord (release under the TMS) began with ~17 % strain at the
+    // ends and a ~9 kN segment-tension spike.
+    const sagCap = (0.98 * Math.sqrt(Math.max(0, this.payout * this.payout - chord * chord))) / 4;
+    const sag = Math.min(Math.sqrt((3 * Math.max(chord, 1) * extra) / 8), sagCap);
+    const dir = _c.set(0, -1, 0);
+    if (sagDirection && sagDirection.lengthSq() > 1e-12) dir.copy(sagDirection).normalize();
     for (let i = 0; i <= this.n; i++) {
       const s = i / this.n;
-      this.p[i].lerpVectors(anchor, attach, s);
-      this.p[i].y -= sag * 4 * s * (1 - s);
-      this.clampToSeabed(this.p[i]);
+      this.p[i].lerpVectors(anchor, attach, s).addScaledVector(dir, sag * 4 * s * (1 - s));
+      if (i > 0 && i < this.n) this.clampToSeabed(this.p[i]);
       this.prev[i].copy(this.p[i]);
     }
+    this.nodeFlags.fill(0);
     this.lambda.fill(0);
     this.force.set(0, 0, 0);
     this.tension = 0;
@@ -191,6 +253,7 @@ export class SegmentTether implements TetherForceProvider {
     const dnAreaN = 0.5 * rho * cfg.cdNormal * cfg.diameter * L;
     const dnAreaT = 0.5 * rho * cfg.cdTangent * Math.PI * cfg.diameter * L;
     const dt2 = dt * dt;
+    this.lastDt = dt;
 
     // 1. Integrate interior particles (Verlet) under weight + drag.
     for (let i = 1; i < n; i++) {
@@ -259,7 +322,12 @@ export class SegmentTether implements TetherForceProvider {
     this.stretch = Math.max(0, total - this.payout);
     const rate = (this.stretch - this.lastStretch) / dt;
     this.lastStretch = this.stretch;
-    const tGlobal = (cfg.axialStiffness * this.stretch) / Math.max(this.payout, 1) + Math.max(0, cfg.axialDamping * rate) * (this.stretch > 0 ? 1 : 0);
+    // Kelvin–Voigt axial model, damping bounded by the elastic term: a pure
+    // viscous term jumped to c·v the instant a slack cable came taut (≈ 20 kN
+    // at 1 m/s, clamped to maxForce with only millimetres of stretch), which
+    // flashed full-scale tension and tripped the winch protections.
+    const tElastic = (cfg.axialStiffness * this.stretch) / Math.max(this.payout, 1);
+    const tGlobal = tElastic + Math.min(tElastic, Math.max(0, cfg.axialDamping * rate));
     const tLocal = Math.max(0, -lam[n - 1] / dt2);
     // Weight of the half segment hanging from the termination.
     const tension = Math.min(cfg.maxForce, Math.max(tGlobal, tLocal));
@@ -277,15 +345,27 @@ export class SegmentTether implements TetherForceProvider {
   private solveContacts(count: boolean): void {
     const n = this.n;
     const r = this.config.radius;
+    const flags = this.nodeFlags;
     let seabed = 0;
     let structure = 0;
     let rov = 0;
-    if (this.hasVehicle) _qi.copy(this.vehicleQuat).invert();
+    let rovContact = this.hasVehicle;
+    if (rovContact) {
+      _qi.copy(this.vehicleQuat).invert();
+      // TMS exit at the vehicle (latched / just released): suspend ROV contact.
+      _b.subVectors(this.anchor, this.vehiclePos).applyQuaternion(_qi);
+      const m = ROV_ANCHOR_MARGIN + r;
+      this.rovContactSuspended =
+        Math.abs(_b.x - ROV_BOX.cx) < ROV_BOX.hx + m && Math.abs(_b.y - ROV_BOX.cy) < ROV_BOX.hy + m && Math.abs(_b.z - ROV_BOX.cz) < ROV_BOX.hz + m;
+      rovContact = !this.rovContactSuspended;
+    } else this.rovContactSuspended = false;
+    if (count) flags.fill(0);
     for (let i = 1; i < n; i++) {
       const q = this.p[i];
       // Seabed (with simple friction: damp the horizontal motion).
       if (this.clampToSeabed(q)) {
         seabed++;
+        if (count) flags[i] |= TETHER_CONTACT.seabed;
         const pv = this.prev[i];
         pv.x += (q.x - pv.x) * 0.5;
         pv.z += (q.z - pv.z) * 0.5;
@@ -299,10 +379,11 @@ export class SegmentTether implements TetherForceProvider {
         if (hit) {
           q.addScaledVector(hit.normal, hit.depth);
           structure++;
+          if (count) flags[i] |= TETHER_CONTACT.structure;
         }
       }
       // ROV body (skip the last two particles: the termination itself).
-      if (this.hasVehicle && i < n - 2) {
+      if (rovContact && i < n - 2) {
         _b.subVectors(q, this.vehiclePos).applyQuaternion(_qi);
         const lx = _b.x - ROV_BOX.cx;
         const ly = _b.y - ROV_BOX.cy;
@@ -316,6 +397,7 @@ export class SegmentTether implements TetherForceProvider {
           else _b.z += Math.sign(lz || 1) * pz;
           q.copy(_b.applyQuaternion(this.vehicleQuat).add(this.vehiclePos));
           rov++;
+          if (count) flags[i] |= TETHER_CONTACT.rov;
         }
       }
     }
@@ -323,10 +405,86 @@ export class SegmentTether implements TetherForceProvider {
     void _q;
   }
 
-  /** Points for rendering, from the TMS to the ROV (reuses `out`). */
+  /**
+   * Move the termination node to the vehicle's current attach point (call after
+   * the vehicle has integrated its pose, so p[n] — and the rendered end — sit
+   * exactly at the termination instead of one step behind). Does not change
+   * the force of the step already computed.
+   */
+  syncAttach(attachWorld: Vector3): void {
+    if (!Number.isFinite(attachWorld.x + attachWorld.y + attachWorld.z)) return;
+    this.p[this.n].copy(attachWorld);
+    this.prev[this.n].copy(attachWorld);
+  }
+
+  /**
+   * Points for rendering, from the TMS to the ROV (reuses `out`): exactly the
+   * n+1 physical nodes (no independent curve). `_points` is accepted for API
+   * compatibility and ignored — the renderer should interpolate through these
+   * nodes (e.g. Catmull-Rom), which keeps the drawn cable on the physical one.
+   */
   polyline(_points = 0, out: Vector3[] = []): Vector3[] {
     out.length = this.n + 1;
     for (let i = 0; i <= this.n; i++) (out[i] ??= new Vector3()).copy(this.p[i]);
     return out;
+  }
+
+  /**
+   * Engineering diagnostics for a debug overlay: node positions, per-segment
+   * tension estimate and strain, per-node contact flags, the force applied at
+   * the ROV termination and the scalar state. O(n), no allocation after the
+   * first call (the returned object and its arrays are reused — copy what you
+   * keep). Read-only: changing the returned data does not affect the physics.
+   *
+   * Segment tension estimate: max(EA·strain, XPBD constraint force λ/dt²) of the
+   * last step, clamped to `maxForce` — the same two measures used for the
+   * termination tension; the last segment reports the termination tension.
+   */
+  debugState(): TetherDebugState {
+    const n = this.n;
+    const cfg = this.config;
+    const d = (this.debug ??= {
+      nodes: Array.from({ length: n + 1 }, () => new Vector3()),
+      segmentTension: new Float64Array(n),
+      segmentStrain: new Float64Array(n),
+      nodeContact: new Uint8Array(n + 1),
+      attachForce: new Vector3(),
+      tension: 0,
+      payout: 0,
+      chord: 0,
+      slack: 0,
+      stretch: 0,
+      restLength: 0,
+      contacts: { seabed: 0, structure: 0, rov: 0 },
+      enabled: true,
+      rovContactSuspended: false,
+    });
+    const L = this.restLength;
+    const dt2 = this.lastDt * this.lastDt;
+    for (let i = 0; i <= n; i++) d.nodes[i].copy(this.p[i]);
+    for (let j = 0; j < n; j++) {
+      const strain = this.p[j].distanceTo(this.p[j + 1]) / L - 1;
+      d.segmentStrain[j] = strain;
+      const t = this.enabled ? Math.max(cfg.axialStiffness * Math.max(0, strain), -this.lambda[j] / dt2) : 0;
+      d.segmentTension[j] = Number.isFinite(t) ? Math.min(cfg.maxForce, Math.max(0, t)) : 0;
+    }
+    // Last segment: report the tension actually applied at the termination (its
+    // own strain is not representative — node n is re-synced to the vehicle
+    // after the solve and the Gauss-Seidel sweep ends on it).
+    if (this.enabled) d.segmentTension[n - 1] = this.tension;
+    d.nodeContact.set(this.nodeFlags);
+    d.attachForce.copy(this.force);
+    d.tension = this.tension;
+    d.payout = this.payout;
+    d.chord = this.chordLength;
+    d.slack = this.slack;
+    d.stretch = this.stretch;
+    d.restLength = L;
+    d.contacts.seabed = this.contacts.seabed;
+    d.contacts.structure = this.contacts.structure;
+    d.contacts.rov = this.contacts.rov;
+    d.enabled = this.enabled;
+    d.rovContactSuspended = this.rovContactSuspended;
+    return d;
   }
 }

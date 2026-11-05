@@ -8,7 +8,18 @@ import {
   type KeyboardPreset,
   type Settings,
   type SettingsStore,
+  type StationProfileId,
+  type ViewLayout,
+  type ViewSource,
+  type ResetCategory,
+  MAX_MONITORS,
+  RESET_CATEGORIES,
+  STATION_PROFILES,
+  VIEW_SOURCES,
+  resetPatch,
+  sanitizeMonitor,
 } from '../config/settings';
+import { buildLabel, runtimeEnvironment, shortCommit, type PublishedCheck } from '../diagnostics/buildInfo';
 import type { MissionDefinition, MissionStats, OperationMission } from '../mission/types';
 import type { ConditionChoice } from '../sim/conditions';
 import { resolveConditions, visibilityRange } from '../sim/conditions';
@@ -16,8 +27,8 @@ import type { PilotMode } from '../control/rovController';
 import type { SpaceMouseDevice } from '../input/spacemouse/spacemouseDevice';
 import { SpaceMousePanel } from './spacemousePanel';
 
-type ScreenName = 'main' | 'pause' | 'settings' | 'help' | 'report' | null;
-type SettingsTab = 'graphics' | 'controls' | 'spacemouse' | 'environment';
+type ScreenName = 'main' | 'pause' | 'settings' | 'help' | 'report' | 'diagnostics' | null;
+type SettingsTab = 'station' | 'graphics' | 'controls' | 'spacemouse' | 'environment';
 
 export interface MenuCallbacks {
   start(missionId: MissionDefinition['id']): void;
@@ -26,6 +37,12 @@ export interface MenuCallbacks {
   mainMenu(): void;
   spaceMouse(): SpaceMouseDevice | null;
   openMonitor(): boolean;
+  applyProfile(id: StationProfileId): boolean;
+  saveProfile(): void;
+  /** Plain-text diagnostics report (version, state, errors…). */
+  diagnostics(): string;
+  /** Engineering view of the tether (nodes, forces); returns the new state. */
+  toggleTetherDebug(): boolean;
 }
 
 /** Human-readable label for a KeyboardEvent.code. */
@@ -97,6 +114,7 @@ export class Menus {
       settings: this.buildSettings(),
       help: this.buildHelp(),
       report: this.buildReportShell(),
+      diagnostics: this.buildDiagnostics(),
     };
     Object.values(this.screens).forEach((s) => this.root.appendChild(s));
     window.addEventListener('keydown', this.onKeyCapture, true);
@@ -118,13 +136,34 @@ export class Menus {
     for (const [k, el] of Object.entries(this.screens)) el.hidden = k !== name;
     if (name === 'settings') this.refreshSettings();
     if (name === 'main') this.refreshMain();
+    if (name === 'diagnostics') this.refreshDiagnostics();
     this.smPanel?.setVisible(name === 'settings' && this.tab === 'spacemouse');
     if (name) (this.screens[name].querySelector('button.primary, button') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
 
   back(): void {
-    this.show(this.current === 'help' ? this.helpReturn : this.settingsReturn);
+    if (this.current === 'diagnostics') this.show(this.diagReturn);
+    else this.show(this.current === 'help' ? this.helpReturn : this.settingsReturn);
   }
+
+  private diagReturn: ScreenName = 'main';
+  private diagTimer = 0;
+  showDiagnostics(): void {
+    if (this.current !== 'diagnostics') this.diagReturn = this.current;
+    this.show('diagnostics');
+  }
+
+  /** Result of the published-version check (cache vs old code). */
+  setBuildCheck(r: PublishedCheck): void {
+    const el = this.screens.main.querySelector<HTMLElement>('[data-o="update"]');
+    if (!el) return;
+    if (r.state === 'newer') {
+      el.hidden = false;
+      el.innerHTML = `${t('build.newer', { v: r.published.version, c: shortCommit(r.published.commit) })} <button class="mini" data-a="reload">${t('build.reload')}</button>`;
+      el.querySelector('[data-a="reload"]')?.addEventListener('click', () => location.reload());
+    } else el.hidden = true;
+  }
+
 
   /** Refresh dynamic device status (called by the app on connect/disconnect). */
   refreshDevices(): void {
@@ -153,6 +192,16 @@ export class Menus {
               <button data-a="controls">${t('menu.controls')}</button>
               <button data-a="settings">${t('menu.settings')}</button>
             </div>
+            <h3 class="sec">${t('menu.station')}</h3>
+            <div class="quick">
+              <label><span>${t('settings.profile')}</span><select data-q="profile">${STATION_PROFILES.map((p) => `<option value="${p}">${t('profile.' + p)}</option>`).join('')}</select></label>
+              <label><span>${t('settings.graphics')}</span><select data-q="graphics">${(['low', 'medium', 'high'] as GraphicsQuality[]).map((q) => `<option value="${q}">${t('settings.graphics.' + q)}</option>`).join('')}</select></label>
+            </div>
+            <p class="muted small" data-o="stationDesc"></p>
+            <div class="menu-actions row">
+              <button data-a="openMonitor">${t('menu.openMonitor')}</button>
+              <button data-a="diag">${t('menu.diagnostics')}</button>
+            </div>
             <h3 class="sec">${t('menu.devices')}</h3>
             <div class="devices" data-o="devices"></div>
             <dl class="facts compact">
@@ -160,13 +209,25 @@ export class Menus {
               <dt>${t('menu.site')}</dt><dd>${t('menu.siteDesc')}</dd>
             </dl>
             <p class="disclaimer">${t('menu.disclaimer')}</p>
-            <p class="muted small version">v${typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'}</p>
+            <p class="muted small version" data-o="build" title="${t('build.tooltip')}">${buildLabel()}</p>
+            <div class="update-banner" data-o="update" hidden></div>
           </section>
         </div>
       </div>`;
     on(s, 'start', () => this.cb.start(this.store.get().mission));
     on(s, 'controls', () => this.show('help'));
     on(s, 'settings', () => this.show('settings'));
+    on(s, 'openMonitor', () => {
+      if (!this.cb.openMonitor()) alert(t('settings.monitorBlocked'));
+    });
+    on(s, 'diag', () => this.showDiagnostics());
+    const prof = s.querySelector<HTMLSelectElement>('[data-q="profile"]')!;
+    prof.addEventListener('change', () => {
+      if (!this.cb.applyProfile(prof.value as StationProfileId)) alert(t('profile.customEmpty'));
+      this.refreshMain();
+    });
+    const gfx = s.querySelector<HTMLSelectElement>('[data-q="graphics"]')!;
+    gfx.addEventListener('change', () => this.store.update({ graphics: gfx.value as GraphicsQuality }));
     return s;
   }
 
@@ -174,6 +235,12 @@ export class Menus {
     const s = this.screens?.main;
     if (!s) return;
     const st = this.store.get();
+    const qp = s.querySelector<HTMLSelectElement>('[data-q="profile"]');
+    if (qp && document.activeElement !== qp) qp.value = st.stationProfile;
+    const qg = s.querySelector<HTMLSelectElement>('[data-q="graphics"]');
+    if (qg && document.activeElement !== qg) qg.value = st.graphics;
+    const sd = s.querySelector('[data-o="stationDesc"]');
+    if (sd) sd.textContent = t('profile.desc.' + st.stationProfile) + ' ' + t('menu.monitorCount', { n: st.monitors.length });
     const ops = s.querySelector('[data-o="ops"]')!;
     ops.innerHTML = this.missions
       .map(
@@ -283,7 +350,7 @@ export class Menus {
   // ---------- Settings ----------
   private buildSettings(): HTMLElement {
     const s = screen(true);
-    const tabs: SettingsTab[] = ['graphics', 'controls', 'spacemouse', 'environment'];
+    const tabs: SettingsTab[] = ['station', 'graphics', 'controls', 'spacemouse', 'environment'];
     s.innerHTML = `
       <div class="card">
         <header><h2>${t('settings.title')}</h2><button data-a="back">${t('menu.back')}</button></header>
@@ -291,6 +358,30 @@ export class Menus {
           .map((tb) => `<button role="tab" data-tab="${tb}">${t('settings.tab.' + tb)}</button>`)
           .join('')}</nav>
         <div class="body">
+          <div class="tab-pane settings-grid" data-pane="station">
+            <div>
+              <h3>${t('settings.profile')}</h3>
+              <div class="field"><label for="s-prof">${t('settings.profile')}</label><select id="s-prof" data-o="profileSel">${STATION_PROFILES.map((p) => `<option value="${p}">${t('profile.' + p)}</option>`).join('')}</select></div>
+              <div class="field"><span></span><span class="ctl"><button data-a="applyProfile">${t('settings.profileApply')}</button><button data-a="saveProfile">${t('settings.profileSave')}</button></span></div>
+              <p class="muted small" data-o="profileDesc"></p>
+              <h3 style="margin-top:18px">${t('settings.mainWindow')}</h3>
+              <div class="field"><label for="s-layout">${t('settings.layout.views')}</label>
+                <select id="s-layout" data-s="layout">${['single', 'dual', 'quad'].map((l) => `<option value="${l}">${t('msg.layout.' + l)}</option>`).join('')}</select></div>
+              <p class="muted small">${t('settings.stationNote')}</p>
+              <h3 style="margin-top:18px">${t('settings.hudItems')}</h3>
+              ${(['compass', 'depth', 'attitude', 'tether', 'camera', 'alarms'] as const)
+                .map((k) => `<div class="field"><label for="n-hud-${k}">${t('settings.hudItems.' + k)}</label><input id="n-hud-${k}" type="checkbox" data-n="hudItems.${k}"></div>`)
+                .join('')}
+              <p class="muted small">${t('settings.hudItemsNote')}</p>
+            </div>
+            <div>
+              <h3>${t('settings.monitors')}</h3>
+              <div class="monitors" data-o="monitors"></div>
+              <div class="field"><span></span><span class="ctl"><button data-a="addMonitor">${t('settings.monitorAdd')}</button><button data-a="monitor">${t('settings.monitorOpen')}</button></span></div>
+              <p class="muted small">${t('settings.monitorNote')}</p>
+              <p class="muted small">${t('settings.windowApiNote')}</p>
+            </div>
+          </div>
           <div class="tab-pane settings-grid" data-pane="graphics">
             <div>
               <h3>${t('settings.graphics')}</h3>
@@ -302,14 +393,6 @@ export class Menus {
               <div class="field"><label for="s-fps">${t('settings.fps')}</label><input id="s-fps" type="checkbox" data-s="showFps"></div>
               <div class="field"><label for="s-vol">${t('settings.volume')}</label><span class="ctl"><input id="s-vol" type="range" min="0" max="1" step="0.05" data-s="volume"><output data-o="volume"></output></span></div>
               <div class="field"><label for="s-hints">${t('settings.hints')}</label><input id="s-hints" type="checkbox" data-s="showHints"></div>
-              <h3 style="margin-top:18px">${t('settings.station')}</h3>
-              <div class="field"><label for="s-layout">${t('settings.layout.views')}</label>
-                <select id="s-layout" data-s="layout">${['single', 'dual', 'quad'].map((l) => `<option value="${l}">${t('msg.layout.' + l)}</option>`).join('')}</select></div>
-              <p class="muted small">${t('settings.stationNote')}</p>
-              <div class="field"><span>${t('settings.monitor')}</span><button data-a="monitor">${t('settings.monitorOpen')}</button></div>
-              <p class="muted small">${t('settings.monitorNote')}</p>
-              ${nSelect('monitor.layout', ['single', 'dual'], 'monitor.layout.')}
-              ${nSelect('monitor.instruments', ['full', 'compact', 'hidden'], 'monitor.instr.')}
               <h3 style="margin-top:18px">${t('settings.sonar')}</h3>
               ${nSelect('sonar.range', ['10', '20', '40', '60'], '', ' m')}
               ${nRange('sonar.gain', 0.3, 3, 0.05)}
@@ -385,10 +468,28 @@ export class Menus {
             </div>
           </div>
         </div>
-        <footer><button data-a="reset">${t('settings.resetDefaults')}</button><button class="primary" data-a="back">${t('menu.back')}</button></footer>
+        <footer><span class="ctl"><select data-o="resetCat">${Object.keys(RESET_CATEGORIES)
+          .map((c) => `<option value="${c}">${t('reset.' + c)}</option>`)
+          .join('')}<option value="all">${t('reset.all')}</option></select><button data-a="reset">${t('settings.resetDefaults')}</button></span><button class="primary" data-a="back">${t('menu.back')}</button></footer>
       </div>`;
     s.querySelectorAll<HTMLElement>('[data-a="back"]').forEach((b) => b.addEventListener('click', () => this.back()));
-    on(s, 'reset', () => this.store.reset());
+    on(s, 'reset', () => {
+      const cat = (s.querySelector('[data-o="resetCat"]') as HTMLSelectElement).value as ResetCategory | 'all';
+      const scope = cat === 'all' ? t('reset.all') : `${t('reset.' + cat)} (${RESET_CATEGORIES[cat].join(', ')})`;
+      if (!confirm(t('reset.confirm', { scope }))) return;
+      if (cat === 'all') this.store.reset();
+      else this.store.update(resetPatch(cat));
+    });
+    on(s, 'applyProfile', () => {
+      const id = (s.querySelector('[data-o="profileSel"]') as HTMLSelectElement).value as StationProfileId;
+      if (!this.cb.applyProfile(id)) alert(t('profile.customEmpty'));
+    });
+    on(s, 'saveProfile', () => this.cb.saveProfile());
+    on(s, 'addMonitor', () => {
+      const ms = this.store.get().monitors;
+      if (ms.length >= MAX_MONITORS) return;
+      this.store.update({ monitors: [...ms, sanitizeMonitor({ layout: 'single', sources: ['instruments'] })], stationProfile: 'custom' });
+    });
     on(s, 'monitor', () => {
       if (!this.cb.openMonitor()) alert(t('settings.monitorBlocked'));
     });
@@ -408,7 +509,7 @@ export class Menus {
         } else this.store.update({ [key]: value } as Partial<Settings>);
       });
     });
-    // Nested settings (group.key): lighting, sonar, monitor.
+    // Nested settings (group.key): lighting, sonar, HUD items.
     s.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-n]').forEach((input) =>
       input.addEventListener('input', () => {
         const [g, k] = input.dataset.n!.split('.') as [NestedGroup, string];
@@ -433,6 +534,87 @@ export class Menus {
       }),
     );
     return s;
+  }
+
+  /** Editor of the additional monitor windows (layout, strip, sources, locks). */
+  private renderMonitors(host: Element | null): void {
+    if (!host) return;
+    if (host.contains(document.activeElement) && document.activeElement !== document.body) return;
+    const ms = this.store.get().monitors;
+    const nPanels = (l: ViewLayout) => (l === 'quad' ? 4 : l === 'dual' ? 2 : 1);
+    host.innerHTML = ms.length
+      ? ms
+          .map(
+            (m, k) => `<fieldset class="mon" data-k="${k}"><legend>MONITOR ${k + 2}</legend>
+          <label>${t('settings.monitorPanels')} <select data-m="layout">${(['single', 'dual', 'quad'] as ViewLayout[])
+            .map((l) => `<option value="${l}" ${l === m.layout ? 'selected' : ''}>${t('monitor.layout.' + l)}</option>`)
+            .join('')}</select></label>
+          <label>${t('settings.monitorStrip')} <select data-m="instruments">${(['full', 'compact', 'hidden'] as const)
+            .map((l) => `<option value="${l}" ${l === m.instruments ? 'selected' : ''}>${t('monitor.instr.' + l)}</option>`)
+            .join('')}</select></label>
+          <div class="mon-src">${m.sources
+            .slice(0, nPanels(m.layout))
+            .map(
+              (src, i) =>
+                `<label>${i + 1} <select data-src="${i}">${VIEW_SOURCES.map((v) => `<option value="${v}" ${v === src ? 'selected' : ''}>${t('view.' + v)}</option>`).join('')}</select></label>`,
+            )
+            .join('')}</div>
+          <button class="mini" data-m="remove">${t('settings.monitorRemove')}</button></fieldset>`,
+          )
+          .join('')
+      : `<p class="muted small">${t('settings.monitorNone')}</p>`;
+    host.querySelectorAll<HTMLFieldSetElement>('fieldset.mon').forEach((fs) => {
+      const k = Number(fs.dataset.k);
+      const upd = (f: (m: Settings['monitors'][number]) => void) => {
+        const monitors = structuredClone(this.store.get().monitors);
+        f(monitors[k]);
+        this.store.update({ monitors, stationProfile: 'custom' });
+      };
+      fs.querySelector<HTMLSelectElement>('[data-m="layout"]')!.addEventListener('change', (e) => {
+        upd((m) => (m.layout = (e.target as HTMLSelectElement).value as ViewLayout));
+        (e.target as HTMLElement).blur();
+      });
+      fs.querySelector<HTMLSelectElement>('[data-m="instruments"]')!.addEventListener('change', (e) => {
+        upd((m) => (m.instruments = (e.target as HTMLSelectElement).value as Settings['monitors'][number]['instruments']));
+        (e.target as HTMLElement).blur();
+      });
+      fs.querySelectorAll<HTMLSelectElement>('[data-src]').forEach((sel) =>
+        sel.addEventListener('change', () => {
+          upd((m) => (m.sources[Number(sel.dataset.src)] = sel.value as ViewSource));
+          sel.blur();
+        }),
+      );
+      fs.querySelector('[data-m="remove"]')!.addEventListener('click', () => {
+        const monitors = this.store.get().monitors.filter((_, i) => i !== k);
+        this.store.update({ monitors, stationProfile: 'custom' });
+      });
+    });
+  }
+
+  // ---------- Diagnostics ----------
+  private buildDiagnostics(): HTMLElement {
+    const s = screen(true);
+    s.innerHTML = `
+      <div class="card">
+        <header><h2>${t('diag.title')}</h2><span class="eyebrow">${runtimeEnvironment()}</span></header>
+        <div class="body"><pre class="diag" data-o="diag"></pre></div>
+        <footer><span class="ctl"><button data-a="copy">${t('diag.copy')}</button><button data-a="tether">${t('diag.tether')}</button></span><button class="primary" data-a="back">${t('menu.back')}</button></footer>
+      </div>`;
+    s.querySelector('[data-a="back"]')!.addEventListener('click', () => this.back());
+    on(s, 'copy', () => void navigator.clipboard?.writeText(this.cb.diagnostics()).catch(() => undefined));
+    on(s, 'tether', () => {
+      const onState = this.cb.toggleTetherDebug();
+      (s.querySelector('[data-a="tether"]') as HTMLButtonElement).textContent = t(onState ? 'diag.tetherOff' : 'diag.tether');
+    });
+    return s;
+  }
+
+  private refreshDiagnostics(): void {
+    clearTimeout(this.diagTimer);
+    if (this.current !== 'diagnostics') return;
+    const pre = this.screens.diagnostics.querySelector('[data-o="diag"]');
+    if (pre) pre.textContent = this.cb.diagnostics();
+    this.diagTimer = window.setTimeout(() => this.refreshDiagnostics(), 1000);
   }
 
   setTab(tab: SettingsTab): void {
@@ -463,6 +645,12 @@ export class Menus {
         if (out) out.textContent = (val as number).toFixed(2);
       }
     });
+    // Station tab.
+    const ps = s.querySelector<HTMLSelectElement>('[data-o="profileSel"]');
+    if (ps && document.activeElement !== ps) ps.value = v.stationProfile;
+    const pd = s.querySelector('[data-o="profileDesc"]');
+    if (pd) pd.textContent = t('profile.desc.' + (ps?.value ?? v.stationProfile));
+    this.renderMonitors(s.querySelector('[data-o="monitors"]'));
     s.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-n]').forEach((input) => {
       const [g, k] = input.dataset.n!.split('.') as [NestedGroup, string];
       const val = (v[g] as unknown as Record<string, unknown>)[k];
@@ -565,7 +753,7 @@ export class Menus {
   }
 }
 
-type NestedGroup = 'lighting' | 'sonar' | 'monitor';
+type NestedGroup = 'lighting' | 'sonar' | 'hudItems';
 
 function nRange(path: string, min: number, max: number, step: number): string {
   const id = 'n-' + path.replace('.', '-');

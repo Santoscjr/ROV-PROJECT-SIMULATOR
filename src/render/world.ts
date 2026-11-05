@@ -66,7 +66,6 @@ export class World {
   frontGain = 1;
   private readonly envTex: Texture;
   private readonly tmpColor = new Color();
-  private tetherTimer = 0;
   private readonly cullables: Cullable[];
   private optics: WaterOptics = waterOptics(null);
   // Sediment plume state (smoothed from the disturbance input).
@@ -221,6 +220,16 @@ export class World {
     return new Vector3(0.16 * tr.r * veil, 0.42 * tr.g * veil, 0.52 * tr.b * veil);
   }
 
+  /**
+   * Per-panel scene preparation (called before each camera panel is drawn, in
+   * any window): sky only above the surface and visibility culling from THAT
+   * camera — so a view never depends on which panel is the "main" one.
+   */
+  preparePanel(camPos: Vector3): void {
+    this.sky.visible = camPos.y >= 0;
+    this.cull(camPos);
+  }
+
   /** Hide seabed tiles / rock groups beyond what the water lets the camera see. */
   private cull(cam: Vector3): void {
     const o = this.optics;
@@ -279,20 +288,28 @@ export class World {
    * (anchor → vehicle). The last point is snapped to the visual termination
    * with a short straight run out of the bend restrictor.
    */
-  updateTether(dt: number, path: readonly Vector3[] | null): void {
-    this.tetherTimer -= dt;
+  /**
+   * Tether drawn EXACTLY through the physical nodes (TMS exit → ROV termination
+   * at `rov.tetherAttach`; the last ~0.4 m runs inside the bend restrictor, as
+   * on the real vehicle). Rebuilt every frame so the picture never lags or
+   * contradicts the simulation.
+   */
+  updateTether(_dt: number, path: readonly Vector3[] | null): void {
     if (!path || path.length < 2) {
       this.tether.visible = false;
       return;
     }
     this.tether.visible = true;
-    if (this.tetherTimer > 0) return;
-    this.tetherTimer = 1 / 20;
-    const end = this.rov.tetherPoint.getWorldPosition(new Vector3());
-    const pts = path.slice(0, -1).map((p) => p.clone());
-    pts.push(end);
     this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts), Math.max(40, pts.length * 5), 0.03, 8);
+    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(path as Vector3[], false, 'centripetal'), Math.max(40, path.length * 4), 0.03, 8);
+  }
+
+  /** Camera panels drawn with the full water pipeline (composite + particles/beams) since the last reset — diagnostics/tests. */
+  panelDraws = 0;
+
+  /** Water optics of the current conditions (shared by every camera, panel and window). */
+  get waterOptics(): WaterOptics {
+    return this.optics;
   }
 
   /** Optional assisted visibility of the tether (non-physical glow, clearly a display aid). */

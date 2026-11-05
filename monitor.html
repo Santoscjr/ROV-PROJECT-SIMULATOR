@@ -8,13 +8,13 @@
   </head>
   <body>
     <div id="bar">
-      <strong>MONITOR 2</strong>
-      <label>Layout <select id="layout" aria-label="Layout"></select></label>
-      <label>Instrumentos <select id="instr" aria-label="Instrumentos"></select></label>
+      <strong id="title">MONITOR</strong>
+      <label>Painéis <select id="layout" aria-label="Painéis"></select></label>
+      <label>Faixa de instrumentos <select id="instr" aria-label="Faixa de instrumentos"></select></label>
       <span id="status">Aguardando a janela principal…</span>
     </div>
     <div id="host"><canvas id="view"></canvas></div>
-    <div id="lost" hidden>Conexão com a janela principal perdida. Mantenha a janela principal aberta: ao recarregá-la, este monitor é reconectado automaticamente. Se não reconectar, reabra o monitor secundário pela janela principal (F8 ou Configurações → Gráficos e câmera → Estação).</div>
+    <div id="lost" hidden>Conexão com a janela principal perdida. Mantenha a janela principal aberta: ao recarregá-la, este monitor é reconectado automaticamente. Se não reconectar, reabra o monitor secundário pela janela principal (F8 ou Configurações → Estação).</div>
     <script type="module" src="/src/monitor.ts"></script>
   </body>
 </html>

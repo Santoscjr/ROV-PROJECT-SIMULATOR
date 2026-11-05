@@ -1,7 +1,8 @@
-import type { WebGLRenderer } from 'three';
+import type { Object3D, Vector3, WebGLRenderer } from 'three';
 import { CameraRig } from './cameras';
 import { UnderwaterPass } from './underwaterPass';
-import type { CameraStates, ViewLayout, ViewSource } from '../config/settings';
+import type { CameraFx, CameraStates, ViewLayout, ViewSource } from '../config/settings';
+import type { World } from './world';
 
 export type CameraSource = Exclude<ViewSource, 'sonar' | 'instruments'>;
 export const isCameraSource = (s: ViewSource): s is CameraSource => s !== 'sonar' && s !== 'instruments';
@@ -54,6 +55,7 @@ export class SecondaryView {
   constructor(
     public source: ViewSource,
     states?: CameraStates,
+    private readonly msaa = 0,
   ) {
     this.rig = new CameraRig(1, states);
     if (isCameraSource(source)) this.rig.setMode(source);
@@ -66,7 +68,7 @@ export class SecondaryView {
 
   ensurePass(w: number, h: number): UnderwaterPass {
     if (!this.pass) {
-      this.pass = new UnderwaterPass(w, h, 0);
+      this.pass = new UnderwaterPass(w, h, this.msaa);
       this.w = w;
       this.h = h;
     } else if (w !== this.w || h !== this.h) {
@@ -88,4 +90,84 @@ export function usePanel(renderer: WebGLRenderer, vp: Rect): void {
   const pr = renderer.getPixelRatio();
   renderer.setViewport(vp.x / pr, vp.y / pr, vp.w / pr, vp.h / pr);
   renderer.setScissor(vp.x / pr, vp.y / pr, vp.w / pr, vp.h / pr);
+}
+
+/** Everything a camera panel needs from the (single) simulation for one frame. */
+export interface PanelEnv {
+  world: World;
+  dt: number;
+  time: number;
+  rovRoot: Object3D;
+  eye: Object3D;
+  headingRad: number;
+  tmsMount: Object3D | null;
+  terrainHeight: (x: number, z: number) => number;
+  fxFor: (mode: string) => CameraFx;
+  whiteBalance: (depth: number) => number;
+  /** Prepare scene lights for this view (observer aid only for external views). */
+  observer: (mode: string, pos: Vector3) => void;
+  /** In-scattered ambient for particles (from World.updateEnvironment). */
+  ambient: Vector3;
+  lightLevel: number;
+  seabedBase: number;
+}
+
+/**
+ * THE camera-panel renderer, used by every panel of every window (main and
+ * secondary monitors): same scene preparation, same underwater composite
+ * (water optics of the environment), same particles and lamp beams. Panels
+ * differ only by camera (position, orientation, optics) and resolution.
+ */
+export function renderCameraPanel(
+  renderer: WebGLRenderer,
+  rig: CameraRig,
+  pass: UnderwaterPass,
+  source: ViewSource,
+  vp: Rect,
+  cssW: number,
+  cssH: number,
+  env: PanelEnv,
+  wet = 0,
+): void {
+  const world = env.world;
+  rig.tmsMount = env.tmsMount;
+  rig.camera.aspect = cssW / cssH;
+  rig.update(env.dt, env.rovRoot, env.eye, env.headingRad);
+  const cam = rig.camera;
+  cam.updateProjectionMatrix();
+  cam.updateMatrixWorld();
+  const depth = -cam.position.y;
+  world.preparePanel(cam.position);
+  env.observer(rig.mode, cam.position);
+  pass.setWater(world.waterOptics);
+  pass.setCameraFx(env.fxFor(source), source === 'operational' || source === 'auxiliary');
+  pass.update(cam, {
+    camDepth: depth,
+    seabedDepth: -env.terrainHeight(cam.position.x, cam.position.z) || env.seabedBase,
+    time: env.time,
+    wet,
+    whiteBalance: env.whiteBalance(depth),
+  });
+  const pr = renderer.getPixelRatio();
+  usePanel(renderer, vp);
+  pass.render(renderer, world.scene, cam);
+  // Particles / lamp beams over the composite, against this panel's depth buffer.
+  const fx = world.effects;
+  fx.bindPass(pass.depthTexture, pass.cameraUniforms);
+  fx.update(cam, {
+    time: env.time,
+    width: vp.w,
+    height: vp.h,
+    originX: vp.x,
+    originY: vp.y,
+    pixelRatio: pr,
+    ambient: env.ambient,
+    underwater: depth > 0,
+    lightLevel: env.lightLevel,
+  });
+  const ac = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.render(fx.scene, cam);
+  renderer.autoClear = ac;
+  world.panelDraws++;
 }

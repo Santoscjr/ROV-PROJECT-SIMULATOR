@@ -1,5 +1,8 @@
 import './ui/style.css';
 import { t } from './i18n';
+import { installErrorCapture, recordError } from './diagnostics/errors';
+
+installErrorCapture();
 
 const container = document.getElementById('app')!;
 const loading = document.createElement('div');
@@ -18,6 +21,7 @@ function webglAvailable(): boolean {
 
 async function boot(): Promise<void> {
   if (!webglAvailable()) {
+    recordError('webgl', 'WebGL2 indisponível');
     loading.textContent = t('app.webglError');
     loading.style.padding = '24px';
     loading.style.textAlign = 'center';
@@ -31,6 +35,7 @@ async function boot(): Promise<void> {
     loading.remove();
   } catch (err) {
     console.error(err);
+    recordError('inicialização', String(err));
     loading.textContent = t('app.webglError');
   }
 }

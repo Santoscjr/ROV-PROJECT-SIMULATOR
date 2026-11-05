@@ -104,8 +104,13 @@ export class WaterEffects {
   constructor(quality: GraphicsQuality, depthTexture: DepthTexture, camera: CameraUniforms) {
     this.snowBase = SNOW[quality];
     this.snowMax = Math.round(this.snowBase * MAX_DENSITY);
+    // Own uniform objects for the camera/lens terms: values are copied from the
+    // pass of the panel being drawn (bindPass), so every panel/window gets the
+    // same particles and beams with ITS depth buffer, lens and exposure.
+    const cam: Record<string, { value: unknown }> = {};
+    for (const [k, u] of Object.entries(camera as unknown as Record<string, { value: unknown }>)) cam[k] = { value: u.value };
     this.shared = {
-      ...(camera as unknown as Record<string, { value: unknown }>),
+      ...cam,
       tDepth: { value: depthTexture },
       uRes: { value: new Vector2(1, 1) },
       uOrigin: { value: new Vector2(0, 0) },
@@ -434,6 +439,15 @@ export class WaterEffects {
           #include <colorspace_fragment>
         }`,
     });
+  }
+
+  /** Draw the next panel against this pass's depth buffer and camera/lens uniforms. */
+  bindPass(depthTexture: DepthTexture, camera: CameraUniforms): void {
+    this.shared.tDepth.value = depthTexture;
+    for (const [k, u] of Object.entries(camera as unknown as Record<string, { value: unknown }>)) {
+      const dst = this.shared[k];
+      if (dst) dst.value = u.value;
+    }
   }
 
   /** Water optics from the environmental conditions. */

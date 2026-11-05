@@ -28,7 +28,19 @@ export const TOPHAT = {
   dockDrop: 1.43,
   /** Top of the ROV latch bullet in the ROV body frame. */
   bulletTop: new Vector3(0, 0.96, 0),
+  /**
+   * Bottom of the contact box (TMS frame). The latched ROV's top sits inside
+   * the open skirt under the bottom plate (hull contact spheres reach
+   * −dockDrop + 0.82 = −0.61 m), so the solid part for collisions stops just
+   * above that: the docked/just-released vehicle does not start in
+   * penetration (it used to be projected 0.11 m down in the first free step).
+   */
+  colliderBottom: -0.6,
 };
+
+/** Contact box of the TMS (TMS frame): from `colliderBottom` to the top plate. */
+const COLLIDER_HALF_Y = (TOPHAT.half.y - TOPHAT.colliderBottom) / 2;
+const COLLIDER_OFFSET_Y = TOPHAT.half.y - COLLIDER_HALF_Y;
 
 export interface CaptureCheck {
   horizontal: number;
@@ -65,9 +77,15 @@ export class TopHat {
   depth = 80;
   /** Main umbilical winch speed (m/s). */
   winchSpeed = 0.9;
+  /** Main umbilical winch acceleration / braking (m/s²): smooth start and stop. */
+  winchAccel = 0.3;
+  /** Current vertical speed of the main winch (m/s, ≥ 0, along the travel). */
+  winchVelocity = 0;
   assist = true;
   /** Horizontal excursion of the hanging TMS (current + tether pull), m. */
   readonly sway = new Vector3();
+  /** Rate of the sway excursion (m/s). */
+  readonly swayRate = new Vector3();
   readonly collider: BoxCollider;
   lastCapture: CaptureCheck | null = null;
   /** Capture is armed only after the ROV has cleared the TMS following a release. */
@@ -78,7 +96,7 @@ export class TopHat {
     private readonly hangZ: number,
     private readonly deckHeight: number,
   ) {
-    this.collider = { kind: 'box', center: { x: 0, y: 0, z: 0 }, half: { ...TOPHAT.half }, yaw: this.yaw };
+    this.collider = { kind: 'box', center: { x: 0, y: 0, z: 0 }, half: { x: TOPHAT.half.x, y: COLLIDER_HALF_Y, z: TOPHAT.half.z }, yaw: this.yaw };
   }
 
   get latched(): boolean {
@@ -94,7 +112,9 @@ export class TopHat {
     this.depth = depth;
     this.state = start;
     this.sway.set(0, 0, 0);
+    this.swayRate.set(0, 0, 0);
     this.velocity.set(0, 0, 0);
+    this.winchVelocity = 0;
     this.position.set(this.hangX, start === 'deck' ? this.deckHeight : -depth, this.hangZ);
     this.lastCapture = null;
     this.syncCollider();
@@ -147,33 +167,62 @@ export class TopHat {
     const prevZ = prev.z;
     switch (this.state) {
       case 'lowering':
-        this.position.y = Math.max(-this.depth, this.position.y - this.winchSpeed * dt);
-        if (this.position.y <= -this.depth + 1e-6) this.state = 'atDepth';
+        if (this.travel(dt, this.position.y + this.depth)) {
+          this.position.y = -this.depth;
+          this.state = 'atDepth';
+        } else this.position.y -= this.winchVelocity * dt;
         break;
       case 'raising':
-        this.position.y = Math.min(this.deckHeight, this.position.y + this.winchSpeed * dt);
-        if (this.position.y >= this.deckHeight - 1e-6) this.state = 'onDeck';
+        if (this.travel(dt, this.deckHeight - this.position.y)) {
+          this.position.y = this.deckHeight;
+          this.state = 'onDeck';
+        } else this.position.y += this.winchVelocity * dt;
         break;
       default:
+        this.winchVelocity = 0;
         break;
     }
-    // Pendulum-like excursion of the submerged TMS (first order, bounded):
-    // drag of the current on the TMS + main umbilical, plus the tether pull.
+    // Pendulum-like excursion of the submerged TMS (bounded): drag of the
+    // current on the TMS + main umbilical, plus the tether pull. Critically
+    // damped second order (ω = 0.25 rad/s, settles in ~16 s like the former
+    // 8 s first-order lag) so the TMS — and the latched ROV — never change
+    // velocity in a step (the first-order lag jumped to ~0.4 m/s when the
+    // TMS crossed 3 m depth in a current).
     const submerged = this.position.y < -3;
     const tx = submerged ? Math.max(-3, Math.min(3, current.x * 5 + tetherPull.x / 2500)) : 0;
     const tz = submerged ? Math.max(-3, Math.min(3, current.z * 5 + tetherPull.z / 2500)) : 0;
-    const k = 1 - Math.exp(-dt / 8);
-    this.sway.x += (tx - this.sway.x) * k;
-    this.sway.z += (tz - this.sway.z) * k;
+    const w = 0.25;
+    this.swayRate.x += (w * w * (tx - this.sway.x) - 2 * w * this.swayRate.x) * dt;
+    this.swayRate.z += (w * w * (tz - this.sway.z) - 2 * w * this.swayRate.z) * dt;
+    this.sway.x += this.swayRate.x * dt;
+    this.sway.z += this.swayRate.z * dt;
     this.position.x = this.hangX + this.sway.x;
     this.position.z = this.hangZ + this.sway.z;
     this.velocity.set((this.position.x - prevX) / dt, (this.position.y - prevY) / dt, (this.position.z - prevZ) / dt);
     this.syncCollider();
   }
 
+  /**
+   * Main winch speed profile: accelerate at `winchAccel` up to `winchSpeed`,
+   * brake on √(2·a·remaining) so it arrives at rest (no velocity step at start
+   * or stop; the braking curve reaches the stop in finite time). Returns true
+   * when the remaining travel is covered this step.
+   */
+  private travel(dt: number, remaining: number): boolean {
+    const a = this.winchAccel;
+    const brake = Math.sqrt(2 * a * Math.max(0, remaining));
+    const target = Math.min(this.winchSpeed, brake);
+    this.winchVelocity = Math.min(target, this.winchVelocity + a * dt);
+    if (remaining <= this.winchVelocity * dt + 1e-6) {
+      this.winchVelocity = 0;
+      return true;
+    }
+    return false;
+  }
+
   private syncCollider(): void {
     this.collider.center.x = this.position.x;
-    this.collider.center.y = this.position.y;
+    this.collider.center.y = this.position.y + COLLIDER_OFFSET_Y;
     this.collider.center.z = this.position.z;
     this.collider.yaw = this.yaw;
   }

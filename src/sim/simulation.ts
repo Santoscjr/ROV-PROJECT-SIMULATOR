@@ -1,4 +1,4 @@
-import { Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import { RovPhysics, type ImpactEvent, type PhysicsEnvironment } from '../physics/rovPhysics';
 import { SegmentTether } from '../physics/segmentTether';
 import { TmsWinch } from './tms';
@@ -95,6 +95,7 @@ export class Simulation {
   altitude: number | null = null;
   readonly launchPoint = new Vector3(LAUNCH_POINT.x, 0, LAUNCH_POINT.z);
   private readonly tmp = new Vector3();
+  private readonly tmpQ = new Quaternion();
 
   constructor(defaultMode: PilotMode = 'stabilize', missionId = 'inspection') {
     this.missionDef = missionById(missionId);
@@ -205,7 +206,10 @@ export class Simulation {
     this.rov.angularVelocity.set(0, 0, 0);
     this.tms.reset(Math.max(this.tms.config.minLength, 4), this.tms.mode);
     this.tether.payout = this.tms.payout;
-    this.tether.reset(this.tmsExit, this.attachWorld());
+    // Lay the initial bight aft of (and below) the TMS exit, clear of the ROV body.
+    const yaw = this.lars.yaw;
+    this.tmp.set(-Math.cos(yaw), -0.5, Math.sin(yaw));
+    this.tether.reset(this.tmsExit, this.attachWorld(), this.tmp);
     this.tether.enabled = true;
     this.controller.reset();
     this.events.released = true;
@@ -237,6 +241,8 @@ export class Simulation {
     const lars = this.lars;
     if (this.mission.consumeLaunchRequest()) lars.startLowering();
     if (this.mission.consumeRecoveryRequest()) lars.startRaise();
+    // Never lower the Top-Hat below the safe depth (seabed under the launch point).
+    if (lars.state === 'lowering') lars.depth = safeTmsDepth(lars.depth);
 
     // Top-Hat / main umbilical.
     this.env.current(lars.position, this.tmpC);
@@ -261,6 +267,9 @@ export class Simulation {
     // Pilot → controller → thrusters (thrusters also run on deck for the pre-dive check).
     this.controller.update(this.command, dt);
     rov.step(dt, this.env);
+    // The tether was stepped at the start-of-step pose: put its termination node
+    // on the integrated attach point (rendered end = physical termination).
+    if (released && this.tether.enabled) this.tether.syncAttach(this.attachWorld(this.tmp));
 
     // Docking capture (position, alignment, relative speed, tether hauled in).
     if (released) {
@@ -269,7 +278,7 @@ export class Simulation {
       if (cap.ok && lars.latch()) {
         this.latchRigid = false; // smooth latch pull-in from the capture position
         this.tether.enabled = false;
-        this.tms.reset(this.tms.config.minLength, 'manual');
+        this.tms.reset(this.tms.config.minLength, this.tms.mode); // keep the pilot's winch mode
         this.controller.reset();
         this.events.docked = true;
       }
@@ -277,7 +286,13 @@ export class Simulation {
 
     if (lars.state !== 'released') {
       const dock = lars.dockPosition(this.tmpC);
-      if (!this.latchRigid && rov.position.distanceTo(dock) < 0.02) this.latchRigid = true;
+      // Rigid once the rate-limited pull-in has converged in position AND heading
+      // (the final snap is then < 0.5 mm / 0.06°: no visible jump).
+      if (!this.latchRigid && rov.position.distanceTo(dock) < 0.0005) {
+        this.tmpPull.set(0, 1, 0);
+        const yawErr = 2 * Math.acos(Math.min(1, Math.abs(rov.orientation.dot(this.tmpQ.setFromAxisAngle(this.tmpPull, lars.yaw)))));
+        if (yawErr < 0.001) this.latchRigid = true;
+      }
       if (this.latchRigid) {
         rov.position.copy(dock);
         rov.velocity.set(0, 0, 0);

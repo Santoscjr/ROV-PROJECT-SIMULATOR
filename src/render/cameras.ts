@@ -1,6 +1,6 @@
 import { MathUtils, PerspectiveCamera, Quaternion, Vector3, type Object3D } from 'three';
 import { terrainHeight } from '../sim/terrain';
-import { DEFAULT_CAM_STATES, type CameraStates } from '../config/settings';
+import { CAM_LIMITS, DEFAULT_CAM_STATES, type CameraStates } from '../config/settings';
 
 /** ROV pilot camera, external observer, TMS monitoring camera, ROV top (tether) camera. */
 export type CameraMode = 'operational' | 'auxiliary' | 'external' | 'tms' | 'tether';
@@ -71,11 +71,36 @@ export class CameraRig {
   set tetherTilt(v: number) {
     this.states.tether.tilt = v;
   }
-  readonly tiltRange = { min: -70, max: 30 };
-  // External orbit, relative to the vehicle heading.
-  orbitYaw = MathUtils.degToRad(150);
-  orbitPitch = MathUtils.degToRad(12);
-  orbitDist = 7.5;
+  readonly tiltRange = { min: CAM_LIMITS.operational.tilt[0], max: CAM_LIMITS.operational.tilt[1] };
+  /** External orbit (relative to the vehicle heading) — stored in the shared external camera state. */
+  get orbitYaw(): number {
+    return MathUtils.degToRad(this.states.external.pan);
+  }
+  set orbitYaw(rad: number) {
+    // Wrap to [-180, 180) so the persisted value stays within its limits.
+    this.states.external.pan = MathUtils.euclideanModulo(MathUtils.radToDeg(rad) + 180, 360) - 180;
+  }
+  get orbitPitch(): number {
+    return MathUtils.degToRad(this.states.external.tilt);
+  }
+  set orbitPitch(rad: number) {
+    const l = CAM_LIMITS.external.tilt;
+    this.states.external.tilt = MathUtils.clamp(MathUtils.radToDeg(rad), l[0], l[1]);
+  }
+  get orbitDist(): number {
+    return this.states.external.zoom;
+  }
+  set orbitDist(m: number) {
+    const l = CAM_LIMITS.external.zoom;
+    this.states.external.zoom = MathUtils.clamp(m, l[0], l[1]);
+  }
+  /** Clamp a camera-head pose (pan/tilt in deg) to the limits of that camera. */
+  private head(k: 'auxiliary' | 'tether' | 'tms', dPan: number, dTilt: number): void {
+    const p = this.states[k];
+    const l = CAM_LIMITS[k];
+    p.pan = MathUtils.clamp(p.pan + dPan, l.pan[0], l.pan[1]);
+    p.tilt = MathUtils.clamp(p.tilt + dTilt, l.tilt[0], l.tilt[1]);
+  }
   private readonly smoothPos = new Vector3();
   private initialised = false;
   mouseSensitivity = 1;
@@ -116,24 +141,28 @@ export class CameraRig {
       this.adjustTilt(-dy * k * 30 * (this.invertTilt ? -1 : 1));
       this.pan = MathUtils.clamp(this.pan + dx * k * 30, -60, 60);
     } else if (this.mode === 'auxiliary') {
-      this.auxPan = MathUtils.clamp(this.auxPan + dx * k * 30, -40, 40);
-      this.auxTilt = MathUtils.clamp(this.auxTilt - dy * k * 30, -40, 30);
+      this.head('auxiliary', dx * k * 30, -dy * k * 30);
     } else if (this.mode === 'tether') {
-      this.tetherPan = MathUtils.clamp(this.tetherPan - dx * k * 30, -150, 150);
-      this.tetherTilt = MathUtils.clamp(this.tetherTilt - dy * k * 30, -30, 60);
+      this.head('tether', -dx * k * 30, -dy * k * 30);
+    } else if (this.mode === 'tms') {
+      this.head('tms', dx * k * 30, -dy * k * 30);
     }
   }
 
   /** Zoom of the current camera (+ = in): operational/auxiliary lens, external orbit distance. */
   adjustZoom(steps: number): void {
-    if (this.mode === 'auxiliary') this.states.auxiliary.zoom = MathUtils.clamp(this.states.auxiliary.zoom * Math.pow(0.9, steps), 0.35, 1);
-    else if (this.mode === 'external') this.orbitDist = MathUtils.clamp(this.orbitDist * Math.pow(0.95, steps), 3.5, 40);
-    else this.zoom = MathUtils.clamp(this.zoom * Math.pow(0.9, steps), 0.35, 1);
+    if (this.mode === 'external') {
+      this.orbitDist = this.orbitDist * Math.pow(0.95, steps);
+      return;
+    }
+    const p = this.states[this.mode];
+    const l = CAM_LIMITS[this.mode].zoom;
+    p.zoom = MathUtils.clamp(p.zoom * Math.pow(0.9, steps), l[0], l[1]);
   }
 
   /** Mouse wheel: tilt of the pilot/auxiliary camera (as in v2); with zoomModifier → zoom. */
   wheel(delta: number, zoomModifier = false): void {
-    if (this.mode === 'external') this.orbitDist = MathUtils.clamp(this.orbitDist * (1 + Math.sign(delta) * 0.1), 3.5, 40);
+    if (this.mode === 'external') this.orbitDist = this.orbitDist * (1 + Math.sign(delta) * 0.1);
     else if (zoomModifier) this.adjustZoom(-Math.sign(delta));
     else this.tiltBy(-Math.sign(delta) * 3);
   }
@@ -141,18 +170,19 @@ export class CameraRig {
   /** Pan the current camera (deg, + right) — keyboard/device command. */
   panBy(deg: number): void {
     if (this.mode === 'operational') this.pan = MathUtils.clamp(this.pan + deg, -60, 60);
-    else if (this.mode === 'auxiliary') this.auxPan = MathUtils.clamp(this.auxPan + deg, -40, 40);
-    else if (this.mode === 'tether') this.tetherPan = MathUtils.clamp(this.tetherPan - deg, -150, 150);
+    else if (this.mode === 'auxiliary') this.head('auxiliary', deg, 0);
+    else if (this.mode === 'tether') this.head('tether', -deg, 0);
+    else if (this.mode === 'tms') this.head('tms', deg, 0);
     else if (this.mode === 'external') this.orbitYaw -= MathUtils.degToRad(deg);
   }
 
   /** Tilt the current camera (deg, + up) — keyboard/device command. Not the vehicle pitch. */
   tiltBy(deg: number): void {
     if (this.mode === 'operational') this.adjustTilt(deg);
-    else if (this.mode === 'auxiliary') this.auxTilt = MathUtils.clamp(this.auxTilt + deg, -40, 30);
-    else if (this.mode === 'tether') this.tetherTilt = MathUtils.clamp(this.tetherTilt + deg, -30, 60);
-    else if (this.mode === 'external')
-      this.orbitPitch = MathUtils.clamp(this.orbitPitch - MathUtils.degToRad(deg), MathUtils.degToRad(-60), MathUtils.degToRad(80));
+    else if (this.mode === 'auxiliary') this.head('auxiliary', 0, deg);
+    else if (this.mode === 'tether') this.head('tether', 0, deg);
+    else if (this.mode === 'tms') this.head('tms', 0, deg);
+    else if (this.mode === 'external') this.orbitPitch = this.orbitPitch - MathUtils.degToRad(deg);
   }
 
   adjustTilt(deg: number): void {
@@ -185,9 +215,14 @@ export class CameraRig {
       cam.up.set(0, 1, 0).applyQuaternion(_q);
       cam.lookAt(_v.copy(cam.position).add(dir));
     } else if (this.mode === 'tms' && this.tmsMount) {
-      cam.fov = 84;
+      // Fixed mount on the TMS frame with a small pan/tilt head.
+      const st = this.states.tms;
+      cam.fov = 84 * st.zoom;
       this.tmsMount.getWorldPosition(cam.position);
       this.tmsMount.getWorldQuaternion(cam.quaternion);
+      cam.quaternion
+        .multiply(_q.setFromAxisAngle(_v.set(0, 1, 0), MathUtils.degToRad(-st.pan)))
+        .multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), MathUtils.degToRad(st.tilt)));
     } else if (this.mode === 'tether') {
       // Camera on top of the frame, forward of the termination, looking aft/up along the tether.
       cam.fov = 80;

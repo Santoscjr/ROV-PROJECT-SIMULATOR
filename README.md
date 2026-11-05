@@ -45,15 +45,32 @@ As condições ambientais são **corrente**, **visibilidade**, **luz natural** e
 | Layout de telas (1/2/4) · monitor secundário | `Y` · `F8` | — |
 | Recolher / descer o conjunto ROV + Top-Hat (pilotagem livre) | `O` | — |
 
-**Estação de pilotagem (v3.1.1).** Clicar num painel o torna **ativo** (borda destacada): atalhos de câmera, SpaceMouse e gamepad agem nele, e o mouse sempre age no painel sob o ponteiro. Cada painel pode ficar **FIXO** (botão no cabeçalho): atalhos e dispositivos não trocam a fonte de um painel fixo, mas pan/tilt/zoom continuam disponíveis. Por padrão, o painel 1 é livre e os painéis 2–4 são fixos. Layout, fontes, bloqueios, pan/tilt/zoom de cada câmera, monitor secundário, iluminação e sonar ficam salvos e são restaurados ao reiniciar a missão, trocar de modo, mudar o layout ou recarregar a página. Depois de escolher uma fonte num seletor, o foco volta ao piloto: as setas continuam pagando/recolhendo o tether.
+**Estação de pilotagem (v3.2).** A estação é formada por **fontes** (câmeras principal, auxiliar, externa, tether e TMS, sonar, instrumentação), **painéis** (cada um mostra uma fonte) e **janelas** (a principal e até 3 monitores adicionais, cada uma com 1, 2 ou 4 painéis). Uma câmera se comporta igual em qualquer painel ou janela: pan, tilt e zoom (e a órbita da câmera externa) pertencem à câmera, ficam salvos e são compartilhados por todos os painéis que a mostram.
 
-**Monitor secundário (`F8`).** É uma janela independente com 1 ou 2 painéis, cada um com a sua fonte, e barra de instrumentos completa, compacta ou oculta. Ela usa a mesma simulação, sem segunda física. Teclas digitadas nela comandam o ROV normalmente. Se ela ou a janela principal forem recarregadas, a reconexão é automática.
+- **Painel ativo** (borda destacada; clique em qualquer janela): recebe os atalhos de câmera, SpaceMouse e gamepad. O mouse age no painel sob o ponteiro.
+- **FIXO / LIVRE** (botão no cabeçalho): atalhos e dispositivos não trocam a fonte de um painel fixo; pan, tilt e zoom continuam livres.
+- **Perfis** (tela inicial ou Configurações → Estação):
+  - Pilotagem;
+  - Operação de TMS;
+  - Inspeção;
+  - **Estação Offshore**: monitor 2 com o sonar, monitor 3 com a instrumentação, tela principal com tether e TMS em cima, principal e auxiliar embaixo;
+  - Personalizado: salve a sua estação.
+- **Monitores (`F8`)**: cada F8 abre o próximo monitor configurado; arraste a janela para o monitor físico. A simulação é única: a janela principal renderiza todas as janelas (mantenha-a visível). Teclas digitadas num monitor comandam o ROV normalmente. Se qualquer janela for recarregada, a reconexão é automática.
+- **Instrumentos**:
+  - em tela única, o HUD da v2;
+  - em 2/4 telas, cada câmera tem sua sobreposição (bússola, profundidade e altitude, pitch e roll, tether, câmera, alarmes; itens configuráveis), e os dados essenciais ficam numa faixa reservada abaixo dos painéis, sem cobrir as imagens.
 
-As teclas usam a posição física (funcionam em ABNT2, AZERTY etc.) e podem ser remapeadas em **Configurações**.
+A fonte **Instrumentação** foi feita para ocupar um monitor: horizonte artificial, rosa dos ventos, leituras agrupadas, alarmes e navegação.
 
-**SpaceMouse (opcional, via WebHID, Chrome/Edge):** conecte uma vez pelo menu principal ou por Configurações → SpaceMouse. Nas próximas visitas a reconexão é automática. Os comandos são proporcionais, com zona morta, sensibilidade, curva de resposta, mapeamento de eixos e botões, e calibração.
+**Versão e diagnóstico.** A tela inicial mostra versão · commit · data do build. Se houver uma versão mais nova publicada, aparece um aviso para recarregar (build antigo em cache). **Diagnóstico** mostra:
+- build e comparação com a versão publicada;
+- esquema das configurações;
+- GPU e desempenho;
+- estação e entrada;
+- estado da simulação e do tether;
+- erros capturados.
 
-**Combinação de dispositivos:** em cada eixo vale o dispositivo com maior deflexão. Se o SpaceMouse desconectar, os comandos dele zeram imediatamente e o teclado continua funcionando. Detalhes em [docs/SPACEMOUSE.md](docs/SPACEMOUSE.md).
+Ele tem uma visão de engenharia da física do tether (nós, contatos e força na terminação). Em Configurações, "Restaurar padrões" age por categoria, com confirmação.
 
 ## Desenvolvimento
 
@@ -69,10 +86,12 @@ Testes de navegador (Playwright/Chromium, com o build servido em `localhost:4173
 ```bash
 npx vite preview --port 4173 &
 node scripts/e2e.mjs http://localhost:4173/ test-results          # operações
-node scripts/e2e-station.mjs http://localhost:4173/                # estação, painéis, monitor secundário
+node scripts/e2e-station.mjs http://localhost:4173/                # estação, painéis, monitores, câmeras em qualquer posição
 node scripts/visual.mjs http://localhost:4173/                     # capturas de cada câmera (água clara e turva)
 node scripts/perf.mjs http://localhost:4173/ low,medium            # tempo de quadro com 1, 2, 4 e 4+2 painéis
 ```
+
+Auditoria, matriz de regressões e limitações: [docs/AUDITORIA_V3.2.md](docs/AUDITORIA_V3.2.md). Pesquisa técnica: [docs/PESQUISA_TECNICA.md](docs/PESQUISA_TECNICA.md). Sonar: [docs/SONAR.md](docs/SONAR.md).
 
 A publicação é automática: cada push em `main` executa typecheck, testes e build, e publica `dist/` no GitHub Pages (`.github/workflows/deploy.yml`). Em **Settings → Pages**, a fonte precisa estar como **GitHub Actions**.
 
