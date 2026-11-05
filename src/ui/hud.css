@@ -678,6 +678,18 @@
 .hud[data-layout='quad'] .mission .mhint {
   display: none;
 }
+/* Multi-view: keep the bottom OSD and TMS line above the panel headers (selectors). */
+.hud[data-layout='dual'] .osd,
+.hud[data-layout='quad'] .osd {
+  bottom: 32px;
+}
+.hud[data-layout='quad'] .osd .hint {
+  display: none;
+}
+.hud[data-layout='dual'] .tmsp,
+.hud[data-layout='quad'] .tmsp {
+  bottom: 52px;
+}
 /* Station panels */
 .station {
   position: absolute;

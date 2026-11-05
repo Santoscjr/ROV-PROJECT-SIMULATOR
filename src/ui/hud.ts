@@ -356,6 +356,13 @@ export class Hud {
       .map(([k, v, c]) => `<div${c ? ` class="${c}"` : ''}><span>${k}</span><b>${v}</b></div>`)
       .join('');
     this.lastData = d;
+    // Multi-view: the mission box sits right below the instrument bar (which may wrap).
+    const missionBox = this.root.querySelector<HTMLElement>('.panel.mission');
+    if (missionBox) {
+      const multi = this.root.dataset.layout === 'dual' || this.root.dataset.layout === 'quad';
+      const top = multi ? `${e.ibar.offsetTop + e.ibar.offsetHeight + 6}px` : '';
+      if (missionBox.style.top !== top) missionBox.style.top = top;
+    }
     e.limit.style.color = COLORS.warn;
     if (d.tetherAtMax) {
       e.tether.textContent += ` · ${t('hud.tetherMax')}`;
