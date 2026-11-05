@@ -1,10 +1,14 @@
 import { MathUtils, PerspectiveCamera, Quaternion, Vector3, type Object3D } from 'three';
 import { terrainHeight } from '../sim/terrain';
 
-export type CameraMode = 'operational' | 'external';
+/** ROV pilot camera, external observer, TMS monitoring camera, ROV top (tether) camera. */
+export type CameraMode = 'operational' | 'external' | 'tms' | 'tether';
+export const CAMERA_MODES: CameraMode[] = ['operational', 'external', 'tms', 'tether'];
 
 const _v = new Vector3();
 const _q = new Quaternion();
+/** Tether camera position in the ROV body frame (top, forward of the termination). */
+const TETHER_CAM_OFFSET = new Vector3(0.55, 1.02, 0.35);
 
 /**
  * Camera rig. The operational camera rides on the ROV pan/tilt unit; the
@@ -25,6 +29,14 @@ export class CameraRig {
   private initialised = false;
   mouseSensitivity = 1;
   invertTilt = false;
+  /** Operational camera pan (deg, + right) and zoom factor (1 = wide, 0.35 = tele). */
+  pan = 0;
+  zoom = 1;
+  /** Tether camera pan/tilt (deg) relative to its default aft-looking aim. */
+  tetherPan = 0;
+  tetherTilt = 0;
+  /** TMS monitoring camera mount (local −Z = view), set by the app. */
+  tmsMount: Object3D | null = null;
 
   constructor(aspect: number) {
     this.camera = new PerspectiveCamera(60, aspect, 0.08, 1600);
@@ -32,6 +44,13 @@ export class CameraRig {
 
   toggle(): CameraMode {
     this.mode = this.mode === 'operational' ? 'external' : 'operational';
+    this.initialised = false;
+    return this.mode;
+  }
+
+  /** Cycle through all camera sources. */
+  cycle(): CameraMode {
+    this.mode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.mode) + 1) % CAMERA_MODES.length];
     this.initialised = false;
     return this.mode;
   }
@@ -47,14 +66,23 @@ export class CameraRig {
     if (this.mode === 'external') {
       this.orbitYaw -= dx * k;
       this.orbitPitch = MathUtils.clamp(this.orbitPitch + dy * k, MathUtils.degToRad(-60), MathUtils.degToRad(80));
-    } else {
+    } else if (this.mode === 'operational') {
       this.adjustTilt(-dy * k * 30 * (this.invertTilt ? -1 : 1));
+      this.pan = MathUtils.clamp(this.pan + dx * k * 30, -60, 60);
+    } else if (this.mode === 'tether') {
+      this.tetherPan = MathUtils.clamp(this.tetherPan - dx * k * 30, -150, 150);
+      this.tetherTilt = MathUtils.clamp(this.tetherTilt - dy * k * 30, -30, 60);
     }
+  }
+
+  /** Zoom of the operational camera (+ = in). */
+  adjustZoom(steps: number): void {
+    this.zoom = MathUtils.clamp(this.zoom * Math.pow(0.9, steps), 0.35, 1);
   }
 
   wheel(delta: number): void {
     if (this.mode === 'external') this.orbitDist = MathUtils.clamp(this.orbitDist * (1 + Math.sign(delta) * 0.1), 3.5, 40);
-    else this.adjustTilt(-Math.sign(delta) * 3);
+    else if (this.mode === 'operational') this.adjustZoom(-Math.sign(delta));
   }
 
   adjustTilt(deg: number): void {
@@ -68,11 +96,28 @@ export class CameraRig {
   update(dt: number, rovRoot: Object3D, eye: Object3D, rovHeadingRad: number): void {
     const cam = this.camera;
     if (this.mode === 'operational') {
-      cam.fov = 64;
+      cam.fov = 64 * this.zoom;
       eye.getWorldPosition(cam.position);
       eye.getWorldQuaternion(_q);
-      // eye looks along its local +X; camera looks along -Z → rotate.
-      cam.quaternion.copy(_q).multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI / 2));
+      // eye looks along its local +X; camera looks along -Z → rotate; pan about the eye's up axis.
+      cam.quaternion
+        .copy(_q)
+        .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI / 2 - MathUtils.degToRad(this.pan)));
+    } else if (this.mode === 'tms' && this.tmsMount) {
+      cam.fov = 70;
+      this.tmsMount.getWorldPosition(cam.position);
+      this.tmsMount.getWorldQuaternion(cam.quaternion);
+    } else if (this.mode === 'tether') {
+      // Camera on top of the frame, forward of the termination, looking aft/up along the tether.
+      cam.fov = 80;
+      cam.position.copy(TETHER_CAM_OFFSET).applyMatrix4(rovRoot.matrixWorld);
+      const yaw = MathUtils.degToRad(180 + this.tetherPan);
+      const pitch = MathUtils.degToRad(22 + this.tetherTilt);
+      const dir = new Vector3(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.sin(yaw) * Math.cos(pitch));
+      rovRoot.getWorldQuaternion(_q);
+      dir.applyQuaternion(_q);
+      cam.up.set(0, 1, 0).applyQuaternion(_q);
+      cam.lookAt(_v.copy(cam.position).add(dir));
     } else {
       cam.fov = 55;
       const target = rovRoot.getWorldPosition(_v).clone();

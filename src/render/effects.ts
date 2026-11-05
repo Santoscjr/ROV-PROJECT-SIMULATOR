@@ -37,6 +37,7 @@ const DEPTH_GLSL = /* glsl */ `
   #include <packing>
   uniform sampler2D tDepth;
   uniform vec2 uRes;
+  uniform vec2 uOrigin;
   uniform float uNear;
   uniform float uFar;
   // Scene depth behind this fragment (the scene was rendered rectilinear).
@@ -44,7 +45,7 @@ const DEPTH_GLSL = /* glsl */ `
     float z = texture2D(tDepth, suv).r;
     return -perspectiveDepthToViewZ(z, uNear, uFar);
   }
-  float sceneViewDepth() { return sceneViewDepthAt(lensSourceUV(gl_FragCoord.xy / uRes)); }
+  float sceneViewDepth() { return sceneViewDepthAt(lensSourceUV((gl_FragCoord.xy - uOrigin) / uRes)); }
 `;
 
 const LIGHTS_GLSL = /* glsl */ `
@@ -107,6 +108,7 @@ export class WaterEffects {
       ...(camera as unknown as Record<string, { value: unknown }>),
       tDepth: { value: depthTexture },
       uRes: { value: new Vector2(1, 1) },
+      uOrigin: { value: new Vector2(0, 0) },
       uNear: { value: 0.1 },
       uFar: { value: 1000 },
       uLPos: { value: Array.from({ length: MAX_LIGHTS }, () => new Vector3()) },
@@ -359,7 +361,7 @@ export class WaterEffects {
         }
 
         void main() {
-          vec2 suv = lensSourceUV(gl_FragCoord.xy / uRes);
+          vec2 suv = lensSourceUV((gl_FragCoord.xy - uOrigin) / uRes);
           vec4 vp = uInvProj * vec4(suv * 2.0 - 1.0, 1.0, 1.0);
           vec3 rdV = normalize(vp.xyz / vp.w);
           vec3 rd = normalize((uCamWorld * vec4(rdV, 0.0)).xyz);
@@ -482,12 +484,13 @@ export class WaterEffects {
 
   update(
     camera: PerspectiveCamera,
-    opts: { time: number; width: number; height: number; pixelRatio: number; ambient: Vector3; underwater: boolean; lightLevel: number },
+    opts: { time: number; width: number; height: number; pixelRatio: number; ambient: Vector3; underwater: boolean; lightLevel: number; originX?: number; originY?: number },
   ): void {
     const s = this.shared;
     const dt = this.lastTime < 0 ? 0 : Math.min(0.25, Math.max(0, opts.time - this.lastTime));
     this.lastTime = opts.time;
     (s.uRes.value as Vector2).set(opts.width, opts.height);
+    (s.uOrigin.value as Vector2).set(opts.originX ?? 0, opts.originY ?? 0);
     s.uNear.value = camera.near;
     s.uFar.value = camera.far;
     s.uTime.value = opts.time;

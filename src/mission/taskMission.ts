@@ -60,6 +60,7 @@ export type Task =
       hintKey?: string;
     }
   | { kind: 'waypoint'; id: string; labelKey: string; point: V3; radius: number; gate?: V3; hintKey?: string }
+  | CheckTask
   | {
       kind: 'inspect';
       id: string;
@@ -74,6 +75,18 @@ export type Task =
       hintKey?: string;
     };
 
+export type CheckTask = {
+  kind: 'check';
+  id: string;
+  labelKey: string;
+  /** Condition on the simulated state; must hold continuously for `hold` s. */
+  test: (s: MissionInput) => boolean;
+  hold: number;
+  /** Objective params shown while active. */
+  params?: (s: MissionInput | null) => Record<string, string | number>;
+  hintKey?: string;
+};
+
 export interface TaskMissionConfig {
   id: string;
   tasks: Task[];
@@ -81,6 +94,8 @@ export interface TaskMissionConfig {
   stableRate: number;
   /** Minimum lamp level for inspect tasks (0..1). */
   minLightForRecord: number;
+  /** Optional evaluation hook called every update (record deviations/events). */
+  monitor?: (s: MissionInput, m: TaskMission) => void;
 }
 
 interface TaskState {
@@ -110,6 +125,16 @@ export class TaskMission implements OperationMission {
   private offAxis = 180;
   private lastPos: V3 | null = null;
   private started = false;
+  private lastInput: MissionInput | null = null;
+  private readonly lastEvent = new Map<string, number>();
+
+  /** Record a procedure deviation at most once per `every` seconds per key. */
+  deviation(key: string, params?: Record<string, string | number>, every = 10): void {
+    const last = this.lastEvent.get(key) ?? -1e9;
+    if (this.time - last < every) return;
+    this.lastEvent.set(key, this.time);
+    this.stats.deviations.push({ time: this.time, key, params });
+  }
 
   constructor(readonly config: TaskMissionConfig) {
     this.id = config.id;
@@ -167,7 +192,16 @@ export class TaskMission implements OperationMission {
     const stable = speed < this.config.stableSpeed && s.angularRate < this.config.stableRate;
     const vz = s.velocity.y;
 
+    this.lastInput = s;
+    this.config.monitor?.(s, this);
     switch (t.kind) {
+      case 'check': {
+        if (t.test(s)) st.holdTime += s.dt;
+        else st.holdTime = 0;
+        st.progress = t.hold > 0 ? Math.min(1, st.holdTime / t.hold) : 1;
+        if (st.holdTime >= t.hold) this.finishTask();
+        break;
+      }
       case 'translate': {
         // Displacement expressed in the vehicle frame captured at task start.
         const h = st.startHeading / DEG;
@@ -280,6 +314,8 @@ export class TaskMission implements OperationMission {
     if (!t) return { key: 'stage.complete' };
     const st = this.st;
     switch (t.kind) {
+      case 'check':
+        return { key: t.labelKey + '.obj', params: t.params?.(this.lastInput) };
       case 'translate': {
         const dir = t.axis === 'surge' ? (t.distance > 0 ? 'fwd' : 'back') : t.axis === 'sway' ? (t.distance > 0 ? 'right' : 'left') : t.distance > 0 ? 'up' : 'down';
         const done = (st?.progress ?? 0) * Math.abs(t.distance);

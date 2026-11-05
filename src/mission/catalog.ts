@@ -6,12 +6,80 @@ import {
   RECOVERY_DEPTH,
   RECOVERY_RADIUS,
   MANIFOLD,
+  TMS,
   type V3,
 } from '../sim/site';
 import { terrainHeight } from '../sim/terrain';
 import { Mission } from './mission';
 import { TaskMission, type Task } from './taskMission';
-import type { MissionDefinition } from './types';
+import type { MissionDefinition, MissionInput, Objective } from './types';
+
+/** Free piloting: no objectives, no timer, never completes (end it from the pause menu). */
+class FreeMission extends TaskMission {
+  override get complete(): boolean {
+    return false;
+  }
+  override objective(): Objective {
+    return { key: 'free.objective' };
+  }
+  override hint(): Objective | null {
+    return { key: 'hint.free' };
+  }
+  override stageKey(): string {
+    return 'op.free.title';
+  }
+}
+
+// --- TMS training: start just below the TMS -------------------------------------
+export const TMS_START: V3 = { x: TMS.exit.x, y: TMS.exit.y - 5, z: TMS.exit.z + 2 };
+
+const tmsOf = (s: MissionInput) => s.tms!;
+export function tmsTrainingTasks(): Task[] {
+  return [
+    { kind: 'check', id: 'M1', labelKey: 'tmsTrain.prep', hold: 0.3, test: (s) => tmsOf(s).mode === 'manual', hintKey: 'hint.tms.prep' },
+    { kind: 'check', id: 'M2', labelKey: 'tmsTrain.pay', hold: 0.3, test: (s) => tmsOf(s).payout >= 25, params: (s) => ({ v: s ? tmsOf(s).payout.toFixed(1) : '0' }), hintKey: 'hint.tms.pay' },
+    { kind: 'check', id: 'M3', labelKey: 'tmsTrain.away', hold: 0.5, test: (s) => tmsOf(s).chord >= 18, params: (s) => ({ v: s ? tmsOf(s).chord.toFixed(1) : '0' }), hintKey: 'hint.tms.away' },
+    {
+      kind: 'check',
+      id: 'M4',
+      labelKey: 'tmsTrain.slack',
+      hold: 10,
+      test: (s) => tmsOf(s).slack >= 2 && tmsOf(s).slack <= 15 && tmsOf(s).tension < tmsOf(s).tensionWarn,
+      params: (s) => ({ v: s ? tmsOf(s).slack.toFixed(1) : '0' }),
+      hintKey: 'hint.tms.slack',
+    },
+    { kind: 'check', id: 'M5', labelKey: 'tmsTrain.approach', hold: 0.5, test: (s) => tmsOf(s).chord <= 6, params: (s) => ({ v: s ? tmsOf(s).chord.toFixed(1) : '0' }), hintKey: 'hint.tms.approach' },
+    {
+      kind: 'check',
+      id: 'M6',
+      labelKey: 'tmsTrain.haul',
+      hold: 0.5,
+      test: (s) => tmsOf(s).payout <= 10 && tmsOf(s).slack < 8,
+      params: (s) => ({ v: s ? tmsOf(s).payout.toFixed(1) : '0' }),
+      hintKey: 'hint.tms.haul',
+    },
+    {
+      kind: 'check',
+      id: 'M7',
+      labelKey: 'tmsTrain.finish',
+      hold: 3,
+      test: (s) => tmsOf(s).command === 'stop' && Math.abs(tmsOf(s).speed) < 0.01 && tmsOf(s).chord <= 7 && Math.hypot(s.velocity.x, s.velocity.y, s.velocity.z) < 0.15,
+      hintKey: 'hint.tms.finish',
+    },
+  ];
+}
+
+/** Evaluation of tether handling (events recorded in the report). */
+function tmsMonitor(s: MissionInput, m: TaskMission): void {
+  const t = s.tms;
+  if (!t) return;
+  const speed = Math.hypot(s.velocity.x, s.velocity.y, s.velocity.z);
+  if (t.tension > t.tensionWarn) m.deviation('dev.tms.tension', { v: (t.tension / 1000).toFixed(1) }, 8);
+  if (t.slack > t.slackWarn) m.deviation('dev.tms.slack', { v: t.slack.toFixed(0) }, 10);
+  if (t.chord < 3 && speed > 0.3) m.deviation('dev.tms.approach', { v: speed.toFixed(2) }, 8);
+  if (t.command === 'haul' && t.tension > t.tensionWarn) m.deviation('dev.tms.haulTension', undefined, 8);
+  if (t.command === 'pay' && t.slack > t.slackWarn) m.deviation('dev.tms.paySlack', undefined, 8);
+}
 
 const v = (x: number, y: number, z: number): V3 => ({ x, y, z });
 const above = (x: number, z: number, alt: number): V3 => v(x, terrainHeight(x, z) + alt, z);
@@ -146,6 +214,28 @@ export const MISSIONS: MissionDefinition[] = [
     create: () => new TaskMission({ id: 'adverse', tasks: adverseTasks(), stableSpeed: 0.18, stableRate: 5, minLightForRecord: 0.4 }),
   },
 ];
+
+MISSIONS.push(
+  {
+    id: 'tms',
+    titleKey: 'op.tms.title',
+    descKey: 'op.tms.desc',
+    difficulty: 2,
+    forcedConditions: { current: 'low', visibility: 'clear' },
+    start: { position: TMS_START, heading: 0, lights: true },
+    tms: { mode: 'auto', payout: 8 },
+    create: () => new TaskMission({ id: 'tms', tasks: tmsTrainingTasks(), stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0, monitor: tmsMonitor }),
+  },
+  {
+    id: 'free',
+    titleKey: 'op.free.title',
+    descKey: 'op.free.desc',
+    difficulty: 1,
+    start: { position: TMS_START, heading: 0, lights: true },
+    tms: { mode: 'auto', payout: 12 },
+    create: () => new FreeMission({ id: 'free', tasks: [], stableSpeed: 0.15, stableRate: 4, minLightForRecord: 0 }),
+  },
+);
 
 export function missionById(id: string): MissionDefinition {
   return MISSIONS.find((m) => m.id === id) ?? MISSIONS[1];

@@ -114,7 +114,7 @@ describe('task mission engine', () => {
 
 describe('mission catalog', () => {
   it('provides training, inspection and adverse operations', () => {
-    expect(MISSIONS.map((m) => m.id)).toEqual(['training', 'inspection', 'adverse']);
+    expect(MISSIONS.map((m) => m.id)).toEqual(['training', 'inspection', 'adverse', 'tms', 'free']);
     expect(missionById('nope').id).toBe('inspection');
   });
 

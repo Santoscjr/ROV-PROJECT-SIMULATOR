@@ -23,6 +23,19 @@ export interface MissionInput {
   /** Crane state reported by the simulator. */
   craneReleased: boolean;
   craneOnDeck: boolean;
+  /** TMS / tether state (from the simulation). */
+  tms?: {
+    mode: 'manual' | 'auto';
+    command: 'pay' | 'haul' | 'stop';
+    state: string;
+    payout: number;
+    speed: number;
+    tension: number;
+    slack: number;
+    chord: number;
+    tensionWarn: number;
+    slackWarn: number;
+  };
   /** Pilot assistance mode (for contextual hints). */
   pilotMode?: 'manual' | 'stabilize' | 'depthHold';
 }
@@ -152,7 +165,7 @@ export interface OperationMission {
 }
 
 export interface MissionDefinition {
-  id: 'training' | 'inspection' | 'adverse';
+  id: 'training' | 'inspection' | 'adverse' | 'tms' | 'free';
   titleKey: string;
   descKey: string;
   /** 1 = beginner … 3 = advanced */
@@ -160,6 +173,8 @@ export interface MissionDefinition {
   /** Conditions imposed by the mission (pilot cannot change them). */
   forcedConditions?: Partial<ConditionChoice>;
   start: StartMode;
+  /** Initial TMS state (default: AUTO with working slack). */
+  tms?: { mode: 'manual' | 'auto'; payout?: number };
   /** Default pilot mode suggested for this mission (pilot's setting wins if set explicitly). */
   create(): OperationMission;
 }
