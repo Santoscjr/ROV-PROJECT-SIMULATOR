@@ -1,5 +1,6 @@
 import { MathUtils, PerspectiveCamera, Quaternion, Vector3, type Object3D } from 'three';
 import { terrainHeight } from '../sim/terrain';
+import { DEFAULT_CAM_STATES, type CameraStates } from '../config/settings';
 
 /** ROV pilot camera, external observer, TMS monitoring camera, ROV top (tether) camera. */
 export type CameraMode = 'operational' | 'auxiliary' | 'external' | 'tms' | 'tether';
@@ -20,8 +21,56 @@ const AUX_CAM_OFFSET = new Vector3(1.28, -0.42, 0.62);
 export class CameraRig {
   readonly camera: PerspectiveCamera;
   mode: CameraMode = 'external';
-  /** Pan/tilt unit tilt angle (deg), + up. */
-  tilt = -10;
+  /**
+   * Orientation of the physical cameras (operational, auxiliary, tether).
+   * Shared by every rig/panel that shows the same camera — a physical camera
+   * has one pan/tilt state — and persisted in Settings.camState.
+   */
+  states: CameraStates;
+  /** Pan/tilt unit tilt angle of the operational camera (deg), + up. */
+  get tilt(): number {
+    return this.states.operational.tilt;
+  }
+  set tilt(v: number) {
+    this.states.operational.tilt = v;
+  }
+  /** Operational camera pan (deg, + right) and zoom factor (1 = wide, 0.35 = tele). */
+  get pan(): number {
+    return this.states.operational.pan;
+  }
+  set pan(v: number) {
+    this.states.operational.pan = v;
+  }
+  get zoom(): number {
+    return this.states.operational.zoom;
+  }
+  set zoom(v: number) {
+    this.states.operational.zoom = v;
+  }
+  get auxPan(): number {
+    return this.states.auxiliary.pan;
+  }
+  set auxPan(v: number) {
+    this.states.auxiliary.pan = v;
+  }
+  get auxTilt(): number {
+    return this.states.auxiliary.tilt;
+  }
+  set auxTilt(v: number) {
+    this.states.auxiliary.tilt = v;
+  }
+  get tetherPan(): number {
+    return this.states.tether.pan;
+  }
+  set tetherPan(v: number) {
+    this.states.tether.pan = v;
+  }
+  get tetherTilt(): number {
+    return this.states.tether.tilt;
+  }
+  set tetherTilt(v: number) {
+    this.states.tether.tilt = v;
+  }
   readonly tiltRange = { min: -70, max: 30 };
   // External orbit, relative to the vehicle heading.
   orbitYaw = MathUtils.degToRad(150);
@@ -31,19 +80,11 @@ export class CameraRig {
   private initialised = false;
   mouseSensitivity = 1;
   invertTilt = false;
-  /** Operational camera pan (deg, + right) and zoom factor (1 = wide, 0.35 = tele). */
-  pan = 0;
-  zoom = 1;
-  /** Tether camera pan/tilt (deg) relative to its default aft-looking aim. */
-  tetherPan = 0;
-  tetherTilt = 0;
-  /** Auxiliary camera pan/tilt (deg). */
-  auxPan = 0;
-  auxTilt = 0;
   /** TMS monitoring camera mount (local −Z = view), set by the app. */
   tmsMount: Object3D | null = null;
 
-  constructor(aspect: number) {
+  constructor(aspect: number, states: CameraStates = structuredClone(DEFAULT_CAM_STATES)) {
+    this.states = states;
     this.camera = new PerspectiveCamera(60, aspect, 0.08, 1600);
   }
 
@@ -83,14 +124,35 @@ export class CameraRig {
     }
   }
 
-  /** Zoom of the operational camera (+ = in). */
+  /** Zoom of the current camera (+ = in): operational/auxiliary lens, external orbit distance. */
   adjustZoom(steps: number): void {
-    this.zoom = MathUtils.clamp(this.zoom * Math.pow(0.9, steps), 0.35, 1);
+    if (this.mode === 'auxiliary') this.states.auxiliary.zoom = MathUtils.clamp(this.states.auxiliary.zoom * Math.pow(0.9, steps), 0.35, 1);
+    else if (this.mode === 'external') this.orbitDist = MathUtils.clamp(this.orbitDist * Math.pow(0.95, steps), 3.5, 40);
+    else this.zoom = MathUtils.clamp(this.zoom * Math.pow(0.9, steps), 0.35, 1);
   }
 
-  wheel(delta: number): void {
+  /** Mouse wheel: tilt of the pilot/auxiliary camera (as in v2); with zoomModifier → zoom. */
+  wheel(delta: number, zoomModifier = false): void {
     if (this.mode === 'external') this.orbitDist = MathUtils.clamp(this.orbitDist * (1 + Math.sign(delta) * 0.1), 3.5, 40);
-    else if (this.mode === 'operational') this.adjustZoom(-Math.sign(delta));
+    else if (zoomModifier) this.adjustZoom(-Math.sign(delta));
+    else this.tiltBy(-Math.sign(delta) * 3);
+  }
+
+  /** Pan the current camera (deg, + right) — keyboard/device command. */
+  panBy(deg: number): void {
+    if (this.mode === 'operational') this.pan = MathUtils.clamp(this.pan + deg, -60, 60);
+    else if (this.mode === 'auxiliary') this.auxPan = MathUtils.clamp(this.auxPan + deg, -40, 40);
+    else if (this.mode === 'tether') this.tetherPan = MathUtils.clamp(this.tetherPan - deg, -150, 150);
+    else if (this.mode === 'external') this.orbitYaw -= MathUtils.degToRad(deg);
+  }
+
+  /** Tilt the current camera (deg, + up) — keyboard/device command. Not the vehicle pitch. */
+  tiltBy(deg: number): void {
+    if (this.mode === 'operational') this.adjustTilt(deg);
+    else if (this.mode === 'auxiliary') this.auxTilt = MathUtils.clamp(this.auxTilt + deg, -40, 30);
+    else if (this.mode === 'tether') this.tetherTilt = MathUtils.clamp(this.tetherTilt + deg, -30, 60);
+    else if (this.mode === 'external')
+      this.orbitPitch = MathUtils.clamp(this.orbitPitch - MathUtils.degToRad(deg), MathUtils.degToRad(-60), MathUtils.degToRad(80));
   }
 
   adjustTilt(deg: number): void {
@@ -114,7 +176,7 @@ export class CameraRig {
     } else if (this.mode === 'auxiliary') {
       // Auxiliary camera: lower starboard bow, wide angle, looking forward-down
       // (complements the pilot camera for close approaches and the work area).
-      cam.fov = 82;
+      cam.fov = 82 * this.states.auxiliary.zoom;
       cam.position.copy(AUX_CAM_OFFSET).applyMatrix4(rovRoot.matrixWorld);
       rovRoot.getWorldQuaternion(_q);
       const yaw = MathUtils.degToRad(-8 + this.auxPan);

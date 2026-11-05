@@ -57,6 +57,7 @@ export type PilotAction =
   | 'camTether'
   | 'layoutCycle'
   | 'monitorOpen'
+  | 'tmsRecover'
   | 'zoomIn'
   | 'zoomOut';
 

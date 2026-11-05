@@ -27,6 +27,7 @@ const ACTIONS: PilotAction[] = [
   'camTether',
   'layoutCycle',
   'monitorOpen',
+  'tmsRecover',
 ];
 
 export interface KeySource {
@@ -52,6 +53,15 @@ export class KeyboardDevice implements InputDevice {
   ramp = 0.35;
   /** When false, key events are ignored (e.g. while typing in a form). */
   enabled = true;
+  /**
+   * True while a menu/settings screen is open. Then form controls (selects,
+   * sliders, checkboxes, buttons) keep their native keyboard behaviour.
+   * While piloting (no menu), a key bound to a command always goes to the
+   * simulation: the browser default is prevented and the control loses focus,
+   * so e.g. ↑/↓ can never change a camera selector by accident.
+   */
+  uiActive: () => boolean = () => false;
+  private readonly extraSources: Window[] = [];
 
   constructor(
     bindings: KeyBindings,
@@ -79,16 +89,60 @@ export class KeyboardDevice implements InputDevice {
     return true;
   }
 
-  private isFormTarget(e: KeyboardEvent): boolean {
-    const t = e.target as HTMLElement | null;
-    return !!t && typeof t.tagName === 'string' && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName);
+  /** Text entry: always keeps the keyboard (the user is typing). */
+  static isTextEditing(t: EventTarget | null): boolean {
+    const el = t as HTMLElement | null;
+    if (!el || typeof el.tagName !== 'string') return false;
+    if (el.isContentEditable) return true;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName !== 'INPUT') return false;
+    const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
+    return ['text', 'number', 'search', 'email', 'password', 'url', 'tel'].includes(type);
+  }
+
+  /** Other focusable controls (select, slider, checkbox, button). */
+  static isFormControl(t: EventTarget | null): boolean {
+    const el = t as HTMLElement | null;
+    return !!el && typeof el.tagName === 'string' && /^(INPUT|SELECT|BUTTON|TEXTAREA)$/.test(el.tagName);
+  }
+
+  /** Should this key event be handled as a pilot command? (pure policy, testable) */
+  static routeToPilot(target: EventTarget | null, uiActive: boolean): boolean {
+    if (KeyboardDevice.isTextEditing(target)) return false;
+    if (KeyboardDevice.isFormControl(target) && uiActive) return false;
+    return true;
+  }
+
+  /** Also listen to another window (secondary monitor). Events of one window are never duplicated. */
+  attachWindow(win: Window): void {
+    if (this.extraSources.includes(win)) return;
+    this.extraSources.push(win);
+    win.addEventListener('keydown', this.onDown);
+    win.addEventListener('keyup', this.onUp);
+    win.addEventListener('blur', this.onBlur);
+  }
+
+  detachWindow(win: Window): void {
+    const i = this.extraSources.indexOf(win);
+    if (i < 0) return;
+    this.extraSources.splice(i, 1);
+    try {
+      win.removeEventListener('keydown', this.onDown);
+      win.removeEventListener('keyup', this.onUp);
+      win.removeEventListener('blur', this.onBlur);
+    } catch {
+      /* window already gone */
+    }
   }
 
   private onDown = (e: KeyboardEvent) => {
-    if (!this.enabled || this.isFormTarget(e)) return;
+    if (!this.enabled) return;
     const binds = this.codeToBinding.get(e.code);
     if (!binds) return;
+    if (!KeyboardDevice.routeToPilot(e.target, this.uiActive())) return;
     e.preventDefault();
+    // A focused selector/button must not keep the keyboard during piloting.
+    if (KeyboardDevice.isFormControl(e.target)) (e.target as HTMLElement).blur?.();
     if (!e.repeat) {
       for (const b of binds) if ((ACTIONS as string[]).includes(b)) this.pending.push(b as PilotAction);
     }
