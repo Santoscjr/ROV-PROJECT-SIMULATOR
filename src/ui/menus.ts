@@ -411,6 +411,10 @@ export class Menus {
               ${fxRange('exposureBias', -1.5, 1.5, 0.1)}
               <div class="field"><label for="fx-ae">${t('settings.fx.autoExposure')}</label><input id="fx-ae" type="checkbox" data-fx="autoExposure"></div>
               <p class="muted small">${t('settings.fxNote')}</p>
+              <h3 style="margin-top:18px">${t('settings.water')}</h3>
+              <div class="field"><label for="s-part">${t('settings.particles')}</label><span class="ctl"><input id="s-part" type="range" min="0" max="2" step="0.1" data-s="particles"><output data-o="particles"></output></span></div>
+              <div class="field"><label for="s-sed">${t('settings.sediment')}</label><span class="ctl"><input id="s-sed" type="range" min="0" max="2" step="0.1" data-s="sediment"><output data-o="sediment"></output></span></div>
+              <p class="muted small">${t('settings.waterNote')}</p>
               <h3 style="margin-top:18px">${t('settings.lighting')}</h3>
               ${nRange('lighting.front', 0.25, 2, 0.05)}
               ${nRange('lighting.top', 0, 3, 0.05)}

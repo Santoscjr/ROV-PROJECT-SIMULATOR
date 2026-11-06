@@ -637,4 +637,8 @@ export const ptBR: Record<string, string> = {
   'settings.environmentSeed': 'Semente do fundo do mar',
   'settings.environmentSeedNote': 'Gera outro relevo e outra distribuição de rochas fora das áreas operacionais (local de produção, duto, área de lançamento e de treinamento ficam iguais). A mesma semente reproduz exatamente o mesmo fundo — para física, sonar, altímetro, tether e imagem. Aplicada ao recarregar a página. 0 = local de referência.',
   'diag.seedPending': 'semente {s} será aplicada ao recarregar (atual {c})',
+  'settings.water': 'Água e sedimentos',
+  'settings.particles': 'Partículas em suspensão (densidade)',
+  'settings.sediment': 'Ressuspensão de sedimentos (intensidade)',
+  'settings.waterNote': 'A turbidez é definida pela condição de visibilidade (Ambiente). A ressuspensão depende da altitude, da potência e da direção dos propulsores, do tipo de sedimento (lama, areia, cascalho) e da corrente; 0 desliga. Valem para todas as câmeras e monitores.',
 };

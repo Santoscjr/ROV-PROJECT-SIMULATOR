@@ -250,6 +250,12 @@ export class App {
       this.mainPassSize = { w: 0, h: 0 };
       this.resize();
     }
+    // Water / sediment (shared by every panel and window): the cloud drifts with the
+    // simulated current; particle and resuspension amounts are operator settings.
+    this.world.setCurrentSampler((p, out) => this.sim.env.current(p, out));
+    this.world.setParticleDensity(s.particles);
+    this.world.setSedimentStrength(s.sediment);
+    this.world.setWaterDetail(s.graphics === 'low' ? 0 : s.graphics === 'medium' ? 1 : 2);
     this.keyboard.setBindings(s.bindings);
     this.keyboard.ramp = s.keyRamp;
     this.gamepad.deadzone = s.gamepadDeadzone;

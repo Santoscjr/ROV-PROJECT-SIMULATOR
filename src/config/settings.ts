@@ -203,6 +203,10 @@ export interface Settings {
   tmsDepthMode: 'fixed' | 'seabed';
   /** Seed of the seabed relief and rock field (0 = reference site). Applied when the simulator starts. */
   environmentSeed: number;
+  /** Suspended particle (marine snow) density multiplier 0–2. */
+  particles: number;
+  /** Sediment resuspension strength 0–2 (0 = off). */
+  sediment: number;
   tmsAboveSeabed: number;
 }
 
@@ -312,6 +316,8 @@ export const DEFAULT_SETTINGS: Settings = {
   tmsDepth: 50,
   tmsDepthMode: 'fixed',
   environmentSeed: 0,
+  particles: 1,
+  sediment: 1,
   tmsAboveSeabed: 25,
   monitorSource: 'sonar',
   panelLocks: [false, true, true, true],
@@ -386,6 +392,8 @@ export function sanitizeSettings(raw: unknown): Settings {
     tmsDepth: typeof r.version !== 'number' && r.tmsDepth === 80 ? d.tmsDepth : num(r.tmsDepth, 20, 100, d.tmsDepth),
     tmsDepthMode: pick(r.tmsDepthMode, ['fixed', 'seabed'] as const, d.tmsDepthMode),
     environmentSeed: Math.round(num(r.environmentSeed, 0, 99, d.environmentSeed)),
+    particles: num(r.particles, 0, 2, d.particles),
+    sediment: num(r.sediment, 0, 2, d.sediment),
     tmsAboveSeabed: num(r.tmsAboveSeabed, 10, 60, d.tmsAboveSeabed),
     panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
     camState: sanitizeCamStates(r.camState),
@@ -553,7 +561,7 @@ function safeStorage(): Storage | null {
 export const RESET_CATEGORIES = {
   station: ['layout', 'panels', 'panelLocks', 'monitors', 'stationProfile', 'monitorSource'],
   cameras: ['camState'],
-  graphics: ['graphics', 'cameraFx', 'lighting', 'showFps'],
+  graphics: ['graphics', 'cameraFx', 'lighting', 'showFps', 'particles', 'sediment'],
   controls: ['bindings', 'keyboardPreset', 'sensitivity', 'keyRamp', 'mouseSensitivity', 'invert', 'gamepadDeadzone', 'defaultMode'],
   sonar: ['sonar'],
   environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'tmsDepthMode', 'tmsAboveSeabed', 'dockAssist', 'environmentSeed'],
