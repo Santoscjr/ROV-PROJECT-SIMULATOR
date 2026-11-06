@@ -59,6 +59,13 @@ const EL_RAYS = 21; // structure sub-rays across the vertical beam (1° apart)
 const EL_SPACING = (2 * HALF_BEAM_V) / (EL_RAYS - 1);
 /** Structure (steel) reflectivity relative to the brightest seabed. */
 const TS_STRUCT = 1;
+/**
+ * Rock (boulders, berm stones) reflectivity relative to steel, from the
+ * normal-incidence intensity reflection R² = ((Z₂−Z₁)/(Z₂+Z₁))² with acoustic
+ * impedances water ≈ 1.5, rock ≈ 15, steel ≈ 45 MRayl: 0.67 / 0.88 ≈ 0.75.
+ * (Approximation: ignores roughness/backscatter differences.)
+ */
+const TS_ROCK = 0.75;
 const HORIZON_TOL = 0.3 * DEG;
 
 /** Display level (0..1) at or above which a pixel reads as a target. */
@@ -630,7 +637,8 @@ export class Sonar {
         if (bestC < 0) continue;
         if (hc.indexOf(bestC) < 0) hc.push(bestC);
         if (bestT >= maxT || bestT > seabedT + step) continue; // hidden by the seabed / out of range
-        const echo = TS_STRUCT * bestFill * (0.2 + 0.8 * bestCos) * beamPattern(delta) * transmissionLoss(bestT);
+        const ts = this.colliders[bestC]?.surface === 'rock' ? TS_ROCK : TS_STRUCT;
+        const echo = ts * bestFill * (0.2 + 0.8 * bestCos) * beamPattern(delta) * transmissionLoss(bestT);
         const i = Math.floor(bestT / step);
         if (echo > data[row + i]) data[row + i] = echo;
       }

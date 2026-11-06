@@ -6,7 +6,7 @@ import { COLLIDERS, FREE_SPAN, MANIFOLD, PIPELINE_PATH, PIPELINE_RADIUS, type Ca
 import { RovPhysics, type PhysicsEnvironment } from '../src/physics/rovPhysics';
 import { sphereCollider } from '../src/physics/collision';
 import { SegmentTether } from '../src/physics/segmentTether';
-import { Sonar } from '../src/render/sonar';
+import { SONAR_DETECT_LEVEL, Sonar, sonarDisplayLevel } from '../src/render/sonar';
 import { Simulation } from '../src/sim/simulation';
 
 const DT = 1 / 120;
@@ -231,7 +231,13 @@ describe('sonar sees boulders through the field broad-phase', () => {
         const v = p.data[b * p.bins + i] - base.data[b * p.bins + i];
         if (v > best.v) best = { v, b, i };
       }
-    expect(best.v).toBeGreaterThan(0.3);
+    // Detectable by the sonar's own definition (display level at gain 1, no speckle)
+    // and clearly brighter than the bare seabed at the same bin.
+    const idx = best.b * p.bins + best.i;
+    const rf = (best.i + 0.5) / p.bins;
+    const lvl = sonarDisplayLevel(p.data[idx], rf, 1, 0);
+    expect(lvl).toBeGreaterThanOrEqual(SONAR_DETECT_LEVEL);
+    expect(lvl - sonarDisplayLevel(base.data[idx], rf, 1, 0)).toBeGreaterThan(0.1);
     const range = ((best.i + 0.5) / p.bins) * p.range;
     // Near face of the rock: slant range to the closest point of its cap.
     let near = Infinity;
