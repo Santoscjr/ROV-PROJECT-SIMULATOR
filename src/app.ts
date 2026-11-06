@@ -32,6 +32,7 @@ import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
 import { COLLIDERS, INSPECTION_POINTS, LAUNCH_POINT } from './sim/site';
+import { activeEnvironment, configureEnvironment } from './sim/environment';
 import type { ViewSource } from './config/settings';
 
 type AppState = 'menu' | 'running' | 'paused' | 'report';
@@ -122,6 +123,10 @@ export class App {
     this.renderer.autoClear = true;
 
     const s = this.store.get();
+    // Seabed relief + rock field from the persisted seed, BEFORE the simulation and the
+    // scene are built (physics, sonar, tether and rendering share this one environment).
+    configureEnvironment({ seed: s.environmentSeed });
+    this.environmentSeed = s.environmentSeed;
     this.sim = new Simulation(s.defaultMode);
     this.camStates = structuredClone(s.camState);
     this.camJson = JSON.stringify(this.camStates);
@@ -185,7 +190,8 @@ export class App {
       this.hud.toast(t(locked ? 'station.lockedOn' : 'station.lockedOff', { n: i + 1 }));
     };
     this.station.onActivate = (i) => (this.active = { w: 0, p: i });
-    this.sonar = new Sonar(terrainHeight, COLLIDERS);
+    // Sonar sees structures (list) and every physical rock through the shared spatial grid.
+    this.sonar = new Sonar(terrainHeight, COLLIDERS, activeEnvironment().grid);
     this.hud.onTmsAction = (a: PilotAction) => this.handleAction(a);
     this.menus = new Menus(container, this.store, MISSIONS, {
       start: (id) => this.start(id),
@@ -820,6 +826,7 @@ export class App {
     // Main umbilical: crane sheave → Top-Hat termination (always attached).
     this.world.vessel.setWire(sim.lars.liftWorld(this.tmp));
     this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
+    this.world.updateSeabed(sim.rov.position);
     this.updateTetherDebug();
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     // TMS visuals follow the winch state.
@@ -1092,6 +1099,9 @@ export class App {
     } else d.arrow.visible = false;
   }
 
+  /** Seed the running environment was built with (a changed setting applies on restart). */
+  private environmentSeed = 0;
+
   /** Last visual checks observed during the preparation (for the guide). */
   private guideChecks = { lights: false, thrusters: false, camera: false };
 
@@ -1164,6 +1174,7 @@ export class App {
       `ambiente: ${runtimeEnvironment()}  ·  ${location.href.split('?')[0]}`,
       `versão publicada: ${pubTxt}`,
       `configurações: esquema salvo ${stored} → atual ${st.version}`,
+      `ambiente: semente ${this.environmentSeed}${st.environmentSeed !== this.environmentSeed ? ' — ' + t('diag.seedPending', { s: st.environmentSeed, c: this.environmentSeed }) : ''} · rochas físicas ${activeEnvironment().rocks.length} · tiles ${JSON.stringify(this.world.seabed.stats)}`,
       `GPU: ${gpu}`,
       '',
       '== DESEMPENHO ==',

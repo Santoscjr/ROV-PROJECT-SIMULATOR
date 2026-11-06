@@ -70,12 +70,15 @@ const DRUM_Y = 0.22;
 const CORE_R = 0.17;
 const FLANGE_R = 0.38;
 const DRUM_HALF = 0.55; // flange centre |z|
-const PACK_MAX = FLANGE_R * 0.87;
+const PACK_MAX = FLANGE_R * 0.84;
 const SUPPORT_Z = 0.7; // A-frame bearing supports
 const LW_X = -0.3;
 const LW_Y = -0.42;
 const LW_TRAVEL = 0.4; // ± carriage travel along Z
 const FAIRLEAD_DX = -0.12; // fairlead (cable) position relative to the carriage
+/** Level-wind guide rods and diamond screw (y relative to LW_Y): high on the carriage, clear of the camera's sight lines to the exit guide. */
+const LW_RODS = [0.08, 0.14];
+const LW_SCREW = 0.11;
 const EXIT = new THREE.Vector3(-0.6, -0.72, 0);
 const GUIDE_TOP = -0.55; // top of the exit-guide roller box
 const LIFT_Y = 1.45;
@@ -385,8 +388,8 @@ function buildFrame(add: Adder, d: Detail): void {
     for (const x of [-HX, HX]) {
       for (const z of [-HZ, HZ]) {
         for (const y of [TOP_Y - 0.1, BOT_Y + 0.1]) {
-          add('paint', box(0.012, 0.12, 0.12), T(x - Math.sign(x) * 0.066, y, z - Math.sign(z) * 0.1), YELLOW, 0.25);
-          add('paint', box(0.12, 0.12, 0.012), T(x - Math.sign(x) * 0.1, y, z - Math.sign(z) * 0.066), YELLOW, 0.25);
+          add('paint', box(0.012, 0.12, 0.12), T(x - Math.sign(x) * 0.066, y, z - Math.sign(z) * 0.1), YELLOW, 0.1);
+          add('paint', box(0.12, 0.12, 0.012), T(x - Math.sign(x) * 0.1, y, z - Math.sign(z) * 0.066), YELLOW, 0.1);
         }
       }
     }
@@ -404,7 +407,7 @@ function buildFrame(add: Adder, d: Detail): void {
   }
   // Name-board backing plates (decal mesh in front)
   for (const s of [1, -1]) {
-    add('paint', rbox(0.56, 0.21, 0.012, 0.004, 1), T(0.6, 0.52, s * (HZ + 0.064)), 0xe9e4d6, 0.15);
+    add('paint', rbox(0.54, 0.19, 0.012, 0.004, 1), T(0.6, 0.5, s * (HZ + 0.064)), YELLOW, 0.1);
     add('paint', box(0.04, 0.16, 0.012), T(0.36, 0.6, s * (HZ + 0.056)), YELLOW);
     add('paint', box(0.04, 0.16, 0.012), T(0.84, 0.6, s * (HZ + 0.056)), YELLOW);
     if (d.bolts) bolts(add, T(0.6, 0.52, s * (HZ + 0.07), s * Math.PI / 2), [[-0.24, -0.08], [0.24, -0.08], [-0.24, 0.08], [0.24, 0.08]], d, 0.007);
@@ -422,12 +425,12 @@ function buildSkirtAndLatch(add: Adder, d: Detail): void {
     const z0 = s * (HZ + 0.0);
     const z1 = s * (HZ + 0.085);
     const ang = Math.atan2(z1 - z0, h);
-    add('paint', rbox(2 * HX - 0.24, Math.hypot(h, z1 - z0), 0.016, 0.004, 1), T(0, (topY + botY) / 2, (z0 + z1) / 2, -ang, 0, 0), YELLOW, 0.3);
+    add('paint', rbox(2 * HX - 0.24, Math.hypot(h, z1 - z0), 0.016, 0.004, 1), T(0, (topY + botY) / 2, (z0 + z1) / 2, -ang, 0, 0), YELLOW, 0.1);
     // ends
     const x0 = s * (HX - 0.02);
     const x1 = s * (HX + 0.06);
     const angX = Math.atan2(x1 - x0, h);
-    add('paint', rbox(0.016, Math.hypot(h, x1 - x0), 2 * HZ - 0.3, 0.004, 1), T((x0 + x1) / 2, (topY + botY) / 2, 0, 0, 0, angX), YELLOW, 0.3);
+    add('paint', rbox(0.016, Math.hypot(h, x1 - x0), 2 * HZ - 0.3, 0.004, 1), T((x0 + x1) / 2, (topY + botY) / 2, 0, 0, 0, angX), YELLOW, 0.1);
     // HDPE rubbing strip along the lower edge of the side plates
     add('rubber', rbox(2 * HX - 0.3, 0.035, 0.03, 0.008, 1), T(0, botY + 0.02, (z1 - s * 0.006) * 1.0));
   }
@@ -438,7 +441,7 @@ function buildSkirtAndLatch(add: Adder, d: Detail): void {
       const b = new THREE.Vector3(sx * (HX + 0.02), (topY + botY) / 2, sz * (HZ - 0.12));
       const mid = a.clone().add(b).multiplyScalar(0.5);
       const yaw = Math.atan2(b.x - a.x, b.z - a.z);
-      add('paint', box(0.012, h * 0.95, a.distanceTo(b)), T(mid.x, mid.y, mid.z, 0, yaw, 0), YELLOW, 0.3);
+      add('paint', box(0.012, h * 0.95, a.distanceTo(b)), T(mid.x, mid.y, mid.z, 0, yaw, 0), YELLOW, 0.1);
     }
   }
 
@@ -455,7 +458,7 @@ function buildSkirtAndLatch(add: Adder, d: Detail): void {
   plate.holes.push(hole);
   const pg = new THREE.ExtrudeGeometry(plate, { depth: 0.02, bevelEnabled: false, curveSegments: Math.max(8, d.radial >> 1) });
   pg.rotateX(Math.PI / 2);
-  add('paint', pg, T(0, BOT_Y + 0.04, 0), YELLOW, 0.25);
+  add('paint', pg, T(0, BOT_Y + 0.04, 0), YELLOW, 0.1);
   // Latch funnel (closed wall): mouth at TOPHAT.receptacle (y −0.66) r 0.25 → throat r 0.09 at −0.5
   const yM = -0.66;
   const yT = -0.5;
@@ -504,7 +507,7 @@ function buildTopside(add: Adder, d: Detail): void {
   // Lamp bar (forward), carries both TMS lamps
   rail(add, [1.2, 0.715, -HZ + 0.05], [1.2, 0.715, HZ - 0.05], 0.04, d);
   // Termination spider plate (centre)
-  add('paint', rbox(0.84, 0.03, 0.5, 0.008, d.round), T(0, 0.715, 0), YELLOW, 0.25);
+  add('paint', rbox(0.84, 0.03, 0.5, 0.008, d.round), T(0, 0.715, 0), YELLOW, 0.1);
   for (const z of [-0.25, 0.25]) rail(add, [-0.42, TOP_Y, z], [0.42, TOP_Y, z], 0.07, d);
   // Grating over the fore/aft bays: bearing bars + cross bars
   const grating = (x0: number, x1: number) => {
@@ -591,7 +594,7 @@ function buildDrumSupports(add: Adder, d: Detail): void {
     add('metal', cyl(0.012, 0.012, 0.02, 6), T(0, DRUM_Y + 0.09, s * 0.64), 0xb7a06a);
     bolts(add, T(0, DRUM_Y - 0.05, s * 0.64), [[-0.08, 0], [0.08, 0]], d, 0.009);
     // Saddle plate tying the bearing block to the A-frame apex
-    add('paint', box(0.24, 0.16, 0.014), T(0, DRUM_Y - 0.02, z - s * 0.042), YELLOW, 0.25);
+    add('paint', box(0.24, 0.16, 0.014), T(0, DRUM_Y - 0.02, z - s * 0.042), YELLOW, 0.1);
   }
   // Coaxial hydraulic drive on the −Z end: planetary gearbox + motor + hoses
   const toZ = Math.PI / 2;
@@ -614,26 +617,26 @@ function buildDrumSupports(add: Adder, d: Detail): void {
 function buildLevelWindRails(add: Adder, d: Detail): void {
   const zEnd = SUPPORT_Z - 0.02;
   // Guide rods above / below the diamond screw, between brackets on the A-frames
-  for (const dy of [0.09, -0.09]) rod(add, 'metal', [LW_X, LW_Y + dy, -zEnd], [LW_X, LW_Y + dy, zEnd], 0.016, d.small + 2, 0xc9ced3);
-  rod(add, 'metal', [LW_X, LW_Y, -zEnd], [LW_X, LW_Y, zEnd], 0.022, d.small + 2, 0xa9afb4);
+  for (const dy of LW_RODS) rod(add, 'metal', [LW_X, LW_Y + dy, -zEnd], [LW_X, LW_Y + dy, zEnd], 0.012, d.small + 2, 0xc9ced3);
+  rod(add, 'metal', [LW_X, LW_Y + LW_SCREW, -zEnd], [LW_X, LW_Y + LW_SCREW, zEnd], 0.018, d.small + 2, 0xa9afb4);
   // Diamond thread hint: helical ridges as thin rings
-  if (d.bolts) for (let z = -zEnd + 0.04; z < zEnd - 0.03; z += 0.04) add('metal', new THREE.TorusGeometry(0.022, 0.003, 4, d.small), T(LW_X, LW_Y, z, 0, 0.35, 0), 0x8f969d);
+  if (d.bolts) for (let z = -zEnd + 0.04; z < zEnd - 0.03; z += 0.04) add('metal', new THREE.TorusGeometry(0.018, 0.003, 4, d.small), T(LW_X, LW_Y + LW_SCREW, z, 0, 0.35, 0), 0x8f969d);
   for (const s of [-1, 1]) {
-    add('paint', rbox(0.14, 0.26, 0.016, 0.006, 1), T(LW_X + 0.04, LW_Y, s * (zEnd + 0.008)), YELLOW, 0.3);
-    add('paint', box(0.1, 0.035, 0.03), T(LW_X + 0.12, LW_Y + 0.02, s * (zEnd + 0.004)), YELLOW);
+    add('paint', rbox(0.14, 0.12, 0.016, 0.006, 1), T(LW_X + 0.04, LW_Y + LW_SCREW, s * (zEnd + 0.008)), YELLOW, 0.1);
+    add('paint', box(0.1, 0.035, 0.03), T(LW_X + 0.12, LW_Y + LW_SCREW, s * (zEnd + 0.004)), YELLOW);
   }
   // Level-wind drive: small hydraulic motor + gearbox on the −Z end of the screw
-  add('paint', rbox(0.09, 0.09, 0.05, 0.01, d.round), T(LW_X, LW_Y, -zEnd + 0.04), DARK, 0.3);
-  add('paint', cyl(0.03, 0.03, 0.08, d.small + 2), T(LW_X + 0.07, LW_Y, -zEnd + 0.04, 0, 0, Math.PI / 2), 0x3b5163, 0.3);
+  add('paint', rbox(0.09, 0.09, 0.05, 0.01, d.round), T(LW_X, LW_Y + LW_SCREW, -zEnd + 0.04), DARK, 0.3);
+  add('paint', cyl(0.03, 0.03, 0.08, d.small + 2), T(LW_X + 0.07, LW_Y + LW_SCREW, -zEnd + 0.04, 0, 0, Math.PI / 2), 0x3b5163, 0.3);
 }
 
 function buildCarriage(add: Adder, d: Detail): void {
   // Body around the screw, bushings on the rods, fairlead (rollers) on the aft side.
-  add('paint', rbox(0.16, 0.24, 0.13, 0.015, d.round), undefined, YELLOW, 0.45);
-  for (const dy of [0.09, -0.09]) add('metal', cyl(0.03, 0.03, 0.15, d.small + 2), T(0, dy, 0, Math.PI / 2), 0x8f969d, 0.2);
-  add('metal', cyl(0.036, 0.036, 0.15, d.small + 2), T(0, 0, 0, Math.PI / 2), 0xb7a06a, 0.2);
+  add('paint', rbox(0.16, 0.3, 0.13, 0.015, d.round), T(0, 0.03, 0), YELLOW, 0.1);
+  for (const dy of LW_RODS) add('metal', cyl(0.022, 0.022, 0.15, d.small + 2), T(0, dy, 0, Math.PI / 2), 0x8f969d, 0.2);
+  add('metal', cyl(0.03, 0.03, 0.15, d.small + 2), T(0, LW_SCREW, 0, Math.PI / 2), 0xb7a06a, 0.2);
   const fx = FAIRLEAD_DX;
-  for (const dy of [0.12, -0.12]) add('paint', rbox(0.11, 0.014, 0.12, 0.004, 1), T(fx + 0.025, dy, 0), YELLOW, 0.3);
+  for (const dy of [0.12, -0.12]) add('paint', rbox(0.11, 0.014, 0.12, 0.004, 1), T(fx + 0.025, dy, 0), YELLOW, 0.1);
   for (const s of [-1, 1]) add('rubber', cyl(0.02, 0.02, 0.22, d.small + 2), T(fx, 0, s * 0.037));
   for (const dy of [0.1, -0.1]) add('rubber', cyl(0.018, 0.018, 0.1, d.small + 2), T(fx - 0.035, dy, 0, Math.PI / 2));
   for (const dy of [0.1, -0.1]) add('rubber', cyl(0.018, 0.018, 0.1, d.small + 2), T(fx + 0.035, dy, 0, Math.PI / 2));
@@ -663,8 +666,8 @@ function buildExitGuide(add: Adder, d: Detail): void {
   for (const s of [-1, 1]) {
     add('rubber', cyl(0.022, 0.022, 0.2, d.small + 2), T(x, yR, s * 0.124, 0, 0, Math.PI / 2));
     add('rubber', cyl(0.022, 0.022, 0.2, d.small + 2), T(x + s * 0.124, yR, 0, Math.PI / 2));
-    add('paint', box(0.31, 0.06, 0.01), T(x, yR, s * 0.155), YELLOW, 0.35);
-    add('paint', box(0.01, 0.06, 0.31), T(x + s * 0.155, yR, 0), YELLOW, 0.35);
+    add('paint', box(0.31, 0.06, 0.01), T(x, yR, s * 0.155), YELLOW, 0.1);
+    add('paint', box(0.01, 0.06, 0.31), T(x + s * 0.155, yR, 0), YELLOW, 0.1);
     // support straps to the bottom cross members (x −0.3 / −0.9)
     const xe = s > 0 ? -0.33 : -0.87;
     beam(add, 'paint', [x + s * 0.155, yR, 0], [xe, BOT_Y + 0.03, 0], 0.05, 0.012, 1, YELLOW);
@@ -685,7 +688,7 @@ function buildSystems(add: Adder, d: Detail): void {
   const prof: [number, number][] = [[0, -0.42], [0.06, -0.42], [0.09, -0.4], [0.1, -0.37], [0.1, 0.33], [0.112, 0.335], [0.112, 0.38], [0.095, 0.39], [0.07, 0.41], [0, 0.42]];
   add('metal', lathe(prof, d.radial), mul(T(cx, cy, 0), toZ), 0x8f969d, 0.25);
   for (const z of [-0.25, 0.25]) {
-    add('paint', rbox(0.2, 0.05, 0.05, 0.008, 1), T(cx, MID_Y + 0.055, z), YELLOW, 0.3);
+    add('paint', rbox(0.2, 0.05, 0.05, 0.008, 1), T(cx, MID_Y + 0.055, z), YELLOW, 0.1);
     add('metal', new THREE.TorusGeometry(0.104, 0.006, 5, d.radial, Math.PI), T(cx, cy, z), 0x3b4046, 0.05);
   }
   for (let k = 0; k < 3; k++) add('metal', cyl(0.014, 0.014, 0.04, d.small), mul(T(cx + (k - 1) * 0.04, cy, 0.44), toZ), 0xb7a06a);
@@ -709,7 +712,7 @@ function buildSystems(add: Adder, d: Detail): void {
   for (let k = 0; k < 6; k++) add('paint', cyl(0.155, 0.155, 0.01, d.radial), mul(T(hx, hy, 0.05), toMZ, T(0, -0.29 + k * 0.06, 0)), 0x34495a, 0.3);
   add('paint', cyl(0.1, 0.11, 0.14, d.radial), mul(T(hx, hy, -0.14), toMZ), 0x5b6670, 0.25);
   add('paint', rbox(0.22, 0.2, 0.1, 0.015, R), T(hx, hy, -0.26), 0x6f7a84, 0.25);
-  for (const z of [0.3, -0.2]) add('paint', rbox(0.26, 0.04, 0.06, 0.008, 1), T(hx, MID_Y + 0.06, z), YELLOW, 0.3);
+  for (const z of [0.3, -0.2]) add('paint', rbox(0.26, 0.04, 0.06, 0.008, 1), T(hx, MID_Y + 0.06, z), YELLOW, 0.1);
   // Compensator (yellow bellows can) above the HPU
   add('paint', cyl(0.075, 0.075, 0.3, d.radial), T(hx + 0.02, hy + 0.32, 0.45, Math.PI / 2), 0xd8b024, 0.3);
   for (const z of [0.29, 0.61]) add('paint', cyl(0.08, 0.08, 0.02, d.radial), T(hx + 0.02, hy + 0.32, z, Math.PI / 2), 0x24272b);

@@ -622,11 +622,17 @@ function buildLights(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D[]
     const qh = q.clone()
       .multiply(new THREE.Quaternion().setFromAxisAngle(AY, (LAMP_AIM[i][0] * Math.PI) / 180))
       .multiply(new THREE.Quaternion().setFromAxisAngle(AZ, (LAMP_AIM[i][1] * Math.PI) / 180));
-    const hp = mount.position.clone().addScaledVector(AX.clone().applyQuaternion(qh), -0.025);
+    // Lower lamps are compact LED heads (they sit next to the auxiliary camera).
+    const k = i < 2 ? 1 : 0.78;
+    // (lens face just behind the mount; the compact heads hang 2 cm low so the
+    // beam origin sits at the top of their lens, below the aux camera's view)
+    const hp = mount.position.clone()
+      .addScaledVector(AX.clone().applyQuaternion(qh), -(0.021 * k + 0.004))
+      .addScaledVector(AY.clone().applyQuaternion(qh), i < 2 ? 0 : -0.02);
     const m = TQ(hp, qh);
-    lightHead(sub(add, m), d);
+    lightHead(sub(add, m.clone().multiply(new THREE.Matrix4().makeScale(k, k, k))), d);
     // Stem from the frame to the clamp block under the trunnion yoke
-    const clamp = new THREE.Vector3(-0.05, -0.05, 0).applyMatrix4(m);
+    const clamp = new THREE.Vector3(-0.05 * k, -0.05 * k, 0).applyMatrix4(m);
     const stemTop: V3 = [clamp.x, clamp.y - 0.02, clamp.z];
     beam(add, 'frame', s.stem, stemTop, 0.04, 0.04, d.round);
     add('frame', rbox(0.06, 0.04, 0.05, 0.006, 1), T(stemTop[0], stemTop[1] + 0.005, stemTop[2]));

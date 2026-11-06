@@ -634,4 +634,7 @@ export const ptBR: Record<string, string> = {
   'settings.tmsDepthMode.seabed': 'Relativa ao fundo (fundo − distância)',
   'settings.tmsAboveSeabed': 'Distância do Top-Hat ao fundo (m)',
   'settings.tmsDepthNote': 'Em trabalhos no fundo, o Top-Hat costuma ficar algumas dezenas de metros acima do fundo (menos tether atravessando a coluna d\'água). Um Top-Hat raso (20–30 m) é uma configuração específica deste simulador, útil em águas rasas ou na coluna d\'água. Em qualquer modo, o conjunto nunca desce além da profundidade segura (ROV acoplado ≥ 6 m acima do fundo).',
+  'settings.environmentSeed': 'Semente do fundo do mar',
+  'settings.environmentSeedNote': 'Gera outro relevo e outra distribuição de rochas fora das áreas operacionais (local de produção, duto, área de lançamento e de treinamento ficam iguais). A mesma semente reproduz exatamente o mesmo fundo — para física, sonar, altímetro, tether e imagem. Aplicada ao recarregar a página. 0 = local de referência.',
+  'diag.seedPending': 'semente {s} será aplicada ao recarregar (atual {c})',
 };

@@ -345,8 +345,8 @@ function generate(config: EnvironmentConfig): SeabedEnvironment {
   };
   const add = (x: number, z: number, size: number): boolean => {
     const slab = r() < 0.25;
-    let a0 = size * (0.85 + 0.5 * r());
-    let w0 = size * (0.65 + 0.35 * r());
+    let a0 = size * (0.9 + 0.35 * r());
+    let w0 = size * (0.75 + 0.3 * r());
     if (w0 > a0) [a0, w0] = [w0, a0];
     const h = Math.max(0.16, size * (slab ? 0.3 + 0.15 * r() : 0.48 + 0.34 * r()));
     const yaw = r() * Math.PI;

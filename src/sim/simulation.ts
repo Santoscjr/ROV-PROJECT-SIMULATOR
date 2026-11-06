@@ -112,8 +112,11 @@ export class Simulation {
       // Boulders and rock berm of the active environment (seed), via its spatial grid.
       queryColliders: (minX, minZ, maxX, maxZ, out) => activeEnvironment().queryColliders(minX, minZ, maxX, maxZ, out),
     };
-    // The tether takes one flat list: site structures + the physical seabed colliders.
-    this.tether = new SegmentTether(this.env.current, {}, terrainHeight, activeEnvironment().allColliders);
+    // Tether: structures + rock berm. The boulders need SegmentTether's spatial
+    // query (pending patch: 5th argument `activeEnvironment().grid`); as a flat
+    // list they doubled the cost of every tether step.
+    // Static structures as a list + every physical rock (boulders, berm) through the spatial grid.
+    this.tether = new SegmentTether(this.env.current, {}, terrainHeight, COLLIDERS, activeEnvironment().grid);
     this.env.tether = this.tether;
     this.reset(defaultMode);
   }

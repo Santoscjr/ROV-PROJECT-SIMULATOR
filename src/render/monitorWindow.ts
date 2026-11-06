@@ -1,6 +1,7 @@
 import { ACESFilmicToneMapping, PCFSoftShadowMap, SRGBColorSpace, Vector2, WebGLRenderer, type Vector3 } from 'three';
 import { SecondaryView, glViewport, isCameraSource, layoutRects, renderCameraPanel, type PanelEnv, type Rect } from './station';
 import { Sonar } from './sonar';
+import { activeEnvironment } from '../sim/environment';
 import type { CameraStates, HudItems, MonitorSettings, SonarSettings, ViewSource } from '../config/settings';
 import { VIEW_SOURCES } from '../config/settings';
 import { t } from '../i18n';
@@ -353,7 +354,7 @@ export class MonitorWindow {
   }
 
   private makeSonar(): Sonar {
-    const s = new Sonar(this.terrain, this.colliders);
+    const s = new Sonar(this.terrain, this.colliders, activeEnvironment().grid);
     if (this.sonarCfg) s.configure(this.sonarCfg);
     return s;
   }

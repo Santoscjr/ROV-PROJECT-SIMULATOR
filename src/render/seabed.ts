@@ -293,7 +293,7 @@ export class TerrainTiler {
       unloadDistance: 260,
       hysteresis: 8,
       maxTilesPerUpdate: 2,
-      budgetMs: 4,
+      budgetMs: 2.5,
       ...opts,
     };
     this.H = env.terrainHeight;
@@ -491,7 +491,7 @@ export function buildBoulderGeometry(rocks: readonly Rock[], detail = 2): Buffer
     const scale = (rk.height + rk.halfWidth) / 2;
     const amp = BOULDER_LUMP * scale;
     const sd = Math.floor(rk.shape * 1e6);
-    const g = rk.tint * 0.72;
+    const g = rk.tint * 0.55;
     const warm = 0.95 + ((sd % 97) / 97) * 0.08;
     for (let v = 0; v < nv; v++) {
       const dx = bp.getX(v);
@@ -589,8 +589,8 @@ export function createSeabed(quality: GraphicsQuality, options: SeabedOptions = 
 
   // --- Physical boulders: the environment's list, one merged mesh per chunk.
   const boulderMat = fouledMaterial(
-    { color: 0x7a766b, roughness: 0.93, vertexColors: true, flatShading: quality !== 'low' },
-    { amount: 0.4, sediment: 0.6, scale: 2.2, chips: 0, relief: 1, growth: new Color(0.24, 0.25, 0.18) },
+    { color: 0x5f5b53, roughness: 0.93, vertexColors: true, flatShading: quality !== 'low' },
+    { amount: 0.45, sediment: 0.45, scale: 2.2, chips: 0, relief: 1, growth: new Color(0.2, 0.21, 0.16) },
   );
   disposables.push(boulderMat);
   const byChunk = new Map<number, Rock[]>();
@@ -670,7 +670,7 @@ export function createSeabed(quality: GraphicsQuality, options: SeabedOptions = 
     p.set(st.x, st.y, st.z);
     q.setFromAxisAngle(new Vector3(Math.sin(st.yaw * 3) * 0.5, 1, Math.cos(st.yaw * 5) * 0.5).normalize(), st.yaw);
     s.set(st.sx, st.sy, st.sz);
-    pushStone(st.x, st.z, new Matrix4().compose(p.clone(), q.clone(), s.clone()), new Color(st.tint * 0.95, st.tint * 0.95, st.tint));
+    pushStone(st.x, st.z, new Matrix4().compose(p.clone(), q.clone(), s.clone()), new Color(st.tint * 0.72, st.tint * 0.72, st.tint * 0.76));
   }
   for (const list of chunks.values()) {
     const rocks = new InstancedMesh(rockGeo, rockMat, list.length);
@@ -901,7 +901,7 @@ function terrainMaterial(quality: GraphicsQuality): MeshStandardMaterial {
           vec2 gi = floor(gc);
           vec2 gf = fract(gc) - 0.5 + (vec2(wHash(vec3(gi, 5.0)), wHash(vec3(gi, 6.0))) - 0.5) * 0.3;
           float paa = clamp(1.6 - length(fwidth(gc)) * 1.4, 0.0, 1.0);
-          sbPebble = step(1.0 - clamp(vSed.z * 1.4 + 0.02, 0.0, 0.85), wHash(vec3(gi, 3.0)))
+          sbPebble = step(1.0 - clamp(vSed.z * 1.4 - 0.02, 0.0, 0.85), wHash(vec3(gi, 3.0)))
             * smoothstep(0.36, 0.22, length(gf)) * paa * (1.0 - sbScour);
           diffuseColor.rgb *= mix(1.0, 0.55 + 0.75 * wHash(vec3(gi, 8.0)), sbPebble);
         }
@@ -922,19 +922,19 @@ function terrainMaterial(quality: GraphicsQuality): MeshStandardMaterial {
           if (fade > 0.0) {
             // Current ripples: crest direction wanders slowly, asymmetric profile.
             vec2 dir = normalize(vec2(0.93, 0.36) + (wNoise(vec3(p * 0.04, 7.0)) - 0.5) * 0.9);
-            float ph = dot(p, dir) * 6.2831 / 0.42 + wNoise(vec3(p * 0.3, 3.1)) * 7.0;
+            float ph = dot(p, dir) * 6.2831 / 0.42 + wNoise(vec3(p * 0.3, 3.1)) * 7.0 + wNoise(vec3(p * 1.1, 4.7)) * 2.0;
             float aa = clamp(1.4 - fwidth(ph) * 0.6, 0.0, 1.0);
             float rip = (sin(ph) + 0.3 * sin(2.0 * ph + 1.2)) * aa;
             // Ripples only where the bed is sandy (mud is cohesive, gravel too coarse).
-            float field = smoothstep(0.2, 0.6, vSed.y) * (0.55 + 0.45 * smoothstep(0.3, 0.6, wNoise(vec3(p * 0.05, 11.0))));
+            float field = smoothstep(0.2, 0.6, vSed.y) * smoothstep(0.25, 0.65, wNoise(vec3(p * 0.05, 11.0))) * 0.7;
             field *= (1.0 - sbScour) * (1.0 - sbCuttings) * (1.0 - sbScar);
-            H += rip * 0.014 * field * fade;
+            H += rip * 0.011 * field * fade;
             // Lumps, bioturbation mounds and burrow holes.
             H += (wNoise(vec3(p * 2.3, 5.0)) - 0.5) * (0.02 + 0.015 * vSed.x) * fade;
             float cell = wHash(vec3(floor(p * 1.3), 1.0));
             vec2 f = fract(p * 1.3) - 0.5;
             // Burrows and their spoil mounds: commoner in mud.
-            H += step(0.95 - 0.05 * vSed.x, cell) * (-0.025 * exp(-dot(f, f) * 160.0) + 0.012 * exp(-dot(f, f) * 30.0)) * fade;
+            H += step(0.975 - 0.025 * vSed.x, cell) * (-0.02 * exp(-dot(f, f) * 160.0) + 0.01 * exp(-dot(f, f) * 30.0)) * fade;
             H += sbPebble * 0.01 * fade;
             float gaa = clamp(1.5 - fwidth(p.x * 11.0), 0.0, 1.0);
             H += (wNoise(vec3(p * 11.0, 0.0)) - 0.5) * 0.004 * gaa * fade;

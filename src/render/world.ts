@@ -18,7 +18,7 @@ import {
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GraphicsQuality } from '../config/settings';
 import type { EnvironmentConditions } from '../sim/conditions';
-import { createRovModel, type RovModel } from './rovModel';
+import { LAMP_AIM, createRovModel, type RovModel } from './rovModel';
 import { createSeabed, type Cullable } from './seabed';
 import { createStructures } from './structures';
 import { createContext } from './context';
@@ -35,11 +35,12 @@ import type { UnderwaterPass } from './underwaterPass';
  * (lower pair: splayed and slightly down to fill the near field and seabed).
  * Order: upper-port, upper-stbd, lower-port, lower-stbd.
  */
+// Aim (splay/down) comes from the model's LAMP_AIM — one source for the lamp heads and their beams.
 const LAMPS = [
-  { angle: 32, penumbra: 0.6, splay: 9, down: 0, cd: 75 },
-  { angle: 32, penumbra: 0.6, splay: -9, down: 0, cd: 75 },
-  { angle: 62, penumbra: 0.85, splay: 30, down: -10, cd: 42 },
-  { angle: 62, penumbra: 0.85, splay: -30, down: -10, cd: 42 },
+  { angle: 32, penumbra: 0.6, splay: LAMP_AIM[0][0], down: LAMP_AIM[0][1], cd: 75 },
+  { angle: 32, penumbra: 0.6, splay: LAMP_AIM[1][0], down: LAMP_AIM[1][1], cd: 75 },
+  { angle: 62, penumbra: 0.85, splay: LAMP_AIM[2][0], down: LAMP_AIM[2][1], cd: 42 },
+  { angle: 62, penumbra: 0.85, splay: LAMP_AIM[3][0], down: LAMP_AIM[3][1], cd: 42 },
 ] as const;
 /** Contrast threshold for the visibility culling (fraction of the blue/green transmission). */
 const CULL_LN = 5.3;
@@ -68,6 +69,8 @@ export class World {
   private readonly envTex: Texture;
   private readonly tmpColor = new Color();
   private readonly cullables: Cullable[];
+  /** Streamed seabed (LOD tiles around the work area; same height field as physics/sonar). */
+  readonly seabed: ReturnType<typeof createSeabed>;
   private optics: WaterOptics = waterOptics(null);
   private lastTime = -1;
   // --- Sediment resuspension (plume) — shared by every camera panel of every window ---
@@ -98,6 +101,7 @@ export class World {
     this.vessel = createVessel();
     this.scene.add(this.vessel.group);
     const seabed = createSeabed(quality);
+    this.seabed = seabed;
     this.scene.add(seabed.group);
     this.cullables = seabed.cullables;
     this.scene.add(createStructures(quality));
@@ -323,9 +327,15 @@ export class World {
       return;
     }
     this.tether.visible = true;
+    // Physical nodes end at the termination (rov.tetherAttach, inside the bend restrictor);
+    // the cable leaves through the restrictor tip, so route the last ~0.2 m along its axis.
+    const tip = this.rov.tetherPoint.getWorldPosition(this.tmpTip);
+    const pts = path.length >= 2 && tip.distanceTo(path[path.length - 1]) < 0.5 ? [...path.slice(0, -1), tip, path[path.length - 1]] : (path as Vector3[]);
     this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(path as Vector3[], false, 'centripetal'), Math.max(40, path.length * 4), 0.03, 8);
+    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts, false, 'centripetal'), Math.max(40, pts.length * 4), 0.03, 8);
   }
+
+  private readonly tmpTip = new Vector3();
 
   /** Camera panels drawn with the full water pipeline (composite + particles/beams) since the last reset — diagnostics/tests. */
   panelDraws = 0;
@@ -341,7 +351,13 @@ export class World {
     this.tetherMat.emissiveIntensity = on ? 0.6 : 0;
   }
 
+  /** Stream/refine seabed tiles around a focus point (the ROV). Bounded work per call. */
+  updateSeabed(focus: { x: number; z: number }): void {
+    this.seabed.update(focus);
+  }
+
   dispose(): void {
+    this.seabed.dispose();
     this.scene.traverse((o) => {
       const m = o as Mesh;
       if (m.geometry) m.geometry.dispose();

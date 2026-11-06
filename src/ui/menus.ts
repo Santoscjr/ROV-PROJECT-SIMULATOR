@@ -459,6 +459,8 @@ export class Menus {
               <div class="field"><label for="s-tdep">${t('settings.tmsDepth')}</label><span class="ctl"><input id="s-tdep" type="range" min="20" max="100" step="5" data-s="tmsDepth"><output data-o="tmsDepth"></output></span></div>
               <div class="field"><label for="s-tas">${t('settings.tmsAboveSeabed')}</label><span class="ctl"><input id="s-tas" type="range" min="10" max="60" step="5" data-s="tmsAboveSeabed"><output data-o="tmsAboveSeabed"></output></span></div>
               <p class="muted small">${t('settings.tmsDepthNote')}</p>
+              <div class="field"><label for="s-seed">${t('settings.environmentSeed')}</label><span class="ctl"><input id="s-seed" type="range" min="0" max="99" step="1" data-s="environmentSeed"><output data-o="environmentSeed"></output></span></div>
+              <p class="muted small">${t('settings.environmentSeedNote')}</p>
               <div class="field"><label for="s-dock">${t('settings.dockAssist')}</label><input id="s-dock" type="checkbox" data-s="dockAssist"></div>
               <p class="muted small">${t('settings.tophatNote')}</p>
               <h3 style="margin-top:18px">${t('settings.tether')}</h3>

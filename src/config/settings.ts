@@ -201,6 +201,8 @@ export interface Settings {
    * seabed work, see docs/research/tether-and-tms.md). Always clamped to the safe depth.
    */
   tmsDepthMode: 'fixed' | 'seabed';
+  /** Seed of the seabed relief and rock field (0 = reference site). Applied when the simulator starts. */
+  environmentSeed: number;
   tmsAboveSeabed: number;
 }
 
@@ -309,6 +311,7 @@ export const DEFAULT_SETTINGS: Settings = {
   dockAssist: true,
   tmsDepth: 50,
   tmsDepthMode: 'fixed',
+  environmentSeed: 0,
   tmsAboveSeabed: 25,
   monitorSource: 'sonar',
   panelLocks: [false, true, true, true],
@@ -382,6 +385,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     // v3.1 → v3.1.1: the old default release depth (80 m) was found too deep; only migrate the untouched default.
     tmsDepth: typeof r.version !== 'number' && r.tmsDepth === 80 ? d.tmsDepth : num(r.tmsDepth, 20, 100, d.tmsDepth),
     tmsDepthMode: pick(r.tmsDepthMode, ['fixed', 'seabed'] as const, d.tmsDepthMode),
+    environmentSeed: Math.round(num(r.environmentSeed, 0, 99, d.environmentSeed)),
     tmsAboveSeabed: num(r.tmsAboveSeabed, 10, 60, d.tmsAboveSeabed),
     panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
     camState: sanitizeCamStates(r.camState),
@@ -552,7 +556,7 @@ export const RESET_CATEGORIES = {
   graphics: ['graphics', 'cameraFx', 'lighting', 'showFps'],
   controls: ['bindings', 'keyboardPreset', 'sensitivity', 'keyRamp', 'mouseSensitivity', 'invert', 'gamepadDeadzone', 'defaultMode'],
   sonar: ['sonar'],
-  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'tmsDepthMode', 'tmsAboveSeabed', 'dockAssist'],
+  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'tmsDepthMode', 'tmsAboveSeabed', 'dockAssist', 'environmentSeed'],
   interface: ['hudItems', 'showHints', 'volume', 'guide'],
 } as const satisfies Record<string, readonly (keyof Settings)[]>;
 export type ResetCategory = keyof typeof RESET_CATEGORIES;

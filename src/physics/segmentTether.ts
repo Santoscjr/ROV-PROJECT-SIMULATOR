@@ -148,12 +148,19 @@ export class SegmentTether implements TetherForceProvider {
   private readonly vehicleQuat = new Quaternion();
   private hasVehicle = false;
   private readonly bounds: { x: number; y: number; z: number; r: number }[];
+  private readonly nearIdx: number[] = [];
 
   constructor(
     private readonly current: (p: Vector3, out: Vector3) => Vector3,
     config: Partial<SegmentTetherConfig> = {},
     private readonly terrainHeight: (x: number, z: number) => number = () => -1e9,
     private readonly colliders: readonly Collider[] = [],
+    /** Optional spatial index of static seabed colliders (boulders, berm): ColliderGrid from sim/environment.ts. */
+    private readonly field?: {
+      readonly colliders: readonly Collider[];
+      readonly bounds: readonly { x: number; y: number; z: number; r: number }[];
+      queryIndices(minX: number, minZ: number, maxX: number, maxZ: number, out: number[]): number[];
+    },
   ) {
     this.config = { ...DEFAULT_SEGMENT_TETHER, ...config };
     this.n = Math.max(4, Math.round(this.config.segments));
@@ -360,6 +367,20 @@ export class SegmentTether implements TetherForceProvider {
       rovContact = !this.rovContactSuspended;
     } else this.rovContactSuspended = false;
     if (count) flags.fill(0);
+    // Seabed colliders near the cable: one grid query for the cable's xz bounding box.
+    const near = this.nearIdx;
+    near.length = 0;
+    if (this.field) {
+      let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+      for (let i = 1; i < n; i++) {
+        const q = this.p[i];
+        if (q.x < x0) x0 = q.x;
+        if (q.x > x1) x1 = q.x;
+        if (q.z < z0) z0 = q.z;
+        if (q.z > z1) z1 = q.z;
+      }
+      this.field.queryIndices(x0 - r, z0 - r, x1 + r, z1 + r, near);
+    }
     for (let i = 1; i < n; i++) {
       const q = this.p[i];
       // Seabed (with simple friction: damp the horizontal motion).
@@ -376,6 +397,17 @@ export class SegmentTether implements TetherForceProvider {
         const reach = bd.r + r;
         if (Math.abs(q.x - bd.x) > reach || Math.abs(q.z - bd.z) > reach || Math.abs(q.y - bd.y) > reach) continue;
         const hit = sphereCollider(q, r, this.colliders[k]);
+        if (hit) {
+          q.addScaledVector(hit.normal, hit.depth);
+          structure++;
+          if (count) flags[i] |= TETHER_CONTACT.structure;
+        }
+      }
+      for (let m = 0; m < near.length; m++) {
+        const bd = this.field!.bounds[near[m]];
+        const reach = bd.r + r;
+        if (Math.abs(q.x - bd.x) > reach || Math.abs(q.z - bd.z) > reach || Math.abs(q.y - bd.y) > reach) continue;
+        const hit = sphereCollider(q, r, this.field!.colliders[near[m]]);
         if (hit) {
           q.addScaledVector(hit.normal, hit.depth);
           structure++;
