@@ -493,7 +493,7 @@ export const ptBR: Record<string, string> = {
   'mission.launch.release': 'Conjunto na profundidade de operação. Pressione Enter para liberar o ROV do Top-Hat.',
   'mission.return.tophat': 'Retorne ao Top-Hat: recolha o tether, alinhe o rumo e suba devagar sob o receptáculo até a captura',
   'settings.tophat': 'Top-Hat (TMS)',
-  'settings.tmsDepth': 'Profundidade de liberação (m)',
+  'settings.tmsDepth': 'Profundidade fixa do Top-Hat (m)',
   'settings.dockAssist': 'Assistência de acoplamento (iniciante)',
   'settings.tophatNote': 'Envelope de captura: assistido ≤ 0,9 m / 20° / 0,4 m/s; sem assistência ≤ 0,35 m / 8° / 0,25 m/s. Tether ≤ 12 m (8 m sem assistência).',
 
@@ -629,4 +629,9 @@ export const ptBR: Record<string, string> = {
   'settings.guide.expanded': 'Completo',
   'settings.guide.compact': 'Compacto (etapa atual)',
   'settings.guide.hidden': 'Oculto',
+  'settings.tmsDepthMode': 'Profundidade de operação do Top-Hat',
+  'settings.tmsDepthMode.fixed': 'Fixa (metros a partir da superfície)',
+  'settings.tmsDepthMode.seabed': 'Relativa ao fundo (fundo − distância)',
+  'settings.tmsAboveSeabed': 'Distância do Top-Hat ao fundo (m)',
+  'settings.tmsDepthNote': 'Em trabalhos no fundo, o Top-Hat costuma ficar algumas dezenas de metros acima do fundo (menos tether atravessando a coluna d\'água). Um Top-Hat raso (20–30 m) é uma configuração específica deste simulador, útil em águas rasas ou na coluna d\'água. Em qualquer modo, o conjunto nunca desce além da profundidade segura (ROV acoplado ≥ 6 m acima do fundo).',
 };

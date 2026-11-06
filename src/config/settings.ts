@@ -195,6 +195,13 @@ export interface Settings {
   dockAssist: boolean;
   /** Default Top-Hat operating depth (m). */
   tmsDepth: number;
+  /**
+   * How the Top-Hat operating depth is chosen: 'fixed' = `tmsDepth` metres;
+   * 'seabed' = seabed under the launch point minus `tmsAboveSeabed` (typical for
+   * seabed work, see docs/research/tether-and-tms.md). Always clamped to the safe depth.
+   */
+  tmsDepthMode: 'fixed' | 'seabed';
+  tmsAboveSeabed: number;
 }
 
 export type ViewLayout = 'single' | 'dual' | 'quad';
@@ -301,6 +308,8 @@ export const DEFAULT_SETTINGS: Settings = {
   tetherBuoyancy: 'neutral',
   dockAssist: true,
   tmsDepth: 50,
+  tmsDepthMode: 'fixed',
+  tmsAboveSeabed: 25,
   monitorSource: 'sonar',
   panelLocks: [false, true, true, true],
   camState: structuredClone(DEFAULT_CAM_STATES),
@@ -372,6 +381,8 @@ export function sanitizeSettings(raw: unknown): Settings {
     monitorSource: pick(r.monitorSource, VIEW_SOURCES, d.monitorSource),
     // v3.1 → v3.1.1: the old default release depth (80 m) was found too deep; only migrate the untouched default.
     tmsDepth: typeof r.version !== 'number' && r.tmsDepth === 80 ? d.tmsDepth : num(r.tmsDepth, 20, 100, d.tmsDepth),
+    tmsDepthMode: pick(r.tmsDepthMode, ['fixed', 'seabed'] as const, d.tmsDepthMode),
+    tmsAboveSeabed: num(r.tmsAboveSeabed, 10, 60, d.tmsAboveSeabed),
     panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
     camState: sanitizeCamStates(r.camState),
     monitors: sanitizeMonitors(r.monitors, r.monitor, r.monitorSource),
@@ -541,7 +552,7 @@ export const RESET_CATEGORIES = {
   graphics: ['graphics', 'cameraFx', 'lighting', 'showFps'],
   controls: ['bindings', 'keyboardPreset', 'sensitivity', 'keyRamp', 'mouseSensitivity', 'invert', 'gamepadDeadzone', 'defaultMode'],
   sonar: ['sonar'],
-  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'dockAssist'],
+  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'tmsDepthMode', 'tmsAboveSeabed', 'dockAssist'],
   interface: ['hudItems', 'showHints', 'volume', 'guide'],
 } as const satisfies Record<string, readonly (keyof Settings)[]>;
 export type ResetCategory = keyof typeof RESET_CATEGORIES;

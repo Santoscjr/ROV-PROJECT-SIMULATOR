@@ -31,7 +31,7 @@ import { DEFAULT_SETTINGS, MAX_MONITORS, type MonitorSettings, type StationProfi
 import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
-import { COLLIDERS, INSPECTION_POINTS } from './sim/site';
+import { COLLIDERS, INSPECTION_POINTS, LAUNCH_POINT } from './sim/site';
 import type { ViewSource } from './config/settings';
 
 type AppState = 'menu' | 'running' | 'paused' | 'report';
@@ -262,7 +262,8 @@ export class App {
     this.world.setConditions(this.sim.conditions);
     this.audio.setVolume(s.volume);
     this.sim.tether.setBuoyancy(s.tetherBuoyancy);
-    this.sim.tmsDepth = s.tmsDepth;
+    // Top-Hat operating depth: fixed, or relative to the seabed under the launch point (clamped to the safe depth by the simulation).
+    this.sim.tmsDepth = s.tmsDepthMode === 'seabed' ? -terrainHeight(LAUNCH_POINT.x, LAUNCH_POINT.z) - s.tmsAboveSeabed : s.tmsDepth;
     this.sim.lars.assist = s.dockAssist;
     const mj = JSON.stringify(s.monitors);
     if (mj !== this.monitorJson) {

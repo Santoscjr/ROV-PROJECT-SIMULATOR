@@ -137,3 +137,16 @@ describe('camera overlay compaction policy', () => {
     expect(overlayPolicy(300, 170).corners).toBe(false);
   });
 });
+
+describe('Top-Hat depth mode (v3.2)', () => {
+  it('fixed and seabed-relative modes persist and are clamped', async () => {
+    const { sanitizeSettings, DEFAULT_SETTINGS } = await import('../src/config/settings');
+    const s = sanitizeSettings({ ...DEFAULT_SETTINGS, tmsDepthMode: 'seabed', tmsAboveSeabed: 999 });
+    expect(s.tmsDepthMode).toBe('seabed');
+    expect(s.tmsAboveSeabed).toBe(60);
+    expect(sanitizeSettings({ ...DEFAULT_SETTINGS, tmsDepthMode: 'x' }).tmsDepthMode).toBe('fixed');
+    // Default keeps the operator's previous choice (fixed 50 m).
+    expect(DEFAULT_SETTINGS.tmsDepthMode).toBe('fixed');
+    expect(DEFAULT_SETTINGS.tmsDepth).toBe(50);
+  });
+});

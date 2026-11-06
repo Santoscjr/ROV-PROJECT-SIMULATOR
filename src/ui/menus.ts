@@ -455,7 +455,10 @@ export class Menus {
               ).join('')}
               <p class="muted small">${t('settings.condNote')}</p>
               <h3 style="margin-top:18px">${t('settings.tophat')}</h3>
-              <div class="field"><label for="s-tdep">${t('settings.tmsDepth')}</label><span class="ctl"><input id="s-tdep" type="range" min="40" max="100" step="5" data-s="tmsDepth"><output data-o="tmsDepth"></output></span></div>
+              <div class="field"><label for="s-tdm">${t('settings.tmsDepthMode')}</label><select id="s-tdm" data-s="tmsDepthMode"><option value="fixed">${t('settings.tmsDepthMode.fixed')}</option><option value="seabed">${t('settings.tmsDepthMode.seabed')}</option></select></div>
+              <div class="field"><label for="s-tdep">${t('settings.tmsDepth')}</label><span class="ctl"><input id="s-tdep" type="range" min="20" max="100" step="5" data-s="tmsDepth"><output data-o="tmsDepth"></output></span></div>
+              <div class="field"><label for="s-tas">${t('settings.tmsAboveSeabed')}</label><span class="ctl"><input id="s-tas" type="range" min="10" max="60" step="5" data-s="tmsAboveSeabed"><output data-o="tmsAboveSeabed"></output></span></div>
+              <p class="muted small">${t('settings.tmsDepthNote')}</p>
               <div class="field"><label for="s-dock">${t('settings.dockAssist')}</label><input id="s-dock" type="checkbox" data-s="dockAssist"></div>
               <p class="muted small">${t('settings.tophatNote')}</p>
               <h3 style="margin-top:18px">${t('settings.tether')}</h3>
