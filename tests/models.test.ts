@@ -232,8 +232,10 @@ describe('WC-150 ROV model: anchors', () => {
     expect(off).toBeLessThan(0.005);
     expect(along).toBeLessThan(-0.1); // below the tip …
     expect(along).toBeGreaterThan(-0.45); // … but inside the restrictor
-    // Restrictor still trails aft (same tilt as before) and the tip sits on the aft top.
-    expectQuat(wq(m.tetherPoint), [0, 0, 0.15932, 0.98723]);
+    // The tip sits on the aft top of the vehicle.
+    // vertical, coaxial with the Top-Hat exit guide (TOPHAT.exit.x = tetherAttach.x)
+    expectQuat(wq(m.tetherPoint), [0, 0, 0, 1]);
+    expect(Math.abs(tip.x - TOPHAT.exit.x)).toBeLessThan(1e-6);
     expect(tip.x).toBeLessThan(-0.5);
     expect(tip.y).toBeGreaterThan(1.1);
     expect(Math.abs(tip.z)).toBeLessThan(1e-6);
