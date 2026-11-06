@@ -126,7 +126,8 @@ describe('environment: deterministic physical rock field', () => {
     for (const [k, r] of perQuality.entries()) {
       expect(r.rocks).toBe(env.rocks);
       expect(r.colliders).toBe(env.physicalColliders);
-      expect(r.boulderVerts).toBe(env.rocks.length * vertsPerRock(k + 1));
+      // Visual mesh detail per quality: low 2 / medium 3 / high 4 (finer facets since the v3.2 rock art pass).
+      expect(r.boulderVerts).toBe(env.rocks.length * vertsPerRock(k + 2));
       // Berm stones are part of the instanced stones for every quality.
       expect(r.instancedStones).toBeGreaterThan(env.bermStones.length);
       expect(r.tiles).toBeGreaterThan(20);

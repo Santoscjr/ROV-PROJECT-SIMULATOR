@@ -31,7 +31,7 @@ import { DEFAULT_SETTINGS, MAX_MONITORS, type MonitorSettings, type StationProfi
 import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
-import { COLLIDERS, INSPECTION_POINTS, LAUNCH_POINT } from './sim/site';
+import { COLLIDERS, INSPECTION_POINTS, LAUNCH_POINT, PIPELINE_PATH } from './sim/site';
 import { activeEnvironment, configureEnvironment } from './sim/environment';
 import type { ViewSource } from './config/settings';
 
@@ -222,7 +222,7 @@ export class App {
     });
     this.resize();
     // Expose a read-only handle for automated browser tests.
-    (window as unknown as Record<string, unknown>).__ROV__ = { sim: this.sim, app: this, site: { inspectionPoints: INSPECTION_POINTS } };
+    (window as unknown as Record<string, unknown>).__ROV__ = { sim: this.sim, app: this, site: { inspectionPoints: INSPECTION_POINTS, pipelinePath: PIPELINE_PATH, rocks: activeEnvironment().rocks } };
     this.renderer.setAnimationLoop(() => this.frame());
   }
 

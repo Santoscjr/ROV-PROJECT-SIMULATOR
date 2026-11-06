@@ -491,7 +491,7 @@ export function buildBoulderGeometry(rocks: readonly Rock[], detail = 2): Buffer
     const scale = (rk.height + rk.halfWidth) / 2;
     const amp = BOULDER_LUMP * scale;
     const sd = Math.floor(rk.shape * 1e6);
-    const g = rk.tint * 0.55;
+    const g = rk.tint * 0.48;
     const warm = 0.95 + ((sd % 97) / 97) * 0.08;
     for (let v = 0; v < nv; v++) {
       const dx = bp.getX(v);
@@ -589,8 +589,11 @@ export function createSeabed(quality: GraphicsQuality, options: SeabedOptions = 
 
   // --- Physical boulders: the environment's list, one merged mesh per chunk.
   const boulderMat = fouledMaterial(
-    { color: 0x5f5b53, roughness: 0.93, vertexColors: true, flatShading: quality !== 'low' },
-    { amount: 0.45, sediment: 0.45, scale: 2.2, chips: 0, relief: 1, growth: new Color(0.2, 0.21, 0.16) },
+    // Flat shading keeps the fracture planes crisp; the mesh is one detail level finer than
+    // before so the facets read as rock texture, not as low-poly triangles. Darker
+    // basalt-like albedo with a light sediment dusting on the upward faces only.
+    { color: 0x4f4c46, roughness: 0.94, vertexColors: true, flatShading: quality !== 'low' },
+    { amount: 0.4, sediment: 0.28, scale: 2.2, chips: 0, relief: 1, growth: new Color(0.17, 0.18, 0.14) },
   );
   disposables.push(boulderMat);
   const byChunk = new Map<number, Rock[]>();
@@ -601,7 +604,7 @@ export function createSeabed(quality: GraphicsQuality, options: SeabedOptions = 
     else byChunk.set(k, [rk]);
   }
   for (const list of byChunk.values()) {
-    const geo = buildBoulderGeometry(list, quality === 'low' ? 1 : quality === 'medium' ? 2 : 3);
+    const geo = buildBoulderGeometry(list, quality === 'low' ? 2 : quality === 'medium' ? 3 : 4);
     const mesh = new Mesh(geo, boulderMat);
     mesh.name = 'boulders';
     mesh.castShadow = false; // see rocks below: lamp shadow passes would redraw whole chunks
