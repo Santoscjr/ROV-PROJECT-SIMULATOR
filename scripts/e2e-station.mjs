@@ -346,6 +346,30 @@ check(prof.stationProfile === 'offshore' && prof.layout === 'quad' && prof.panel
 const ver = await page.locator('[data-o="build"]').textContent();
 check(/v\d+\.\d+\.\d+(-[\w.]+)? · [0-9a-f]{7}/.test(ver ?? ''), `start screen shows version + commit (${ver})`);
 
+// (G) Operational launch guide: non-blocking, follows the real state, F2 cycles and persists.
+await page.selectOption('[data-q="profile"]', 'pilotagem');
+await page.locator('[data-op="inspection"]').click();
+await page.getByRole('button', { name: 'Iniciar operação' }).click();
+await sleep(800);
+const g0 = await page.evaluate(() => [...document.querySelectorAll('.hud .checklist li')].map((li) => li.className + '|' + li.textContent));
+check(g0.some((x) => x.includes('now') && x.includes('Autorizar o lançamento')), `guide shows the current step (authorise launch) on deck (${g0.length} lines)`);
+await page.keyboard.press('Enter'); // no visual checks done: must NOT be blocked
+await sleep(600);
+const gs = await page.evaluate(() => ({ stage: window.__ROV__.sim.mission.stage, dev: window.__ROV__.sim.mission.stats.deviations.map((d) => d.key) }));
+check(gs.stage === 'launch' || gs.stage === 'descent', `launch authorised without the checklist (stage ${gs.stage})`);
+check(gs.dev.includes('deviation.skippedChecks'), 'skipped visual checks recorded as a procedure deviation');
+await page.evaluate(() => { const { sim } = window.__ROV__; for (let i = 0; i < 40; i++) sim.advance(0.25); });
+await sleep(800);
+const g1 = await page.evaluate(() => [...document.querySelectorAll('.hud .checklist li.now')].map((li) => li.textContent).join());
+check(/Descida do conjunto/.test(g1), `guide follows the real descent (${g1})`);
+await page.keyboard.press('F2');
+await sleep(300);
+const gm = await page.evaluate(() => ({ mode: window.__ROV__.app.store.get().guide, lines: document.querySelectorAll('.hud .checklist li').length }));
+await page.keyboard.press('F2');
+await sleep(300);
+const gh = await page.evaluate(() => ({ mode: window.__ROV__.app.store.get().guide, lines: document.querySelectorAll('.hud .checklist li').length }));
+check(gm.mode === 'hidden' && gh.mode === 'expanded' && gh.lines >= 9, `F2 cycles compact → hidden → expanded (hidden: ${gm.lines} lines; expanded: ${gh.lines})`);
+
 check(errors.length === 0, `no console errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
 console.log(fails ? `${fails} failure(s)` : 'all station checks passed');
 await browser.close();
