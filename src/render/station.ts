@@ -139,7 +139,10 @@ export function renderCameraPanel(
   const depth = -cam.position.y;
   world.preparePanel(cam.position);
   env.observer(rig.mode, cam.position);
+  // Same water for every camera: global optics, then the frame-global sediment
+  // cloud and lamps (puffs most relevant to THIS camera) — never only panel 1.
   pass.setWater(world.waterOptics);
+  pass.setSiltField(world.silt, cam.position);
   pass.setCameraFx(env.fxFor(source), source === 'operational' || source === 'auxiliary');
   pass.update(cam, {
     camDepth: depth,

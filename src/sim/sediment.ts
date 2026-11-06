@@ -44,3 +44,17 @@ export function sedimentProps(m: SedimentMix): SedimentProps {
     settleTime: m.mud * 40 + m.sand * 8 + m.gravel * 2,
   };
 }
+
+/**
+ * Single-scattering albedo (linear RGB) of the particles of a mix once in
+ * suspension: fine mud (silt/clay flocs, organic) is olive-grey, quartz sand
+ * light beige, gravel fines grey. Used to tint the resuspended cloud.
+ */
+export function sedimentAlbedo(m: { mud: number; sand: number }): [number, number, number] {
+  const gravel = Math.max(0, 1 - m.mud - m.sand);
+  return [
+    0.52 * m.mud + 0.7 * m.sand + 0.55 * gravel,
+    0.5 * m.mud + 0.64 * m.sand + 0.54 * gravel,
+    0.4 * m.mud + 0.5 * m.sand + 0.5 * gravel,
+  ];
+}

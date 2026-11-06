@@ -31,6 +31,13 @@ import { colliderBounds } from '../physics/collision';
  */
 
 export type SonarQuality = 'low' | 'medium' | 'high';
+
+/** Spatial index of extra (seabed) colliders — satisfied by `ColliderGrid` (sim/environment.ts). */
+export interface SonarColliderField {
+  readonly colliders: readonly Collider[];
+  readonly bounds: readonly { x: number; y: number; z: number; r: number }[];
+  queryIndices(minX: number, minZ: number, maxX: number, maxZ: number, out: number[]): number[];
+}
 export const SONAR_RANGES = [10, 20, 40, 60] as const;
 /** Horizontal field of view (deg). */
 export const SONAR_FOV = 130;
@@ -398,7 +405,15 @@ export class Sonar {
   private beam = 0;
   private lastDone = 0;
   private readonly origin = new Vector3();
+  /**
+   * Colliders seen by the current ping: the static list, then the seabed
+   * colliders (boulders, berm) the field returned for this ping's range box.
+   * Rebuilt at each ping start; indices below refer to these arrays.
+   */
+  private readonly colliders: Collider[];
   private readonly bounds: { x: number; y: number; z: number; r: number }[];
+  private readonly staticCount: number;
+  private readonly fieldIdx: number[] = [];
   private cand: number[] = []; // ping-level broad-phase
   private beamCand: number[] = []; // beam-level narrow list
   private hitCand: number[] = []; // colliders actually hit in this beam (shadow casters)
@@ -410,11 +425,19 @@ export class Sonar {
   private lut: { key: string; bf: Float32Array; rf: Float32Array } | null = null;
   private cacheKey = '';
 
+  /**
+   * @param colliders static colliders (structures), tested every ping.
+   * @param field optional spatial index of the seabed colliders (sim/environment.ts
+   *   `SeabedEnvironment.grid`): only those within the ping's range box are added.
+   */
   constructor(
     private readonly terrainHeight: (x: number, z: number) => number,
-    private readonly colliders: readonly Collider[],
+    colliders: readonly Collider[],
+    private readonly field?: SonarColliderField,
   ) {
+    this.colliders = [...colliders];
     this.bounds = colliders.map(colliderBounds);
+    this.staticCount = colliders.length;
     this.work = this.newPing();
   }
 
@@ -542,6 +565,17 @@ export class Sonar {
     w.tilt = this.tilt;
     if (this.elTop.length < w.bins) this.elTop = new Float32Array(w.bins);
     this.origin.copy(pos);
+    // Seabed colliders (boulders, berm) within the range box join the static list for this ping.
+    this.colliders.length = this.staticCount;
+    this.bounds.length = this.staticCount;
+    if (this.field) {
+      const R = this.range + 1;
+      const idx = this.field.queryIndices(pos.x - R, pos.z - R, pos.x + R, pos.z + R, (this.fieldIdx.length = 0, this.fieldIdx));
+      for (let k = 0; k < idx.length; k++) {
+        this.colliders.push(this.field.colliders[idx[k]]);
+        this.bounds.push(this.field.bounds[idx[k]]);
+      }
+    }
     // Broad-phase: colliders whose bound intersects the fan's range and angular sector.
     this.cand.length = 0;
     const foot = 0.1 + this.range * this.coneTan(w.beams);

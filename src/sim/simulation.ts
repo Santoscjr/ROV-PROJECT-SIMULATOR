@@ -8,6 +8,7 @@ import { missionById } from '../mission/catalog';
 import { currentAt } from './ocean';
 import { DEFAULT_CONDITIONS, resolveConditions, type ConditionChoice, type EnvironmentConditions } from './conditions';
 import { terrainHeight } from './terrain';
+import { activeEnvironment } from './environment';
 import { COLLIDERS, LAUNCH_HANG_HEIGHT, LAUNCH_POINT } from './site';
 import { TOPHAT, TopHat, type LarsState } from './topHat';
 import { zeroAxes, type AxisCommand } from '../input/types';
@@ -108,8 +109,11 @@ export class Simulation {
       },
       terrainHeight,
       colliders: [...COLLIDERS, this.lars.collider],
+      // Boulders and rock berm of the active environment (seed), via its spatial grid.
+      queryColliders: (minX, minZ, maxX, maxZ, out) => activeEnvironment().queryColliders(minX, minZ, maxX, maxZ, out),
     };
-    this.tether = new SegmentTether(this.env.current, {}, terrainHeight, COLLIDERS);
+    // The tether takes one flat list: site structures + the physical seabed colliders.
+    this.tether = new SegmentTether(this.env.current, {}, terrainHeight, activeEnvironment().allColliders);
     this.env.tether = this.tether;
     this.reset(defaultMode);
   }

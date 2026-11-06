@@ -20,12 +20,21 @@ import {
   type WebGLRenderer,
 } from 'three';
 import type { CameraFx } from '../config/settings';
-import { OPTICS, waterOptics, type WaterOptics } from './optics';
+import { MAX_SILT_PUFFS, MAX_WATER_LAMPS, OPTICS, waterOptics, type SiltField, type WaterOptics } from './optics';
+import type { PuffView } from '../sim/sedimentCloud';
 import { CAMERA_GLSL, createCameraUniforms, type CameraUniforms } from './lens';
 
 /** Metering grid (samples) used for auto exposure. */
 const METER_W = 24;
 const METER_H = 14;
+/**
+ * Base sensor gain (camera calibration, both views): the composite applies
+ * the two-way water path of the lamp light (lamp → subject → camera), so the
+ * camera is calibrated for a grey subject at the ~3 m working distance in the
+ * reference water to keep the exposure of v3.1 at that distance; farther
+ * subjects fade faster (contrast loss with range), nearer ones are unchanged.
+ */
+const SENSOR_GAIN = 2.0;
 /** Adaptation time constant of the auto exposure (s). */
 const ADAPT_TAU = 0.7;
 
@@ -53,9 +62,41 @@ const WATER_GLSL = /* glsl */ `
   uniform float uTurbidity;
   uniform float uWhiteBalance;
   uniform vec3 uAirFog;
-  uniform vec4 uSilt;        // xyz centre, w radius
-  uniform float uSiltDensity; // 1/m at the centre
-  uniform vec3 uSiltColor;    // in-scattered radiance of the plume
+  // Resuspended sediment cloud: the most relevant Gaussian puffs for THIS camera.
+  uniform vec4 uSiltP[${MAX_SILT_PUFFS}];   // xyz centre, w sigma (m)
+  uniform float uSiltD[${MAX_SILT_PUFFS}];  // peak extra extinction (1/m)
+  uniform float uSiltN;
+  uniform vec3 uSiltAlbedo;
+  // Vehicle lamps (world): xyz position, w intensity; xyz direction, w cos(outer).
+  uniform vec4 uLampP[${MAX_WATER_LAMPS}];
+  uniform vec4 uLampD[${MAX_WATER_LAMPS}];
+  uniform float uLampCi[${MAX_WATER_LAMPS}];
+  // Sun + sky irradiance just below the surface (scene units), for the lamp/sun split.
+  uniform float uSunE;
+  uniform float uEnvE;   // irradiance floor of the scene's environment lighting
+
+  // Lamp irradiance at p: as rendered (no water, u) and through the water (a).
+  void lampLight(vec3 p, float spill, out float u, out vec3 a) {
+    u = 0.0;
+    a = vec3(0.0);
+    for (int i = 0; i < ${MAX_WATER_LAMPS}; i++) {
+      if (uLampP[i].w <= 0.0) continue;
+      vec3 d = p - uLampP[i].xyz;
+      float dist2 = max(dot(d, d), 0.09);
+      float dist = sqrt(dist2);
+      float cone = mix(spill, 1.0, smoothstep(uLampD[i].w, uLampCi[i], dot(d, uLampD[i].xyz) / dist));
+      float e = uLampP[i].w * cone / dist2;
+      u += e;
+      a += e * exp(-uExt * dist);
+    }
+  }
+
+  float erfA(float x) {
+    float a = abs(x);
+    float t = 1.0 / (1.0 + 0.3275911 * a);
+    float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+    return x < 0.0 ? -y : y;
+  }
 
   vec3 sceneRadiance(vec2 uv) {
     vec3 col = texture2D(tColor, uv).rgb;
@@ -70,6 +111,18 @@ const WATER_GLSL = /* glsl */ `
     vec3 wpos = (uCamWorld * vec4(vp.xyz, 1.0)).xyz;
 
     if (uUnderwater > 0.5) {
+      // Lamp light reaching a surface crosses the water too (the scene render
+      // only has the 1/r² fall-off): attenuate the lamp share of the pixel by
+      // exp(-c·d_lamp), leaving the (already depth-tinted) sunlight share.
+      if (!sky) {
+        float lu;
+        vec3 la;
+        lampLight(wpos, 0.0, lu, la);
+        if (lu > 0.0) {
+          float es = max(uSunE * exp(-uKd.g * clamp(-wpos.y, 0.0, 1e4)), uEnvE) + 1e-5;
+          col *= (vec3(es) + la) / (es + lu);
+        }
+      }
       // In-scattered (sun-derived) radiance seen along this direction: looking
       // up sees the brighter water above, looking down the darker column below.
       float upw = clamp(dirWorld.y, -1.0, 1.0);
@@ -80,25 +133,51 @@ const WATER_GLSL = /* glsl */ `
       // Extra turbidity near the bottom.
       float nearBottom = smoothstep(18.0, 0.0, uSeabedDepth - max(uCamDepth, pDepth));
       vec3 ext = uExt + vec3(uTurbidity * nearBottom);
-      vec3 T = exp(-ext * min(dist, 400.0));
+      float tEnd = min(dist, 400.0);
+      vec3 T = exp(-ext * tEnd);
       col = col * T + ambient * (1.0 - T);
-      // Local sediment plume: Gaussian blob, optical depth integrated along
-      // the ray up to the visible surface (soft everywhere, no hard edge).
-      if (uSiltDensity > 0.0) {
+      // Resuspended sediment: Gaussian puffs, optical depth integrated
+      // analytically along the ray up to the visible surface; in-scatter of
+      // the lamps (with the cloud's own shading) and of the ambient light at
+      // the densest point of the ray, seen through the water in front of it.
+      if (uSiltN > 0.5) {
         vec3 camPos = uCamWorld[3].xyz;
-        vec3 oc = camPos - uSilt.xyz;
-        float tc = -dot(oc, dirWorld);
-        float d2 = max(dot(oc, oc) - tc * tc, 0.0);
-        float sig = uSilt.w * 0.6;
-        float frac = smoothstep(tc - 1.6 * sig, tc + 1.6 * sig, min(dist, 400.0)) - smoothstep(tc - 1.6 * sig, tc + 1.6 * sig, 0.0);
-        float od = uSiltDensity * 1.77 * sig * exp(-d2 / (sig * sig)) * frac;
-        vec3 Ts = exp(-od * vec3(0.9, 1.0, 1.12));
-        col = col * Ts + uSiltColor * (1.0 - Ts);
+        float tauSum = 0.0;
+        vec3 lSum = vec3(0.0);
+        for (int i = 0; i < ${MAX_SILT_PUFFS}; i++) {
+          if (float(i) >= uSiltN) break;
+          vec4 P = uSiltP[i];
+          float sig = P.w;
+          vec3 oc = P.xyz - camPos;
+          float tc = dot(oc, dirWorld);
+          float d2 = max(dot(oc, oc) - tc * tc, 0.0);
+          float tau = uSiltD[i] * exp(-d2 / (sig * sig)) * sig * 0.8862269 * (erfA((tEnd - tc) / sig) - erfA(-tc / sig));
+          if (tau < 1e-4) continue;
+          float ts = clamp(tc, 0.0, tEnd);
+          vec3 p = camPos + dirWorld * ts;
+          float lu;
+          vec3 la;
+          lampLight(p, 0.1, lu, la);
+          // Light reaching the inside of a dense puff is dimmed by the puff itself.
+          float rho = uSiltD[i] * exp(-dot(p - P.xyz, p - P.xyz) / (sig * sig));
+          la *= exp(-0.5 * rho * sig);
+          vec3 ls = uSiltAlbedo * (la * 0.318 + ambient * 2.0) * exp(-ext * ts);
+          tauSum += tau;
+          lSum += tau * ls;
+        }
+        if (tauSum > 1e-4) {
+          vec3 Ts = exp(-tauSum * vec3(0.95, 1.0, 1.05));
+          col = col * Ts + (lSum / tauSum) * (1.0 - Ts);
+        }
       }
       // Camera white balance tuned for the vehicle lamps at ~2.5 m
       // (subsea cameras are balanced for their own lighting).
-      vec3 wb = exp((uExtWB - vec3(uExtWB.b)) * 2.5);
-      col *= mix(vec3(1.0), wb / max(max(wb.r, wb.g), wb.b) * 1.6, uWhiteBalance);
+      // Lamp → subject → camera at a ~1.75 m working distance is a 3.5 m water
+      // path; the gains keep the luminance of a grey subject (red gain limited,
+      // as on a real camera).
+      vec3 wb = exp((uExtWB - vec3(min(uExtWB.g, uExtWB.b))) * 3.5);
+      wb = min(wb / dot(wb, vec3(0.2126, 0.7152, 0.0722)), vec3(2.6));
+      col *= mix(vec3(1.0), wb, uWhiteBalance);
     } else {
       // Light atmospheric haze above water.
       float f = 1.0 - exp(-max(dist - 50.0, 0.0) * 0.0018);
@@ -159,9 +238,15 @@ export class UnderwaterPass {
       uTurbidity: { value: OPTICS.turbidityNearBottom },
       uWhiteBalance: { value: 1 },
       uAirFog: { value: new Color(0.62, 0.71, 0.78) },
-      uSilt: { value: new Vector4(0, -1000, 0, 1) },
-      uSiltDensity: { value: 0 },
-      uSiltColor: { value: new Color() },
+      uSiltP: { value: Array.from({ length: MAX_SILT_PUFFS }, () => new Vector4(0, -1000, 0, 1)) },
+      uSiltD: { value: new Array<number>(MAX_SILT_PUFFS).fill(0) },
+      uSiltN: { value: 0 },
+      uSiltAlbedo: { value: new Color(0.5, 0.48, 0.4) },
+      uLampP: { value: Array.from({ length: MAX_WATER_LAMPS }, () => new Vector4()) },
+      uLampD: { value: Array.from({ length: MAX_WATER_LAMPS }, () => new Vector4(1, 0, 0, 0.9)) },
+      uLampCi: { value: new Array<number>(MAX_WATER_LAMPS).fill(0.95) },
+      uSunE: { value: 3 },
+      uEnvE: { value: 0.1 },
     };
 
     this.material = new ShaderMaterial({
@@ -300,7 +385,7 @@ export class UnderwaterPass {
     if (auto && !this.autoExposure) this.adaptReset = true;
     this.autoExposure = auto;
     cu.uExposure.value.x = auto ? 1 : 0;
-    cu.uExposure.value.y = Math.pow(2, clamp(fx.exposureBias, -2, 2));
+    cu.uExposure.value.y = Math.pow(2, clamp(fx.exposureBias, -2, 2)) * SENSOR_GAIN;
   }
 
   /** Jump the auto exposure to the current scene (after a teleport / camera switch). */
@@ -313,21 +398,68 @@ export class UnderwaterPass {
     this.water = w;
     const u = this.material.uniforms;
     u.uExt.value.set(...w.ext);
+    // The camera is white-balanced on site for its lamps in this water.
+    u.uExtWB.value.set(...w.ext);
     u.uKd.value.set(...w.kd);
     (u.uScatter.value as Color).copy(w.scatter);
     u.uTurbidity.value = w.nearBottom;
+    // Sun + sky irradiance below the surface, as lit in World.updateEnvironment.
+    u.uSunE.value = w.irradiance * (2.2 * (1 - 0.8 * w.overcast) + 0.75 * (1 + 0.7 * w.overcast));
+    // World keeps a small environment-light floor (scene.environmentIntensity ≥ 0.03) — not lamp light.
+    u.uEnvE.value = 0.1 * Math.min(1, w.irradiance * 4);
     // Above-water haze follows the sky brightness (grey overcast, dark at night).
     const sky = (1 - w.overcast) + w.overcast * w.irradiance * 1.6 + 0.004;
-    (u.uAirFog.value as Color).setRGB(0.62, 0.71, 0.78).lerp(new Color(0.6, 0.62, 0.64), w.overcast).multiplyScalar(sky);
+    (u.uAirFog.value as Color).setRGB(0.62, 0.71, 0.78).lerp(this.tmpColor.setRGB(0.6, 0.62, 0.64), w.overcast).multiplyScalar(sky);
   }
 
-  /** Local sediment plume (density 0 disables it). */
-  setSilt(center: Vector3, radius: number, density: number, color: Color): void {
+  /**
+   * Frame-global water state for THIS camera: the most relevant puffs of the
+   * resuspended cloud (seen from `camPos`, the rest folded into them) and the
+   * vehicle lamps. Called for every panel of every window (renderCameraPanel),
+   * after setWater.
+   */
+  setSiltField(field: SiltField, camPos: { x: number; y: number; z: number }): void {
     const u = this.material.uniforms;
-    (u.uSilt.value as Vector4).set(center.x, center.y, center.z, Math.max(0.1, radius));
-    u.uSiltDensity.value = density;
-    (u.uSiltColor.value as Color).copy(color);
+    const k = Math.max(0, Math.min(MAX_SILT_PUFFS, field.maxPuffs));
+    const puffs = field.cloud ? field.cloud.relevant(k, camPos, this.water.ext[1], this.puffs) : (this.puffs.length = 0, this.puffs);
+    const P = u.uSiltP.value as Vector4[];
+    const D = u.uSiltD.value as number[];
+    for (let i = 0; i < MAX_SILT_PUFFS; i++) {
+      const p = puffs[i];
+      if (p) {
+        P[i].set(p.x, p.y, p.z, Math.max(0.05, p.sigma));
+        D[i] = p.density;
+      } else {
+        P[i].set(0, -1000, 0, 1);
+        D[i] = 0;
+      }
+    }
+    u.uSiltN.value = puffs.length;
+    (u.uSiltAlbedo.value as Color).copy(field.albedo);
+    const L = field.lamps;
+    const LP = u.uLampP.value as Vector4[];
+    const LD = u.uLampD.value as Vector4[];
+    const LC = u.uLampCi.value as number[];
+    for (let i = 0; i < MAX_WATER_LAMPS; i++) {
+      const on = i < L.count ? L.intensity[i] : 0;
+      LP[i].set(L.pos[i].x, L.pos[i].y, L.pos[i].z, on);
+      LD[i].set(L.dir[i].x, L.dir[i].y, L.dir[i].z, L.cosOuter[i]);
+      LC[i] = L.cosInner[i];
+    }
   }
+
+  /** Silt puffs currently bound for this camera (diagnostics/tests). */
+  get siltPuffCount(): number {
+    return this.material.uniforms.uSiltN.value as number;
+  }
+
+  /** Uniform values of the water model (diagnostics/tests). */
+  get waterUniforms(): Readonly<Record<string, { value: unknown }>> {
+    return this.material.uniforms;
+  }
+
+  private readonly puffs: PuffView[] = [];
+  private readonly tmpColor = new Color();
 
   get optics(): WaterOptics {
     return this.water;

@@ -32,11 +32,24 @@ export interface EnvironmentConditions {
     headingOffsetDeg: number;
   };
   water: {
-    /** Extra beam extinction added to all channels (1/m): suspended sediment / plankton. */
+    /** Jerlov-type class of the water at the work site (documentation / UI). */
+    jerlov: string;
+    /**
+     * Beam attenuation c = a + b (1/m) for R, G, B at the work depth: what
+     * makes a scene fade with viewing (and lamp) distance. Red is dominated by
+     * water absorption, blue by CDOM/phytoplankton absorption in coastal water,
+     * all channels by particle scattering as turbidity grows.
+     */
+    beamC: [number, number, number];
+    /** Single-scattering albedo b/c (green): brightness of the veil / lamp backscatter. */
+    albedo: number;
+    /** Diffuse attenuation Kd (1/m) of the water column for sunlight, R, G, B. */
+    kd: [number, number, number];
+    /** Extra green beam extinction over the clear-water reference (1/m) — legacy scalar. */
     turbidity: number;
-    /** Multiplier on the number/brightness of suspended particles. */
+    /** Multiplier on the number/brightness of suspended particles (marine snow). */
     particleDensity: number;
-    /** Extra extinction near the seabed (1/m) from resuspended sediment. */
+    /** Extra extinction near the seabed (1/m): nepheloid layer of fine sediment. */
     nearBottomTurbidity: number;
   };
   light: {
@@ -58,10 +71,18 @@ const CURRENT: Record<CurrentLevel, EnvironmentConditions['current']> = {
   strong: { speedScale: 2.1, gustiness: 0.3, headingOffsetDeg: 25 },
 };
 
+/**
+ * Water presets (Jerlov-type; values of the order of the literature, see
+ * docs/PESQUISA_TECNICA.md item 18 — beam c ≈ a_w + a_CDOM/phyto + b_p):
+ *  - clear:  oceanic IB–II over the shelf break, b_p ≈ 0.05 → c_G ≈ 0.11, ~35 m;
+ *  - normal: shelf water, moderately turbid (coastal 1–3), b_p ≈ 0.13 → ~20 m;
+ *  - turbid: coastal 5–9 / strong nepheloid layer, b_p ≈ 0.45 → ~6–7 m.
+ * Sunlight (Kd) uses the column above, clearer than the near-bottom layer.
+ */
 const WATER: Record<VisibilityLevel, EnvironmentConditions['water']> = {
-  clear: { turbidity: 0, particleDensity: 0.6, nearBottomTurbidity: 0.02 },
-  normal: { turbidity: 0.035, particleDensity: 1, nearBottomTurbidity: 0.035 },
-  turbid: { turbidity: 0.2, particleDensity: 2.2, nearBottomTurbidity: 0.08 },
+  clear: { jerlov: 'IB–II', beamC: [0.37, 0.11, 0.095], albedo: 0.55, kd: [0.36, 0.058, 0.036], turbidity: 0, particleDensity: 0.55, nearBottomTurbidity: 0.01 },
+  normal: { jerlov: 'costeira 1–3', beamC: [0.45, 0.18, 0.2], albedo: 0.7, kd: [0.38, 0.072, 0.058], turbidity: 0.07, particleDensity: 1, nearBottomTurbidity: 0.025 },
+  turbid: { jerlov: 'costeira 5–9', beamC: [0.85, 0.55, 0.63], albedo: 0.84, kd: [0.43, 0.1, 0.1], turbidity: 0.44, particleDensity: 1.8, nearBottomTurbidity: 0.08 },
 };
 
 const LIGHT: Record<LightLevel, EnvironmentConditions['light']> = {
@@ -81,14 +102,23 @@ export function resolveConditions(choice: ConditionChoice, override?: Partial<Co
   return {
     choice: c,
     current: { ...CURRENT[c.current] },
-    water: { ...WATER[c.visibility] },
+    water: {
+      ...WATER[c.visibility],
+      beamC: [...WATER[c.visibility].beamC] as [number, number, number],
+      kd: [...WATER[c.visibility].kd] as [number, number, number],
+    },
     light: { ...LIGHT[c.light] },
     sea: { ...SEA[c.sea] },
   };
 }
 
-/** Approximate horizontal visibility (m) for the green channel, for display/help. */
-export function visibilityRange(cond: EnvironmentConditions, baseExtinctionGreen = 0.1): number {
-  // Distance at which contrast drops to ~2 % (Koschmieder-like, ln 50 ≈ 3.9).
-  return 3.9 / (baseExtinctionGreen + cond.water.turbidity);
+/**
+ * Approximate horizontal visibility (m) in the green channel near the seabed,
+ * for display/help: distance at which the contrast of a dark target drops to
+ * ~2 % (Koschmieder-like, ln 50 ≈ 3.9). `baseExtinctionGreen` (legacy) adds
+ * the scalar turbidity to that base instead of using the preset's beam c.
+ */
+export function visibilityRange(cond: EnvironmentConditions, baseExtinctionGreen?: number): number {
+  if (baseExtinctionGreen !== undefined) return 3.9 / (baseExtinctionGreen + cond.water.turbidity);
+  return 3.9 / (cond.water.beamC[1] + cond.water.nearBottomTurbidity);
 }
