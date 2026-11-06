@@ -53,8 +53,8 @@ export function sedimentProps(m: SedimentMix): SedimentProps {
 export function sedimentAlbedo(m: { mud: number; sand: number }): [number, number, number] {
   const gravel = Math.max(0, 1 - m.mud - m.sand);
   return [
-    0.52 * m.mud + 0.7 * m.sand + 0.55 * gravel,
-    0.5 * m.mud + 0.64 * m.sand + 0.54 * gravel,
+    0.46 * m.mud + 0.66 * m.sand + 0.55 * gravel,
+    0.47 * m.mud + 0.62 * m.sand + 0.54 * gravel,
     0.4 * m.mud + 0.5 * m.sand + 0.5 * gravel,
   ];
 }

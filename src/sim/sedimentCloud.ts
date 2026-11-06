@@ -94,7 +94,7 @@ export interface SedimentCloudOptions {
 const PI15 = Math.pow(Math.PI, 1.5);
 const SQRT_PI_2 = Math.sqrt(Math.PI) / 2;
 /** Optical mass eroded per second at disturbance 1 over pure mud (m²/s). */
-const EMIT_RATE = 9;
+const EMIT_RATE = 16;
 /** Forcing threshold (disturbance × erodibility) below which nothing lifts. */
 const EMIT_THRESHOLD = 0.025;
 /** Total optical mass budget (m²). ~ a 2 m-radius cloud of 4/m peak. */

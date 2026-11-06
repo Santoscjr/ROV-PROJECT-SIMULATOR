@@ -286,7 +286,7 @@ export class WaterEffects {
           // Opacity from the local density through the sprite (texture over the
           // composite, which already applies the cloud's extinction).
           float rho = D.x * exp(-dot(position, position) * 0.64);
-          vAlpha = clamp(1.0 - exp(-rho * worldSize * 0.3), 0.0, 0.42) * smoothstep(0.0, 0.5, D.y);
+          vAlpha = clamp(1.0 - exp(-rho * worldSize * 0.45), 0.0, 0.5) * smoothstep(0.0, 0.5, D.y);
         }`,
       fragmentShader: /* glsl */ `
         ${CAMERA_GLSL}

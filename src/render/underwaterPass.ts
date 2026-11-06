@@ -82,7 +82,7 @@ const WATER_GLSL = /* glsl */ `
     for (int i = 0; i < ${MAX_WATER_LAMPS}; i++) {
       if (uLampP[i].w <= 0.0) continue;
       vec3 d = p - uLampP[i].xyz;
-      float dist2 = max(dot(d, d), 0.09);
+      float dist2 = max(dot(d, d), 0.25);
       float dist = sqrt(dist2);
       float cone = mix(spill, 1.0, smoothstep(uLampD[i].w, uLampCi[i], dot(d, uLampD[i].xyz) / dist));
       float e = uLampP[i].w * cone / dist2;
@@ -153,7 +153,8 @@ const WATER_GLSL = /* glsl */ `
           float d2 = max(dot(oc, oc) - tc * tc, 0.0);
           float tau = uSiltD[i] * exp(-d2 / (sig * sig)) * sig * 0.8862269 * (erfA((tEnd - tc) / sig) - erfA(-tc / sig));
           if (tau < 1e-4) continue;
-          float ts = clamp(tc, 0.0, tEnd);
+          // (not closer than ~0.6 m: in-scatter right at the lens is out of the lamp cones and out of focus)
+          float ts = clamp(tc, min(0.6, tEnd), tEnd);
           vec3 p = camPos + dirWorld * ts;
           float lu;
           vec3 la;
@@ -161,7 +162,9 @@ const WATER_GLSL = /* glsl */ `
           // Light reaching the inside of a dense puff is dimmed by the puff itself.
           float rho = uSiltD[i] * exp(-dot(p - P.xyz, p - P.xyz) / (sig * sig));
           la *= exp(-0.5 * rho * sig);
-          vec3 ls = uSiltAlbedo * (la * 0.318 + ambient * 2.0) * exp(-ext * ts);
+          // Silt scatters mostly forward: backscatter toward a camera next to the
+          // lamps ≈ 0.1·E (sr-weighted phase ≈ 0.03 /sr × π).
+          vec3 ls = uSiltAlbedo * (la * 0.1 + ambient * 2.0) * exp(-ext * ts);
           tauSum += tau;
           lSum += tau * ls;
         }
@@ -172,11 +175,11 @@ const WATER_GLSL = /* glsl */ `
       }
       // Camera white balance tuned for the vehicle lamps at ~2.5 m
       // (subsea cameras are balanced for their own lighting).
-      // Lamp → subject → camera at a ~1.75 m working distance is a 3.5 m water
+      // Lamp → subject → camera at a ~1.25 m working distance is a 2.5 m water
       // path; the gains keep the luminance of a grey subject (red gain limited,
-      // as on a real camera).
-      vec3 wb = exp((uExtWB - vec3(min(uExtWB.g, uExtWB.b))) * 3.5);
-      wb = min(wb / dot(wb, vec3(0.2126, 0.7152, 0.0722)), vec3(2.6));
+      // as on a real camera, so near silt / near subjects do not turn red).
+      vec3 wb = exp((uExtWB - vec3(min(uExtWB.g, uExtWB.b))) * 2.5);
+      wb = min(wb / dot(wb, vec3(0.2126, 0.7152, 0.0722)), vec3(1.9));
       col *= mix(vec3(1.0), wb, uWhiteBalance);
     } else {
       // Light atmospheric haze above water.
