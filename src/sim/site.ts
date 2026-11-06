@@ -12,6 +12,12 @@ export interface V3 {
   z: number;
 }
 
+/**
+ * Surface of a collider: 'steel' (structures, default when absent) or 'rock'
+ * (boulders / rock berm of the seabed: contacts count as seabed contacts).
+ */
+export type ColliderSurface = 'steel' | 'rock';
+
 /** Box collider rotated about the vertical axis. */
 export interface BoxCollider {
   kind: 'box';
@@ -19,14 +25,16 @@ export interface BoxCollider {
   half: V3;
   /** rotation about +Y (rad) */
   yaw: number;
+  surface?: ColliderSurface;
 }
 
-/** Capsule collider (pipes, spools). */
+/** Capsule collider (pipes, spools; boulders and berm as buried capsules). */
 export interface CapsuleCollider {
   kind: 'capsule';
   a: V3;
   b: V3;
   radius: number;
+  surface?: ColliderSurface;
 }
 
 export type Collider = BoxCollider | CapsuleCollider;
@@ -175,6 +183,17 @@ function freeSpanPoint(): { point: V3; gap: number; index: number } {
 }
 export const FREE_SPAN = freeSpanPoint();
 
+/**
+ * Secondary seabed structures around the site (riser base, second wellhead
+ * protection frame). Rendered by render/context.ts (CONTEXT_LAYOUT holds the
+ * same numbers — tests/environment.test.ts checks they agree); listed here so
+ * that they are solid for the physics, the altimeter, the tether and the sonar.
+ */
+export const CONTEXT_STRUCTURES = {
+  riserBase: { x: -14, z: -72, size: v(4, 2.2, 3) },
+  wellhead2: { x: 52, z: -106, size: v(5, 4, 5) },
+};
+
 // --- Colliders ---------------------------------------------------------------
 function capsulesAlong(path: V3[], radius: number): CapsuleCollider[] {
   const out: CapsuleCollider[] = [];
@@ -203,6 +222,20 @@ export const COLLIDERS: Collider[] = [
   },
   ...capsulesAlong(JUMPER_PATH, JUMPER_R + 0.05),
   ...capsulesAlong(PIPELINE_PATH, PIPELINE_RADIUS),
+  (() => {
+    // Riser base: mudmat (size + 0.8) and frame up to the top beam (+0.25).
+    const r = CONTEXT_STRUCTURES.riserBase;
+    const g = ground(r.x, r.z);
+    const hy = (r.size.y + 0.25) / 2;
+    return { kind: 'box', center: v(r.x, g + hy, r.z), half: v(r.size.x / 2 + 0.4, hy, r.size.z / 2 + 0.4), yaw: 0 } as BoxCollider;
+  })(),
+  (() => {
+    // Wellhead protection frame: mudmat (size + 0.6), legs, top grating bars (+0.23).
+    const w = CONTEXT_STRUCTURES.wellhead2;
+    const g = ground(w.x, w.z);
+    const hy = (w.size.y + 0.23) / 2;
+    return { kind: 'box', center: v(w.x, g + hy, w.z), half: v(w.size.x / 2 + 0.3, hy, w.size.z / 2 + 0.3), yaw: 0 } as BoxCollider;
+  })(),
 ];
 
 // --- Inspection points ---------------------------------------------------------

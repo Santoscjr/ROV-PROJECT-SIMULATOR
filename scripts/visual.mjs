@@ -40,7 +40,8 @@ const sleep = (ms, p = page) => p.waitForTimeout(ms);
 const set = (patch) => page.evaluate((p) => window.__ROV__.app.store.update(p), patch);
 const shot = async (name, settle = 2200, p = page) => {
   await sleep(settle, p);
-  await p.screenshot({ path: `${out}/${name}.png` });
+  // Software GL: a frame can take several seconds (first use of a program compiles it).
+  await p.screenshot({ path: `${out}/${name}.png`, timeout: 120000 });
   console.log('  ' + name);
 };
 
@@ -103,6 +104,90 @@ await page.evaluate(() => {
   sim.tms.reset(sim.tmsExit.distanceTo(p) * 1.15 + 6, 'auto');
   sim.tether.reset(sim.tmsExit, sim.attachWorld());
   sim.controller.reset();
+  const dy = ip.target.y - (p.y - 0.18);
+  const dh = Math.hypot(ip.target.x - p.x, ip.target.z - p.z) - 1.3;
+  app.rig.tilt = (Math.atan2(dy, dh) * 180) / Math.PI;
+  Object.assign(app.camStates.external, { pan: 150, tilt: 12, zoom: 7.5 });
+  for (let i = 0; i < 16; i++) sim.advance(0.25);
+});
+
+// --- v3.2 environment: rocks, pipeline, structure, sediment resuspension ---------------
+const place = (x, y, z, yawDeg) =>
+  page.evaluate(
+    ([x, y, z, yawDeg]) => {
+      const { sim } = window.__ROV__;
+      const p = sim.rov.position;
+      p.set(x, y, z);
+      const yaw = (yawDeg * Math.PI) / 180;
+      sim.rov.orientation.set(0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2));
+      sim.rov.velocity.set(0, 0, 0);
+      sim.rov.angularVelocity.set(0, 0, 0);
+      sim.tms.reset(sim.tmsExit.distanceTo(p) * 1.15 + 6, 'auto');
+      sim.tether.reset(sim.tmsExit, sim.attachWorld());
+      sim.controller.reset();
+      window.__ROV__.app.world.sediment.reset();
+      for (let i = 0; i < 12; i++) sim.advance(0.25);
+    },
+    [x, y, z, yawDeg],
+  );
+// Boulder field: the largest physical rock outside the site, ROV 3 m above, looking at it.
+const rock = await page.evaluate(() => {
+  const r = [...window.__ROV__.site.rocks].filter((r) => Math.hypot(r.x - 24, r.z + 84) > 40).sort((a, b) => b.size - a.size)[0];
+  return { x: r.x, z: r.z, g: r.ground };
+});
+// yaw 0 → heading 090: the ROV faces east, towards the rock 4.5 m ahead.
+await place(rock.x - 4.5, rock.g + 2.25, rock.z, 0);
+await page.evaluate(() => (window.__ROV__.app.rig.tilt = -18));
+await set({ visibility: 'clear', layout: 'dual', panels: ['operational', 'external', 'tether', 'auxiliary'] });
+await page.evaluate(() => Object.assign(window.__ROV__.app.camStates.external, { pan: 235, tilt: 18, zoom: 8 }));
+await shot('60-fundo-rochas', 3500);
+// Pipeline (route mid-point), ROV 2.5 m above, following it.
+const pipe = await page.evaluate(() => {
+  const P = window.__ROV__.site.pipelinePath;
+  const i = Math.floor(P.length * 0.45);
+  const a = P[i];
+  const b = P[i + 1];
+  return { x: a.x, y: a.y, z: a.z, yaw: (Math.atan2(-(b.z - a.z), b.x - a.x) * 180) / Math.PI };
+});
+await place(pipe.x, pipe.y + 2.6, pipe.z, pipe.yaw);
+await shot('61-duto', 3500);
+// Sediment resuspension: ROV ~0.4 m above a muddy seabed, pushing towards the bottom
+// for 5 s (vertical jets + skid contact stir the sediment), then stop and watch it drift.
+await place(rock.x - 12, rock.g + 0.85, rock.z + 6, 0);
+await page.evaluate(() => {
+  const { sim } = window.__ROV__;
+  sim.setMode('manual');
+  for (let i = 0; i < 20; i++) {
+    sim.command.heave = -0.7;
+    sim.advance(0.25);
+    window.__ROV__.app.world.sediment.step(0.25, { amount: sim.rov.seabedDisturbance, x: sim.rov.seabedDisturbancePoint.x, y: sim.rov.seabedDisturbancePoint.y, z: sim.rov.seabedDisturbancePoint.z }, (p, o) => sim.env.current(p, o));
+  }
+  sim.command.heave = 0;
+});
+await shot('62-sedimentos-levantados', 2500);
+await page.evaluate(() => {
+  const { sim } = window.__ROV__;
+  sim.setMode('depthHold');
+  for (let i = 0; i < 24; i++) {
+    sim.advance(0.25);
+    window.__ROV__.app.world.sediment.step(0.25, { amount: sim.rov.seabedDisturbance, x: sim.rov.seabedDisturbancePoint.x, y: sim.rov.seabedDisturbancePoint.y, z: sim.rov.seabedDisturbancePoint.z }, (p, o) => sim.env.current(p, o));
+  }
+});
+await shot('63-sedimentos-6s-depois', 2500);
+await page.evaluate(() => window.__ROV__.app.world.sediment.reset());
+// Back to the structure (IP-01) for the per-camera captures.
+await page.evaluate(() => {
+  const { sim, site, app } = window.__ROV__;
+  const ip = site.inspectionPoints[0];
+  const p = sim.rov.position;
+  p.set(ip.target.x + ip.approach.x * 4.2, ip.target.y + ip.approach.y * 4.2 - 0.2, ip.target.z + ip.approach.z * 4.2);
+  const yaw = Math.atan2(-ip.approach.z, ip.approach.x) + Math.PI;
+  sim.rov.orientation.set(0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2));
+  sim.rov.velocity.set(0, 0, 0);
+  sim.tms.reset(sim.tmsExit.distanceTo(p) * 1.15 + 6, 'auto');
+  sim.tether.reset(sim.tmsExit, sim.attachWorld());
+  sim.controller.reset();
+  sim.setMode('depthHold');
   const dy = ip.target.y - (p.y - 0.18);
   const dh = Math.hypot(ip.target.x - p.x, ip.target.z - p.z) - 1.3;
   app.rig.tilt = (Math.atan2(dy, dh) * 180) / Math.PI;

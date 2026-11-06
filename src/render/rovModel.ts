@@ -24,6 +24,9 @@ import {
   PILOT_DOME_R,
   PILOT_DOME_X,
   POD_END,
+  AX,
+  AY,
+  AZ,
   T,
   TQ,
   V3,
@@ -98,6 +101,15 @@ const FOAM_Y1 = 0.7;
 const FOAM_HW = 0.725; // foam half width incl. bevel
 const MAX_REV_S = 25;
 const THRUSTER_LABELS: Placard[] = ['H1', 'H2', 'H3', 'H4', 'V1', 'V2', 'V3', 'V4'];
+/**
+ * Beam aim world.ts applies on top of each lamp mount (LAMPS[i].splay about the
+ * mount Y, then .down about Z, deg). The lamp heads are drawn pointing where
+ * the light actually goes; keep in sync with LAMPS in src/render/world.ts.
+ */
+export const LAMP_AIM: readonly (readonly [number, number])[] = [[9, 0], [-9, 0], [30, -10], [-30, -10]];
+/** Auxiliary and tether camera viewpoints (body frame) and default view — mirrors src/render/cameras.ts. */
+const AUX_CAM = { p: new THREE.Vector3(1.28, -0.42, 0.62), yaw: -8, pitch: -28 };
+const TETHER_CAM = new THREE.Vector3(0.55, 1.02, 0.35);
 
 export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture | null } = {}): RovModel {
   const quality = opts.quality ?? 'high';
@@ -117,6 +129,7 @@ export function createRovModel(opts: { quality?: Quality; envMap?: THREE.Texture
   buildHarness(add, d);
   const lightMounts = buildLights(add, d, root);
   buildSensors(add, d);
+  buildAuxCameras(add, d);
   const tetherPoint = buildTopside(add, d, root);
 
   // Pilot camera pan/tilt
@@ -401,14 +414,28 @@ function buildFoam(add: Adder, d: Detail): void {
   foamBlock(add, d, -XF - 0.04, -0.31, [[-0.7, 0.5], [-0.7, -0.5]], 0.14, [0, 0.04]);
   foamStrap(add, d, 0.42);
   foamStrap(add, d, -0.38);
-  // Thruster guard grilles across the vertical thruster wells
+  // Thruster guard grilles across the vertical thruster wells: rim ring with
+  // bolted tabs, flat bars across, two stiffeners underneath.
   for (const x of [0.7, -0.7]) {
     for (const zc of [0.5, -0.5]) {
-      for (const dz of [-0.12, -0.06, 0, 0.06, 0.12]) {
-        const half = Math.sqrt(0.2 * 0.2 - dz * dz) + 0.02;
-        add('frame', box(half * 2, 0.018, 0.012), T(x, FOAM_Y1 - 0.03, zc + dz));
+      const gy = FOAM_Y1 - 0.012;
+      add('frame', new THREE.TorusGeometry(0.2, 0.01, 6, Math.max(16, d.radial)), T(x, gy, zc, Math.PI / 2, 0, 0));
+      for (let k = -4; k <= 4; k++) {
+        const dz = k * 0.042;
+        const half = Math.sqrt(0.2 * 0.2 - dz * dz);
+        add('frame', box(half * 2, 0.016, 0.009), T(x, gy, zc + dz));
       }
-      add('frame', box(0.012, 0.022, 0.44), T(x, FOAM_Y1 - 0.042, zc));
+      for (const dx of [-0.07, 0.07]) {
+        const half = Math.sqrt(0.2 * 0.2 - dx * dx);
+        add('frame', box(0.012, 0.03, half * 2), T(x + dx, gy - 0.018, zc));
+      }
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+        const tx = x + Math.cos(a) * 0.222;
+        const tz = zc + Math.sin(a) * 0.222;
+        add('frame', rbox(0.05, 0.006, 0.035, 0.002, 1), T(tx, FOAM_Y1 + 0.002, tz, 0, -a, 0));
+        bolts(add, T(tx, FOAM_Y1 + 0.005, tz), [[0, 0]], d, 0.006);
+      }
     }
   }
   // Name decals on both sides of the forward block, hazard stripes elsewhere
@@ -575,23 +602,15 @@ function buildHarness(add: Adder, d: Detail): void {
 
 function buildLights(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D[] {
   const mounts: THREE.Object3D[] = [];
-  const specs: { p: V3; yaw: number; pitch: number; stem: [V3, V3] }[] = [
-    { p: [1.06, 0.74, -0.5], yaw: 0.06, pitch: -0.14, stem: [[1.01, foamTop(1.01) - 0.02, -0.5], [1.01, 0.72, -0.5]] },
-    { p: [1.06, 0.74, 0.5], yaw: -0.06, pitch: -0.14, stem: [[1.01, foamTop(1.01) - 0.02, 0.5], [1.01, 0.72, 0.5]] },
-    { p: [1.27, -0.5, -0.56], yaw: 0.05, pitch: -0.2, stem: [[XF, -0.5, -SZ], [1.22, -0.5, -0.56]] },
-    { p: [1.27, -0.5, 0.56], yaw: -0.05, pitch: -0.2, stem: [[XF, -0.5, SZ], [1.22, -0.5, 0.56]] },
+  const specs: { p: V3; yaw: number; pitch: number; stem: V3 }[] = [
+    { p: [1.06, 0.74, -0.5], yaw: 0.06, pitch: -0.14, stem: [1.01, foamTop(1.01) - 0.02, -0.5] },
+    { p: [1.06, 0.74, 0.5], yaw: -0.06, pitch: -0.14, stem: [1.01, foamTop(1.01) - 0.02, 0.5] },
+    { p: [1.27, -0.5, -0.56], yaw: 0.05, pitch: -0.2, stem: [XF, -0.56, -SZ + 0.03] },
+    { p: [1.27, -0.5, 0.56], yaw: -0.05, pitch: -0.2, stem: [XF, -0.56, SZ - 0.03] },
   ];
   const names = ['upper-port', 'upper-stbd', 'lower-port', 'lower-stbd'];
   specs.forEach((s, i) => {
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, s.yaw, s.pitch, 'YZX'));
-    const m = TQ(new THREE.Vector3(...s.p), q);
-    lightHead(sub(add, m), d);
-    beam(add, 'frame', s.stem[0], s.stem[1], 0.04, 0.04, d.round);
-    add('frame', rbox(0.06, 0.05, 0.03, 0.006, 1), T(s.stem[1][0] + 0.0, s.stem[1][1], s.stem[1][2]));
-    if (i < 2) {
-      add('frame', rbox(0.09, 0.012, 0.09, 0.004, 1), T(1.01, foamTop(1.01) - 0.012, s.p[2], 0, 0, -0.46));
-      bolts(add, T(1.01, foamTop(1.01) - 0.006, s.p[2], 0, 0, -0.46), boltRect(0.06, 0.06, 2, 2), d, 0.006);
-    }
     const mount = new THREE.Object3D();
     mount.name = `light-${names[i]}`;
     mount.position.set(...s.p);
@@ -599,6 +618,28 @@ function buildLights(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D[]
     mount.translateX(0.025);
     root.add(mount);
     mounts.push(mount);
+    // Head drawn along the real beam: mount ⊗ splay ⊗ down, lens just behind the mount.
+    const qh = q.clone()
+      .multiply(new THREE.Quaternion().setFromAxisAngle(AY, (LAMP_AIM[i][0] * Math.PI) / 180))
+      .multiply(new THREE.Quaternion().setFromAxisAngle(AZ, (LAMP_AIM[i][1] * Math.PI) / 180));
+    // Lower lamps are compact LED heads (they sit next to the auxiliary camera).
+    const k = i < 2 ? 1 : 0.78;
+    // (lens face just behind the mount; the compact heads hang 2 cm low so the
+    // beam origin sits at the top of their lens, below the aux camera's view)
+    const hp = mount.position.clone()
+      .addScaledVector(AX.clone().applyQuaternion(qh), -(0.021 * k + 0.004))
+      .addScaledVector(AY.clone().applyQuaternion(qh), i < 2 ? 0 : -0.02);
+    const m = TQ(hp, qh);
+    lightHead(sub(add, m.clone().multiply(new THREE.Matrix4().makeScale(k, k, k))), d);
+    // Stem from the frame to the clamp block under the trunnion yoke
+    const clamp = new THREE.Vector3(-0.05 * k, -0.05 * k, 0).applyMatrix4(m);
+    const stemTop: V3 = [clamp.x, clamp.y - 0.02, clamp.z];
+    beam(add, 'frame', s.stem, stemTop, 0.04, 0.04, d.round);
+    add('frame', rbox(0.06, 0.04, 0.05, 0.006, 1), T(stemTop[0], stemTop[1] + 0.005, stemTop[2]));
+    if (i < 2) {
+      add('frame', rbox(0.09, 0.012, 0.09, 0.004, 1), T(1.01, foamTop(1.01) - 0.012, s.p[2], 0, 0, -0.46));
+      bolts(add, T(1.01, foamTop(1.01) - 0.006, s.p[2], 0, 0, -0.46), boltRect(0.06, 0.06, 2, 2), d, 0.006);
+    }
   });
   return mounts;
 }
@@ -662,7 +703,10 @@ function buildTopside(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D 
     add('metal', new THREE.TorusGeometry(0.032, 0.008, 6, Math.max(8, d.small), Math.PI), T(0, FOAM_Y1 + 0.075, z, 0, Math.PI / 2, 0), 0xc9a54a, 0.3);
     handle(add, T(0, FOAM_Y1 + 0.004, s * 0.6), 0.075, d);
   }
-  // Umbilical termination + bend restrictor (tilted aft)
+  // Umbilical termination + bend restrictor. Vertical on x = −0.6: its axis
+  // passes through the physics tether attachment (rovParams.tetherAttach,
+  // −0.6, 1.05, 0) where world.ts ends the umbilical, and lines up with the
+  // Top-Hat exit guide (TOPHAT.exit x = −0.6) when latched.
   const tx = -0.6;
   add('paint', cyl(0.085, 0.095, 0.08, d.radial), T(tx, FOAM_Y1 + 0.04, 0), 0x2b3036, 0.3);
   add('metal', cyl(0.1, 0.1, 0.015, d.radial), T(tx, FOAM_Y1 + 0.085, 0), 0x8f969d);
@@ -672,8 +716,7 @@ function buildTopside(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D 
     bolts(add, T(tx, FOAM_Y1 + 0.0925, 0), ring, d, 0.007);
   }
   topDecal(add, 0.14, 0.07, tx, FOAM_Y1, 0.17, atlasPlacard('TETHER'));
-  const tilt = 0.32;
-  const base = mul(T(tx, FOAM_Y1 + 0.09, 0, 0, 0, tilt));
+  const base = T(tx, FOAM_Y1 + 0.09, 0);
   const L = 0.3;
   const prof: [number, number][] = [[0, 0], [0.06, 0]];
   const ribs = 8;
@@ -691,4 +734,42 @@ function buildTopside(add: Adder, d: Detail, root: THREE.Group): THREE.Object3D 
   tether.applyMatrix4(mul(base, T(0, L + 0.12, 0)));
   root.add(tether);
   return tether;
+}
+
+/**
+ * Physical housings of the auxiliary and tether cameras (their viewpoints are
+ * defined in cameras.ts): lens a little behind the viewpoint, everything else
+ * behind / below it, so neither view is obstructed.
+ */
+function buildAuxCameras(add: Adder, d: Detail): void {
+  // Auxiliary camera: lower starboard bow, on a bracket from the front post.
+  const yaw = THREE.MathUtils.degToRad(AUX_CAM.yaw);
+  const pitch = THREE.MathUtils.degToRad(AUX_CAM.pitch);
+  const dir = new THREE.Vector3(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), Math.sin(yaw) * Math.cos(pitch));
+  const q = new THREE.Quaternion().setFromUnitVectors(AX, dir);
+  const len = 0.12;
+  const c = AUX_CAM.p.clone().addScaledVector(dir, -0.028 - len / 2);
+  const cm = TQ(c, q);
+  smallCamera(sub(add, cm), d, 0.03, len);
+  add('metal', new THREE.TorusGeometry(0.033, 0.006, 5, d.small + 4), mul(cm, T(-0.02, 0, 0, 0, Math.PI / 2, 0)), 0x3b4046, 0.05);
+  const back = c.clone().addScaledVector(dir, -0.02);
+  beam(add, 'frame', [back.x, back.y - 0.035, back.z], [XF, back.y - 0.035, SZ - 0.03], 0.03, 0.03, d.round);
+  add('frame', rbox(0.035, 0.03, 0.03, 0.004, 1), T(back.x, back.y - 0.028, back.z));
+  const tail = c.clone().addScaledVector(dir, -len / 2 - 0.025);
+  hose(add, 'rubber', [tail.toArray() as V3, [XF - 0.04, -0.33, SZ - 0.06], [XF - 0.06, -0.12, SZ - 0.1], [1.08, -0.05, 0.48]], 0.007, d, 0x262626);
+
+  // Tether camera: compact pan/tilt ball on a short mast on the forward buoyancy,
+  // just below the viewpoint (that view never looks more than ~50° down).
+  const t = TETHER_CAM;
+  const ball = new THREE.Vector3(t.x, t.y - 0.068, t.z);
+  const foot: V3 = [t.x, FOAM_Y1, t.z - 0.08];
+  add('metal', rbox(0.12, 0.012, 0.1, 0.004, 1), T(foot[0], FOAM_Y1 + 0.006, foot[2]), 0x7d848b, 0.3);
+  bolts(add, T(foot[0], FOAM_Y1 + 0.012, foot[2]), boltRect(0.09, 0.07, 2, 2), d, 0.006);
+  beam(add, 'frame', [foot[0], FOAM_Y1 + 0.01, foot[2]], [ball.x, ball.y - 0.06, ball.z], 0.035, 0.035, d.round);
+  add('paint', cyl(0.032, 0.036, 0.035, d.radial), T(ball.x, ball.y - 0.045, ball.z), 0x2f3338, 0.3);
+  add('paint', new THREE.SphereGeometry(0.032, d.radial, Math.max(6, d.radial >> 1)), T(ball.x, ball.y, ball.z), 0x6b7279, 0.2);
+  // lens window facing the default view (aft and up)
+  const vd = new THREE.Vector3(-Math.cos(0.38), Math.sin(0.38), 0);
+  add('glass', new THREE.CircleGeometry(0.016, d.small + 2), TQ(ball.clone().addScaledVector(vd, 0.0325), new THREE.Quaternion().setFromUnitVectors(AZ, vd)));
+  hose(add, 'rubber', [[ball.x, ball.y - 0.06, ball.z + 0.03], [ball.x + 0.02, FOAM_Y1 + 0.1, ball.z + 0.02], [ball.x + 0.04, FOAM_Y1 + 0.01, ball.z - 0.02]], 0.006, d, 0x262626);
 }

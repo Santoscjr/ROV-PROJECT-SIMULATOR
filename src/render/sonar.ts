@@ -1,6 +1,7 @@
 import { Vector3 } from 'three';
 import type { BoxCollider, CapsuleCollider, Collider } from '../sim/site';
 import { colliderBounds } from '../physics/collision';
+import { rayBox, rayCapsule, rayHit as hit } from '../physics/raycast';
 
 /**
  * Forward-looking imaging sonar (FLS), geometry-driven. See docs/SONAR.md.
@@ -31,6 +32,13 @@ import { colliderBounds } from '../physics/collision';
  */
 
 export type SonarQuality = 'low' | 'medium' | 'high';
+
+/** Spatial index of extra (seabed) colliders — satisfied by `ColliderGrid` (sim/environment.ts). */
+export interface SonarColliderField {
+  readonly colliders: readonly Collider[];
+  readonly bounds: readonly { x: number; y: number; z: number; r: number }[];
+  queryIndices(minX: number, minZ: number, maxX: number, maxZ: number, out: number[]): number[];
+}
 export const SONAR_RANGES = [10, 20, 40, 60] as const;
 /** Horizontal field of view (deg). */
 export const SONAR_FOV = 130;
@@ -51,6 +59,13 @@ const EL_RAYS = 21; // structure sub-rays across the vertical beam (1° apart)
 const EL_SPACING = (2 * HALF_BEAM_V) / (EL_RAYS - 1);
 /** Structure (steel) reflectivity relative to the brightest seabed. */
 const TS_STRUCT = 1;
+/**
+ * Rock (boulders, berm stones) reflectivity relative to steel, from the
+ * normal-incidence intensity reflection R² = ((Z₂−Z₁)/(Z₂+Z₁))² with acoustic
+ * impedances water ≈ 1.5, rock ≈ 15, steel ≈ 45 MRayl: 0.67 / 0.88 ≈ 0.75.
+ * (Approximation: ignores roughness/backscatter differences.)
+ */
+const TS_ROCK = 0.75;
 const HORIZON_TOL = 0.3 * DEG;
 
 /** Display level (0..1) at or above which a pixel reads as a target. */
@@ -152,124 +167,7 @@ export function sonarLayout(w: number, h: number, fov = SONAR_FOV): { font: numb
 // ---------------------------------------------------------------------------
 // Ray casting against colliders. Results go through a shared scratch object.
 // ---------------------------------------------------------------------------
-interface Hit {
-  t: number; // distance along the ray to the reported surface point
-  cos: number; // |cos(incidence)| at that point
-  fill: number; // 1 = exact hit, <1 = cone near-miss (fraction of the cone filled)
-}
-
-const hit: Hit = { t: 0, cos: 0, fill: 0 };
-
-/**
- * Exact ray / yawed box. Returns entry distance (> 0) or -1; sets hit.cos.
- * `grow` inflates the half extents (for cone tests).
- */
-function rayBox(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, b: BoxCollider, grow: number, maxT: number): number {
-  const c = Math.cos(b.yaw);
-  const s = Math.sin(b.yaw);
-  const px = ox - b.center.x;
-  const pz = oz - b.center.z;
-  // world -> local (same convention as collision.ts sphereBox)
-  const lo = [px * c - pz * s, oy - b.center.y, px * s + pz * c];
-  const ld = [dx * c - dz * s, dy, dx * s + dz * c];
-  const hh = [b.half.x + grow, b.half.y + grow, b.half.z + grow];
-  let tmin = -Infinity;
-  let tmax = Infinity;
-  let axis = 0;
-  for (let k = 0; k < 3; k++) {
-    if (Math.abs(ld[k]) < 1e-12) {
-      if (Math.abs(lo[k]) > hh[k]) return -1;
-      continue;
-    }
-    let t1 = (-hh[k] - lo[k]) / ld[k];
-    let t2 = (hh[k] - lo[k]) / ld[k];
-    if (t1 > t2) [t1, t2] = [t2, t1];
-    if (t1 > tmin) {
-      tmin = t1;
-      axis = k;
-    }
-    tmax = Math.min(tmax, t2);
-    if (tmin > tmax) return -1;
-  }
-  if (tmax < 0 || tmin > maxT) return -1;
-  if (tmin <= 0) return grow > 0 ? 0 : -1; // origin inside: ignore exact, near-miss at 0
-  hit.cos = Math.abs(ld[axis]);
-  return tmin;
-}
-
-/** Exact ray / capsule (Íñigo Quílez's formulation). Returns entry distance or -1; sets hit.cos. */
-function rayCapsule(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, cp: CapsuleCollider, maxT: number): number {
-  const bax = cp.b.x - cp.a.x;
-  const bay = cp.b.y - cp.a.y;
-  const baz = cp.b.z - cp.a.z;
-  const oax = ox - cp.a.x;
-  const oay = oy - cp.a.y;
-  const oaz = oz - cp.a.z;
-  const ra = cp.radius;
-  const baba = bax * bax + bay * bay + baz * baz;
-  const bard = bax * dx + bay * dy + baz * dz;
-  const baoa = bax * oax + bay * oay + baz * oaz;
-  const rdoa = dx * oax + dy * oay + dz * oaz;
-  const oaoa = oax * oax + oay * oay + oaz * oaz;
-  const a = baba - bard * bard;
-  let t = -1;
-  let capCx = 0;
-  let capCy = 0;
-  let capCz = 0;
-  let useCap = true;
-  if (a > 1e-9) {
-    const b = baba * rdoa - baoa * bard;
-    const c = baba * oaoa - baoa * baoa - ra * ra * baba;
-    const h = b * b - a * c;
-    if (h < 0) return -1;
-    const tb = (-b - Math.sqrt(h)) / a;
-    const y = baoa + tb * bard;
-    if (y > 0 && y < baba) {
-      t = tb;
-      useCap = false;
-      // normal: from the axis point to the hit point
-      const k = y / baba;
-      const nx = ox + dx * t - (cp.a.x + bax * k);
-      const ny = oy + dy * t - (cp.a.y + bay * k);
-      const nz = oz + dz * t - (cp.a.z + baz * k);
-      hit.cos = Math.abs(nx * dx + ny * dy + nz * dz) / ra;
-    } else if (y <= 0) {
-      capCx = cp.a.x;
-      capCy = cp.a.y;
-      capCz = cp.a.z;
-    } else {
-      capCx = cp.b.x;
-      capCy = cp.b.y;
-      capCz = cp.b.z;
-    }
-  } else {
-    // ray parallel to the axis: nearest cap
-    const ta = (cp.a.x - ox) * dx + (cp.a.y - oy) * dy + (cp.a.z - oz) * dz;
-    const tb = (cp.b.x - ox) * dx + (cp.b.y - oy) * dy + (cp.b.z - oz) * dz;
-    const pa = ta < tb ? cp.a : cp.b;
-    capCx = pa.x;
-    capCy = pa.y;
-    capCz = pa.z;
-  }
-  if (useCap) {
-    const ocx = ox - capCx;
-    const ocy = oy - capCy;
-    const ocz = oz - capCz;
-    const b = dx * ocx + dy * ocy + dz * ocz;
-    const c = ocx * ocx + ocy * ocy + ocz * ocz - ra * ra;
-    const h = b * b - c;
-    if (h <= 0) return -1;
-    t = -b - Math.sqrt(h);
-    if (t > 0) {
-      const nx = ox + dx * t - capCx;
-      const ny = oy + dy * t - capCy;
-      const nz = oz + dz * t - capCz;
-      hit.cos = Math.abs(nx * dx + ny * dy + nz * dz) / ra;
-    }
-  }
-  if (t <= 0 || t > maxT) return -1;
-  return t;
-}
+// rayBox / rayCapsule and the shared hit record live in physics/raycast.ts (also used by the altimeter).
 
 /**
  * Cone near-miss against a capsule (ray missed the exact shape): closest
@@ -398,7 +296,15 @@ export class Sonar {
   private beam = 0;
   private lastDone = 0;
   private readonly origin = new Vector3();
+  /**
+   * Colliders seen by the current ping: the static list, then the seabed
+   * colliders (boulders, berm) the field returned for this ping's range box.
+   * Rebuilt at each ping start; indices below refer to these arrays.
+   */
+  private readonly colliders: Collider[];
   private readonly bounds: { x: number; y: number; z: number; r: number }[];
+  private readonly staticCount: number;
+  private readonly fieldIdx: number[] = [];
   private cand: number[] = []; // ping-level broad-phase
   private beamCand: number[] = []; // beam-level narrow list
   private hitCand: number[] = []; // colliders actually hit in this beam (shadow casters)
@@ -410,11 +316,19 @@ export class Sonar {
   private lut: { key: string; bf: Float32Array; rf: Float32Array } | null = null;
   private cacheKey = '';
 
+  /**
+   * @param colliders static colliders (structures), tested every ping.
+   * @param field optional spatial index of the seabed colliders (sim/environment.ts
+   *   `SeabedEnvironment.grid`): only those within the ping's range box are added.
+   */
   constructor(
     private readonly terrainHeight: (x: number, z: number) => number,
-    private readonly colliders: readonly Collider[],
+    colliders: readonly Collider[],
+    private readonly field?: SonarColliderField,
   ) {
+    this.colliders = [...colliders];
     this.bounds = colliders.map(colliderBounds);
+    this.staticCount = colliders.length;
     this.work = this.newPing();
   }
 
@@ -542,6 +456,17 @@ export class Sonar {
     w.tilt = this.tilt;
     if (this.elTop.length < w.bins) this.elTop = new Float32Array(w.bins);
     this.origin.copy(pos);
+    // Seabed colliders (boulders, berm) within the range box join the static list for this ping.
+    this.colliders.length = this.staticCount;
+    this.bounds.length = this.staticCount;
+    if (this.field) {
+      const R = this.range + 1;
+      const idx = this.field.queryIndices(pos.x - R, pos.z - R, pos.x + R, pos.z + R, (this.fieldIdx.length = 0, this.fieldIdx));
+      for (let k = 0; k < idx.length; k++) {
+        this.colliders.push(this.field.colliders[idx[k]]);
+        this.bounds.push(this.field.bounds[idx[k]]);
+      }
+    }
     // Broad-phase: colliders whose bound intersects the fan's range and angular sector.
     this.cand.length = 0;
     const foot = 0.1 + this.range * this.coneTan(w.beams);
@@ -712,7 +637,8 @@ export class Sonar {
         if (bestC < 0) continue;
         if (hc.indexOf(bestC) < 0) hc.push(bestC);
         if (bestT >= maxT || bestT > seabedT + step) continue; // hidden by the seabed / out of range
-        const echo = TS_STRUCT * bestFill * (0.2 + 0.8 * bestCos) * beamPattern(delta) * transmissionLoss(bestT);
+        const ts = this.colliders[bestC]?.surface === 'rock' ? TS_ROCK : TS_STRUCT;
+        const echo = ts * bestFill * (0.2 + 0.8 * bestCos) * beamPattern(delta) * transmissionLoss(bestT);
         const i = Math.floor(bestT / step);
         if (echo > data[row + i]) data[row + i] = echo;
       }

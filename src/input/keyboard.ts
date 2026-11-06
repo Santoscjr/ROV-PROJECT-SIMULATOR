@@ -28,6 +28,7 @@ const ACTIONS: PilotAction[] = [
   'layoutCycle',
   'monitorOpen',
   'tmsRecover',
+  'toggleGuide',
 ];
 
 export interface KeySource {

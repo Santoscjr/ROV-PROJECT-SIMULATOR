@@ -1,7 +1,8 @@
 import { Quaternion, Vector3 } from 'three';
 import { DEFAULT_ROV_PARAMS, type RovParams } from './rovParams';
 import { ThrusterBank, type Wrench } from './thrusters';
-import { colliderBounds, rayDownToCollider, sphereCollider } from './collision';
+import { colliderBounds, sphereCollider } from './collision';
+import { ALTIMETER, altimeterReading } from '../sim/altimeter';
 import type { TetherForceProvider } from './tether';
 import type { Collider } from '../sim/site';
 
@@ -34,6 +35,13 @@ export interface PhysicsEnvironment {
   current(position: Vector3, out: Vector3): Vector3;
   terrainHeight(x: number, z: number): number;
   colliders: readonly Collider[];
+  /**
+   * Optional spatial query of the static seabed colliders (boulders, rock
+   * berm — sim/environment.ts): appends to `out` (and returns it) every
+   * collider whose horizontal footprint overlaps the xz box. Used by the
+   * contacts and the altimeter in addition to `colliders`.
+   */
+  queryColliders?(minX: number, minZ: number, maxX: number, maxZ: number, out: Collider[]): Collider[];
   /** Optional umbilical; its force acts at `params.tetherAttach` (body). */
   tether?: TetherForceProvider;
 }
@@ -75,6 +83,10 @@ const CONTACT_POINTS: [number, number, number][] = [
 /** Spheres approximating the hull for structure contact (body frame x offsets). */
 const HULL_SPHERES = [0.55, -0.55];
 const HULL_RADIUS = 0.82;
+/** Horizontal reach of the hull-sphere centres from the CG (m). */
+const HULL_EXTENT = 0.55;
+/** Scratch list for spatial collider queries. */
+const _near: Collider[] = [];
 
 export class RovPhysics {
   readonly params: RovParams;
@@ -445,16 +457,24 @@ export class RovPhysics {
       this.angularVelocity.multiplyScalar(Math.pow(0.96, dt * 120));
     }
 
-    // Structures.
+    // Structures, then boulders / berm near the hull (spatial query: only a handful of candidates).
+    const near = _near;
+    near.length = 0;
+    if (env.queryColliders) {
+      const e = HULL_EXTENT + HULL_RADIUS;
+      env.queryColliders(this.position.x - e, this.position.z - e, this.position.x + e, this.position.z + e, near);
+    }
     for (const off of HULL_SPHERES) {
       const center = new Vector3(off, 0, 0).applyQuaternion(q).add(this.position);
-      for (const col of env.colliders) {
+      for (let k = 0, nk = env.colliders.length + near.length; k < nk; k++) {
+        const col = k < env.colliders.length ? env.colliders[k] : near[k - env.colliders.length];
         const b = colliderBounds(col);
         const reach = b.r + HULL_RADIUS;
         if (Math.abs(center.x - b.x) > reach || Math.abs(center.z - b.z) > reach || Math.abs(center.y - b.y) > reach) continue;
         const contact = sphereCollider(center, HULL_RADIUS, col);
         if (contact) {
-          applyContact(contact.normal, contact.depth, 'structure');
+          // Rock (boulder / berm) contacts are seabed contacts: friction, sediment kick.
+          applyContact(contact.normal, contact.depth, col.surface === 'rock' ? 'seabed' : 'structure');
           center.addScaledVector(contact.normal, contact.depth);
         }
       }
@@ -501,14 +521,12 @@ export class RovPhysics {
    * Altimeter: vertical distance from the bottom of the frame to the seabed
    * or a structure below. Returns null when out of range.
    */
-  altitude(env: PhysicsEnvironment, maxRange = 60): number | null {
+  altitude(env: PhysicsEnvironment, maxRange: number = ALTIMETER.maxRange): number | null {
+    // Transducer on the bottom of the frame, looking along the body's down axis
+    // (it tilts with the vehicle) — single-beam altimeter model (sim/altimeter.ts).
     const bottom = _tmp.set(0, -this.params.size[1] / 2, 0).applyQuaternion(this.orientation).add(this.position);
-    let d = bottom.y - env.terrainHeight(bottom.x, bottom.z);
-    for (const c of env.colliders) {
-      const hit = rayDownToCollider(bottom, c);
-      if (hit !== null && hit < d) d = hit;
-    }
-    if (d > maxRange) return null;
-    return Math.max(0, d);
+    const axis = _tmp2.set(0, -1, 0).applyQuaternion(this.orientation).normalize();
+    return altimeterReading(bottom, axis, env, { ...ALTIMETER, maxRange });
   }
+
 }

@@ -45,16 +45,20 @@ function input(over: Partial<MissionInput> = {}): MissionInput {
 }
 
 describe('mission flow', () => {
-  it('requires the pre-dive checklist before launch', () => {
+  it('v3.2: launch is never blocked by the checklist; skipped checks become a recorded deviation', () => {
     const m = new Mission(config);
-    expect(m.confirm()).toBeNull();
-    m.update(input({ lightLevel: 0.8 }));
-    m.update(input({ commanding: true }));
-    m.notifyCameraToggled();
-    expect(m.checklistDone).toBe(true);
     expect(m.confirm()).not.toBeNull();
     expect(m.stage).toBe('launch');
     expect(m.consumeLaunchRequest()).toBe(true);
+    expect(m.stats.deviations.map((d) => d.key)).toContain('deviation.skippedChecks');
+    // With the visual checks observed, no deviation is recorded.
+    const m2 = new Mission(config);
+    m2.update(input({ lightLevel: 0.8 }));
+    m2.update(input({ commanding: true }));
+    m2.notifyCameraToggled();
+    expect(m2.checklistDone).toBe(true);
+    expect(m2.confirm()).not.toBeNull();
+    expect(m2.stats.deviations).toHaveLength(0);
   });
 
   function toInspection(): Mission {

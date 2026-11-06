@@ -5,7 +5,6 @@ import {
   BufferGeometry,
   ConeGeometry,
   CustomBlending,
-  DynamicDrawUsage,
   Group,
   Matrix4,
   Mesh,
@@ -16,12 +15,16 @@ import {
   ShaderMaterial,
   Vector2,
   Vector3,
+  Vector4,
   type DepthTexture,
   type Object3D,
   type PerspectiveCamera,
   type SpotLight,
+  type Camera,
+  type WebGLRenderer,
 } from 'three';
-import { OPTICS, type WaterOptics } from './optics';
+import { OPTICS, waterOptics, type WaterOptics } from './optics';
+import type { PuffView } from '../sim/sedimentCloud';
 import { CAMERA_GLSL, type CameraUniforms } from './lens';
 import type { GraphicsQuality } from '../config/settings';
 
@@ -31,7 +34,10 @@ const BEAM_LEN = 13;
 /** Reference particle count per quality at density 1; the buffer holds the maximum density. */
 const SNOW: Record<GraphicsQuality, number> = { low: 1800, medium: 4500, high: 9000 };
 const MAX_DENSITY = 2.4;
-const SILT: Record<GraphicsQuality, number> = { low: 160, medium: 320, high: 480 };
+/** Silt sprites per puff of the resuspended cloud (×MAX_PUFFS sprites in all). */
+const SILT_PER_PUFF: Record<GraphicsQuality, number> = { low: 6, medium: 12, high: 18 };
+/** Puffs of the sediment cloud drawn as sprites (= SedimentCloud default pool). */
+const MAX_PUFFS = 24;
 
 const DEPTH_GLSL = /* glsl */ `
   #include <packing>
@@ -87,20 +93,16 @@ export class WaterEffects {
   private readonly shared: Record<string, { value: unknown }>;
   private readonly snowBase: number;
   private readonly snowMax: number;
-  // Silt plume (ring buffer of soft puffs).
+  // Silt sprites: a fixed set per puff of the sediment cloud (World.sediment),
+  // positioned on the GPU from the puff uniforms — same cloud in every panel.
   private readonly silt: Points;
   private readonly siltMat: ShaderMaterial;
-  private readonly siltOrigin: Float32Array;
-  private readonly siltBirth: Float32Array;
-  private readonly siltMax: number;
-  private siltCursor = 0;
-  private siltAcc = 0;
-  private siltAmount = 0;
-  /** Time of the last puff emitted (the plume draw is skipped once all have faded). */
-  private siltLastEmit = -1e9;
-  private readonly siltPos = new Vector3();
+  private readonly siltPerPuff: number;
+  private siltDetail = 1;
+  private siltPuffs = 0;
+  private water: WaterOptics = waterOptics(null);
+  private densityMul = 1;
   private lastTime = -1;
-
   constructor(quality: GraphicsQuality, depthTexture: DepthTexture, camera: CameraUniforms) {
     this.snowBase = SNOW[quality];
     this.snowMax = Math.round(this.snowBase * MAX_DENSITY);
@@ -208,22 +210,42 @@ export class WaterEffects {
     this.particles.frustumCulled = false;
     this.scene.add(this.particles);
 
-    // --- Silt plume: ring buffer of soft puffs emitted at the disturbance point ---
-    this.siltMax = SILT[quality];
-    this.siltOrigin = new Float32Array(this.siltMax * 3);
-    this.siltBirth = new Float32Array(this.siltMax).fill(-1e6);
-    const sSeed = new Float32Array(this.siltMax);
-    const sStrength = new Float32Array(this.siltMax);
-    for (let i = 0; i < this.siltMax; i++) sSeed[i] = Math.random();
+    // --- Silt: sprites scattered (Gaussian) inside each puff of the cloud ---
+    this.siltPerPuff = SILT_PER_PUFF[quality];
+    const nSilt = this.siltPerPuff * MAX_PUFFS;
+    const sPuff = new Float32Array(nSilt);
+    const sSlot = new Float32Array(nSilt);
+    const sOff = new Float32Array(nSilt * 3);
+    const sSeed = new Float32Array(nSilt);
+    // Deterministic layout (no per-frame CPU work): Box–Muller from a hash.
+    const h = (n: number) => {
+      const x = Math.sin(n * 91.345 + 47.853) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    for (let i = 0; i < nSilt; i++) {
+      sPuff[i] = Math.floor(i / this.siltPerPuff);
+      sSlot[i] = i % this.siltPerPuff;
+      for (let k = 0; k < 3; k++) {
+        const u1 = Math.max(1e-4, h(i * 7 + k * 2 + 1));
+        const u2 = h(i * 7 + k * 2 + 2);
+        sOff[i * 3 + k] = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2) * Math.SQRT1_2;
+      }
+      sSeed[i] = h(i * 7 + 13);
+    }
     const sGeo = new BufferGeometry();
-    const oAttr = new BufferAttribute(this.siltOrigin, 3).setUsage(DynamicDrawUsage);
-    const bAttr = new BufferAttribute(this.siltBirth, 1).setUsage(DynamicDrawUsage);
-    sGeo.setAttribute('position', oAttr);
-    sGeo.setAttribute('birth', bAttr);
+    sGeo.setAttribute('position', new BufferAttribute(sOff, 3));
+    sGeo.setAttribute('puff', new BufferAttribute(sPuff, 1));
+    sGeo.setAttribute('slot', new BufferAttribute(sSlot, 1));
     sGeo.setAttribute('seed', new BufferAttribute(sSeed, 1));
-    sGeo.setAttribute('strength', new BufferAttribute(sStrength, 1).setUsage(DynamicDrawUsage));
+    sGeo.setDrawRange(0, 0);
     this.siltMat = new ShaderMaterial({
-      uniforms: { ...this.shared },
+      uniforms: {
+        ...this.shared,
+        uPuffP: { value: Array.from({ length: MAX_PUFFS }, () => new Vector4(0, -1000, 0, 1)) },
+        uPuffD: { value: Array.from({ length: MAX_PUFFS }, () => new Vector4()) },
+        uSiltAlbedo: { value: new Vector3(0.5, 0.48, 0.4) },
+        uPerPuff: { value: this.siltPerPuff },
+      },
       transparent: true,
       depthTest: false,
       depthWrite: false,
@@ -232,9 +254,12 @@ export class WaterEffects {
       blendDst: OneMinusSrcAlphaFactor,
       vertexShader: /* glsl */ `
         ${CAMERA_GLSL}
-        attribute float birth;
+        attribute float puff;
+        attribute float slot;
         attribute float seed;
-        attribute float strength;
+        uniform float uPerPuff;
+        uniform vec4 uPuffP[${MAX_PUFFS}];  // centre, sigma
+        uniform vec4 uPuffD[${MAX_PUFFS}];  // peak extinction (1/m), age (s)
         uniform float uTime;
         uniform float uProjScale;
         varying vec3 vWorld;
@@ -242,31 +267,35 @@ export class WaterEffects {
         varying float vAlpha;
         varying float vSeed;
         void main() {
-          float life = 7.0 + seed * 7.0;
-          float age = uTime - birth;
-          float t = age / life;
+          int i = int(puff + 0.5);
+          vec4 P = uPuffP[i];
+          vec4 D = uPuffD[i];
           vSeed = seed;
-          if (t < 0.0 || t > 1.0 || strength <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vAlpha = 0.0; return; }
-          float a = seed * 6.2831 * 7.0;
-          vec3 dir = normalize(vec3(cos(a), 0.25 + fract(seed * 13.0) * 0.6, sin(a)));
-          // Billowing outwards and slowly up, then settling; slight drift.
-          float spread = (0.25 + 1.4 * sqrt(age)) * (0.4 + fract(seed * 5.3));
-          vec3 p = position + dir * spread * vec3(1.0, 0.55, 1.0);
-          p.y += 0.6 * (1.0 - exp(-age * 0.5)) - 0.04 * age;
-          p += vec3(0.05, 0.0, 0.03) * age;
+          if (D.x <= 0.0 || slot >= uPerPuff) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vAlpha = 0.0; return; }
+          float sig = P.w;
+          // Slow internal turbulence (eddies of the size of the puff).
+          float t = uTime * (0.18 + 0.12 * seed) + seed * 37.0;
+          vec3 sw = vec3(sin(t + seed * 6.0), 0.45 * sin(t * 0.7 + seed * 11.0), cos(t * 0.9 + seed * 3.0)) * 0.22;
+          vec3 p = P.xyz + (position + sw) * sig * 0.8;
+          p.y = max(p.y, P.y - 0.3 * sig);
           vWorld = p;
           vec4 mv = viewMatrix * vec4(p, 1.0);
           vDist = -mv.z;
           gl_Position = lensClip(projectionMatrix * mv);
-          float worldSize = 0.5 + 2.0 * sqrt(t) * (0.6 + seed);
-          gl_PointSize = clamp(worldSize * uProjScale / max(vDist, 0.2), 1.0, 320.0);
-          vAlpha = strength * smoothstep(0.0, 0.12, t) * pow(1.0 - t, 1.4) * 0.3;
+          // Fewer sprites (lower detail) are drawn larger to cover the same volume.
+          float worldSize = sig * (0.8 + 0.7 * seed) * pow(${this.siltPerPuff.toFixed(1)} / max(uPerPuff, 1.0), 0.33);
+          gl_PointSize = clamp(worldSize * uProjScale / max(vDist, 0.2), 1.0, 400.0);
+          // Opacity from the local density through the sprite (texture over the
+          // composite, which already applies the cloud's extinction).
+          float rho = D.x * exp(-dot(position, position) * 0.64);
+          vAlpha = clamp(1.0 - exp(-rho * worldSize * 0.45), 0.0, 0.5) * smoothstep(0.0, 0.5, D.y);
         }`,
       fragmentShader: /* glsl */ `
         ${CAMERA_GLSL}
         ${DEPTH_GLSL}
         ${LIGHTS_GLSL}
         uniform vec3 uAmbient;
+        uniform vec3 uSiltAlbedo;
         varying vec3 vWorld;
         varying float vDist;
         varying float vAlpha;
@@ -279,11 +308,10 @@ export class WaterEffects {
           float r = dot(c, c) * 4.0;
           if (r > 1.0) discard;
           // Lumpy, soft-edged puff; fades where it meets the seabed/structures.
-          float lump = 0.88 + 0.12 * sin(c.x * 9.0 + vSeed * 31.0) * sin(c.y * 8.0 - vSeed * 17.0);
-          float a = vAlpha * pow(1.0 - r, 1.6) * lump * clamp((sceneZ - vDist + 0.3) / 0.8, 0.0, 1.0);
-          vec3 albedo = vec3(0.55, 0.52, 0.44);
-          vec3 light = artificialS(vWorld, 0.18) * 0.8 + uAmbient * 0.5;
-          vec3 col = albedo * light * exp(-uExt * vDist) * cameraExposure();
+          float lump = 0.8 + 0.2 * sin(c.x * 9.0 + vSeed * 31.0) * sin(c.y * 8.0 - vSeed * 17.0);
+          float a = vAlpha * pow(1.0 - r, 1.8) * lump * clamp((sceneZ - vDist + 0.3) / 0.8, 0.0, 1.0);
+          vec3 light = artificialS(vWorld, 0.1) * 0.32 + uAmbient * 0.5;
+          vec3 col = uSiltAlbedo * light * exp(-uExt * vDist) * cameraExposure();
           gl_FragColor = vec4(col, 1.0);
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
@@ -452,45 +480,67 @@ export class WaterEffects {
 
   /** Water optics from the environmental conditions. */
   setWater(w: WaterOptics): void {
+    this.water = w;
     (this.shared.uExt.value as Vector3).set(...w.ext);
-    // Visual weight of the lamp haze grows faster than b (multiple scattering, veiling glare).
-    this.shared.uScattering.value = Math.pow(w.scattering, 1.6);
-    const n = Math.min(this.snowMax, Math.round(this.snowBase * w.particleDensity));
-    this.particles.geometry.setDrawRange(0, n);
+    // Visual weight of the lamp haze grows a little faster than b (multiple scattering, veiling glare).
+    this.shared.uScattering.value = Math.pow(w.scattering, 1.2);
     this.shared.uSnowBright.value = 0.85 + 0.15 * Math.min(2.5, w.scattering);
+    this.applySnowCount();
   }
 
-  /** Sediment stirred up at `position` (amount 0..1, e.g. from thrusters/contact). */
-  setSeabedDisturbance(amount: number, position: Vector3): void {
-    this.siltAmount = Math.min(1, Math.max(0, amount));
-    this.siltPos.copy(position);
+  /** Settings: marine snow density multiplier (0..2) on top of the water preset. */
+  setParticleDensity(k: number): void {
+    this.densityMul = Math.min(2, Math.max(0, Number.isFinite(k) ? k : 1));
+    this.applySnowCount();
   }
 
-  private emitSilt(dt: number, time: number): void {
-    if (this.siltAmount <= 0.01) {
-      this.siltAcc = 0;
-      return;
+  /** Marine snow particles drawn per panel (diagnostics). */
+  get snowCount(): number {
+    return this.particles.geometry.drawRange.count;
+  }
+
+  /** Silt sprites drawn per panel (diagnostics). */
+  get siltCount(): number {
+    return this.silt.geometry.drawRange.count;
+  }
+
+  private applySnowCount(): void {
+    const n = Math.min(this.snowMax, Math.round(this.snowBase * this.water.particleDensity * this.densityMul));
+    this.particles.geometry.setDrawRange(0, n);
+  }
+
+  /** Water detail: fraction (0..1] of the silt sprites per puff. */
+  setSiltDetail(f: number): void {
+    this.siltDetail = Math.min(1, Math.max(0.1, f));
+    this.applySiltCount();
+  }
+
+  private applySiltCount(): void {
+    const per = Math.max(1, Math.round(this.siltPerPuff * this.siltDetail));
+    // Sprites are grouped by puff; with fewer per puff, keep the first `per` of each group.
+    this.silt.geometry.setDrawRange(0, this.siltPuffs * this.siltPerPuff);
+    this.siltMat.uniforms.uPerPuff.value = per;
+  }
+
+  /**
+   * Puffs of the resuspended sediment cloud for this frame (World, once per
+   * frame; every panel then draws the same cloud) and the particle albedo.
+   */
+  setSiltPuffs(puffs: readonly PuffView[], albedo: { r: number; g: number; b: number }): void {
+    const u = this.siltMat.uniforms;
+    const P = u.uPuffP.value as Vector4[];
+    const D = u.uPuffD.value as Vector4[];
+    const n = Math.min(MAX_PUFFS, puffs.length);
+    for (let i = 0; i < MAX_PUFFS; i++) {
+      const p = puffs[i];
+      if (i < n && p) {
+        P[i].set(p.x, p.y, p.z, Math.max(0.05, p.sigma));
+        D[i].set(p.density, p.age, 0, 0);
+      } else D[i].set(0, 0, 0, 0);
     }
-    this.siltAcc += this.siltAmount * 45 * dt;
-    if (this.siltAcc < 1) return;
-    const geo = this.silt.geometry;
-    const strength = geo.getAttribute('strength') as BufferAttribute;
-    while (this.siltAcc >= 1) {
-      this.siltAcc -= 1;
-      const i = this.siltCursor;
-      this.siltCursor = (this.siltCursor + 1) % this.siltMax;
-      const r = Math.sqrt(Math.random()) * 0.8;
-      const a = Math.random() * Math.PI * 2;
-      this.siltOrigin[i * 3] = this.siltPos.x + Math.cos(a) * r;
-      this.siltOrigin[i * 3 + 1] = this.siltPos.y + Math.random() * 0.15;
-      this.siltOrigin[i * 3 + 2] = this.siltPos.z + Math.sin(a) * r;
-      this.siltBirth[i] = time - Math.random() * dt;
-      strength.setX(i, 0.5 + 0.5 * this.siltAmount);
-    }
-    this.siltLastEmit = time;
-    geo.getAttribute('position').needsUpdate = true;
-    geo.getAttribute('birth').needsUpdate = true;
-    strength.needsUpdate = true;
+    (u.uSiltAlbedo.value as Vector3).set(albedo.r, albedo.g, albedo.b);
+    this.siltPuffs = n;
+    this.applySiltCount();
   }
 
   private readonly tmp = new Vector3();
@@ -541,8 +591,23 @@ export class WaterEffects {
       }
     });
     this.particles.visible = opts.underwater;
-    this.silt.visible = opts.underwater && opts.time - this.siltLastEmit < 15;
-    this.emitSilt(dt, opts.time);
+    this.silt.visible = opts.underwater && this.siltPuffs > 0;
+    void dt;
+  }
+
+  /**
+   * Compile every effect program up front (the silt sprites are otherwise first
+   * compiled when a cloud appears mid-operation → a visible hitch). Call once per
+   * WebGL context (main window and each monitor window).
+   */
+  precompile(renderer: WebGLRenderer, camera: Camera): void {
+    const vis = this.silt.visible;
+    const pv = this.particles.visible;
+    this.silt.visible = true;
+    this.particles.visible = true;
+    renderer.compile(this.scene, camera);
+    this.silt.visible = vis;
+    this.particles.visible = pv;
   }
 
   dispose(): void {

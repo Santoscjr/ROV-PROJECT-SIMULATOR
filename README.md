@@ -44,6 +44,7 @@ As condições ambientais são **corrente**, **visibilidade**, **luz natural** e
 | Zoom da câmera do painel ativo | `Z` / `X` | — |
 | Layout de telas (1/2/4) · monitor secundário | `Y` · `F8` | — |
 | Recolher / descer o conjunto ROV + Top-Hat (pilotagem livre) | `O` | — |
+| Roteiro de lançamento: completo / compacto / oculto | `F2` | — |
 
 **Estação de pilotagem (v3.2).** A estação é formada por **fontes** (câmeras principal, auxiliar, externa, tether e TMS, sonar, instrumentação), **painéis** (cada um mostra uma fonte) e **janelas** (a principal e até 3 monitores adicionais, cada uma com 1, 2 ou 4 painéis). Uma câmera se comporta igual em qualquer painel ou janela: pan, tilt e zoom (e a órbita da câmera externa) pertencem à câmera, ficam salvos e são compartilhados por todos os painéis que a mostram.
 
@@ -91,7 +92,7 @@ node scripts/visual.mjs http://localhost:4173/                     # capturas de
 node scripts/perf.mjs http://localhost:4173/ low,medium            # tempo de quadro com 1, 2, 4 e 4+2 painéis
 ```
 
-Auditoria, matriz de regressões e limitações: [docs/AUDITORIA_V3.2.md](docs/AUDITORIA_V3.2.md). Pesquisa técnica: [docs/PESQUISA_TECNICA.md](docs/PESQUISA_TECNICA.md). Sonar: [docs/SONAR.md](docs/SONAR.md).
+Ambiente submarino v3.2 (rochas físicas, terreno com semente e LOD, água por canal, ressuspensão de sedimentos, altímetro de feixe, roteiro de lançamento, novos modelos do ROV e TMS): [docs/V3.2_SUBSEA.md](docs/V3.2_SUBSEA.md). Pesquisa: [docs/research/](docs/research/references.md). Auditoria, matriz de regressões e limitações: [docs/AUDITORIA_V3.2.md](docs/AUDITORIA_V3.2.md). Pesquisa técnica: [docs/PESQUISA_TECNICA.md](docs/PESQUISA_TECNICA.md). Sonar: [docs/SONAR.md](docs/SONAR.md).
 
 A publicação é automática: cada push em `main` executa typecheck, testes e build, e publica `dist/` no GitHub Pages (`.github/workflows/deploy.yml`). Em **Settings → Pages**, a fonte precisa estar como **GitHub Actions**.
 

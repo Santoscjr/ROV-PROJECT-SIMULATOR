@@ -1,4 +1,5 @@
 import {
+  PerspectiveCamera,
   CatmullRomCurve3,
   Color,
   DirectionalLight,
@@ -18,13 +19,14 @@ import {
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GraphicsQuality } from '../config/settings';
 import type { EnvironmentConditions } from '../sim/conditions';
-import { terrainHeight } from '../sim/terrain';
-import { createRovModel, type RovModel } from './rovModel';
+import { LAMP_AIM, createRovModel, type RovModel } from './rovModel';
 import { createSeabed, type Cullable } from './seabed';
 import { createStructures } from './structures';
 import { createContext } from './context';
 import { createSeaSurface, createSky, createVessel, type VesselRig } from './surface';
-import { sunTransmission, waterOptics, type WaterOptics } from './optics';
+import { createSiltField, sunTransmission, waterOptics, type SiltField, type WaterOptics } from './optics';
+import { SedimentCloud, type CurrentSampler, type PuffView, type SedimentSource } from '../sim/sedimentCloud';
+import { sedimentAlbedo } from '../sim/sediment';
 import { WaterEffects } from './effects';
 import type { UnderwaterPass } from './underwaterPass';
 
@@ -34,11 +36,12 @@ import type { UnderwaterPass } from './underwaterPass';
  * (lower pair: splayed and slightly down to fill the near field and seabed).
  * Order: upper-port, upper-stbd, lower-port, lower-stbd.
  */
+// Aim (splay/down) comes from the model's LAMP_AIM — one source for the lamp heads and their beams.
 const LAMPS = [
-  { angle: 32, penumbra: 0.6, splay: 9, down: 0, cd: 75 },
-  { angle: 32, penumbra: 0.6, splay: -9, down: 0, cd: 75 },
-  { angle: 62, penumbra: 0.85, splay: 30, down: -10, cd: 42 },
-  { angle: 62, penumbra: 0.85, splay: -30, down: -10, cd: 42 },
+  { angle: 32, penumbra: 0.6, splay: LAMP_AIM[0][0], down: LAMP_AIM[0][1], cd: 75 },
+  { angle: 32, penumbra: 0.6, splay: LAMP_AIM[1][0], down: LAMP_AIM[1][1], cd: 75 },
+  { angle: 62, penumbra: 0.85, splay: LAMP_AIM[2][0], down: LAMP_AIM[2][1], cd: 42 },
+  { angle: 62, penumbra: 0.85, splay: LAMP_AIM[3][0], down: LAMP_AIM[3][1], cd: 42 },
 ] as const;
 /** Contrast threshold for the visibility culling (fraction of the blue/green transmission). */
 const CULL_LN = 5.3;
@@ -67,15 +70,20 @@ export class World {
   private readonly envTex: Texture;
   private readonly tmpColor = new Color();
   private readonly cullables: Cullable[];
+  /** Streamed seabed (LOD tiles around the work area; same height field as physics/sonar). */
+  readonly seabed: ReturnType<typeof createSeabed>;
   private optics: WaterOptics = waterOptics(null);
-  // Sediment plume state (smoothed from the disturbance input).
-  private disturbance = 0;
-  private readonly disturbancePos = new Vector3();
-  private plume = 0;
-  private readonly plumePos = new Vector3(0, -1000, 0);
-  private plumeAge = 0;
   private lastTime = -1;
-  private readonly siltColor = new Color();
+  // --- Sediment resuspension (plume) — shared by every camera panel of every window ---
+  /** Resuspended sediment cloud (model: sim/sedimentCloud.ts), stepped once per frame in updateEnvironment. */
+  readonly sediment = new SedimentCloud();
+  /** Frame-global water state (cloud + lamps) applied to each panel's composite by renderCameraPanel. */
+  readonly silt: SiltField = createSiltField(this.sediment);
+  private readonly sedimentSource: SedimentSource = { amount: 0, x: 0, y: -1e4, z: 0 };
+  private currentSampler: CurrentSampler | null = null;
+  private readonly puffViews: PuffView[] = [];
+  /** The cloud evolves only while true (set false while the simulation is paused / in menus). */
+  sedimentRunning = true;
 
   constructor(
     readonly renderer: WebGLRenderer,
@@ -94,6 +102,7 @@ export class World {
     this.vessel = createVessel();
     this.scene.add(this.vessel.group);
     const seabed = createSeabed(quality);
+    this.seabed = seabed;
     this.scene.add(seabed.group);
     this.cullables = seabed.cullables;
     this.scene.add(createStructures(quality));
@@ -145,6 +154,8 @@ export class World {
     this.effects = new WaterEffects(quality, pass.depthTexture, pass.cameraUniforms);
     this.effects.attachLights(this.lamps, this.rov.lightMounts, quality !== 'low');
     this.applyOptics();
+    // No first-cloud hitch: compile the effect programs now.
+    this.effects.precompile(renderer, new PerspectiveCamera());
   }
 
   /**
@@ -172,14 +183,43 @@ export class World {
     ku.uOvercast.value = o.overcast;
   }
 
-  /** Sediment stirred up by thrusters / contact (0..1) at `position` (the vehicle). */
+  /**
+   * Sediment stirred up by thrusters / contact (0..1) with the vehicle at
+   * `position` (call every frame before updateEnvironment). The cloud model
+   * applies the sediment type below, the height above the seabed and the
+   * resuspension strength.
+   */
   setSeabedDisturbance(amount: number, position: Vector3): void {
-    const g = terrainHeight(position.x, position.z);
-    // Safety: nothing is stirred up from high above the seabed.
-    const fade = Math.min(1, Math.max(0, (8 - (position.y - g)) / 2));
-    this.disturbance = Math.min(1, Math.max(0, Number.isFinite(amount) ? amount : 0)) * fade;
-    this.disturbancePos.set(position.x, g + 0.25, position.z);
-    this.effects.setSeabedDisturbance(this.disturbance, this.disturbancePos);
+    const s = this.sedimentSource;
+    s.amount = Math.min(1, Math.max(0, Number.isFinite(amount) ? amount : 0));
+    s.x = position.x;
+    s.y = position.y;
+    s.z = position.z;
+  }
+
+  /** Water current used to transport the cloud (e.g. `(p, o) => sim.env.current(p, o)`); null = still water. */
+  setCurrentSampler(fn: CurrentSampler | null): void {
+    this.currentSampler = fn;
+  }
+
+  /** Settings: sediment resuspension strength 0..2 (0 = off; existing cloud dissipates). */
+  setSedimentStrength(k: number): void {
+    this.sediment.strength = Math.min(2, Math.max(0, Number.isFinite(k) ? k : 1));
+  }
+
+  /** Settings: suspended particle (marine snow) density multiplier 0..2. */
+  setParticleDensity(k: number): void {
+    this.effects.setParticleDensity(k);
+  }
+
+  /**
+   * Settings: water detail 0 (low) / 1 (medium) / 2 (high): cloud puffs per
+   * camera in the composite (2/4/6) and silt sprites per puff.
+   */
+  setWaterDetail(level: number): void {
+    const l = Math.min(2, Math.max(0, Math.round(Number.isFinite(level) ? level : 2)));
+    this.silt.maxPuffs = [2, 4, 6][l];
+    this.effects.setSiltDetail([0.4, 0.7, 1][l]);
   }
 
   /** Update lighting for the depth of the vehicle / camera. */
@@ -239,48 +279,38 @@ export class World {
     for (const c of this.cullables) c.object.visible = under && c.box.distanceToPoint(cam) < range;
   }
 
-  /** Smoothed sediment cloud for the composite (local extinction + in-scatter). */
+  /**
+   * Sediment cloud step (once per frame, shared by every panel/window): model
+   * update, then the frame-global state each composite reads — lamps (world
+   * position, direction, cone, intensity) and particle albedo — and the puffs
+   * for the silt sprites.
+   */
   private updatePlume(dt: number): void {
-    const target = this.disturbance;
-    // Builds up within ~1.5 s, settles over ~10 s.
-    const tau = target > this.plume ? 1.5 : 10;
-    this.plume += (target - this.plume) * (1 - Math.exp(-dt / tau));
-    if (target > 0.02) {
-      if (this.plumePos.y < -900) this.plumePos.copy(this.disturbancePos);
-      this.plumePos.lerp(this.disturbancePos, 1 - Math.exp(-dt / 2.5));
-      this.plumeAge = 0;
-    } else this.plumeAge += dt;
-    if (this.plume < 0.005) {
-      this.pass.setSilt(this.plumePos, 1, 0, this.siltColor.setRGB(0, 0, 0));
-      return;
+    if (this.sedimentRunning) this.sediment.step(dt, this.sedimentSource, this.currentSampler);
+    const L = this.silt.lamps;
+    L.count = Math.min(L.pos.length, this.lamps.length);
+    for (let i = 0; i < L.count; i++) {
+      const l = this.lamps[i];
+      l.getWorldPosition(L.pos[i]);
+      l.target.getWorldPosition(this.tmpL);
+      L.dir[i].subVectors(this.tmpL, L.pos[i]).normalize();
+      L.cosOuter[i] = Math.cos(l.angle);
+      L.cosInner[i] = Math.cos(l.angle * (1 - l.penumbra));
+      L.intensity[i] = l.visible ? l.intensity : 0;
     }
-    const radius = 0.8 + 1.6 * this.plume + Math.min(2, this.plumeAge * 0.2);
-    const center = this.tmpCenter.copy(this.plumePos).add(this.tmpOff.set(0, 0.1 + this.plume * 0.4, 0));
-    // In-scatter of the cloud: water ambient + lamp light reaching it, seen
-    // through ~1.5 m of water (the composite's white balance then applies).
-    const o = this.optics;
-    const amb = o.scatter;
-    const e = Math.exp(-o.kd[2] * Math.max(0, -center.y));
-    let lamp = 0;
-    for (const l of this.lamps) {
-      if (!l.visible) continue;
-      l.getWorldPosition(this.tmpL);
-      const dist = Math.max(1, this.tmpL.distanceTo(center));
-      // Mostly spill light: the cloud sits below/around the beams.
-      lamp += (l.intensity * Math.exp(-o.ext[1] * dist)) / (dist * dist);
+    // Mass-weighted tint of the suspended particles.
+    let m = 0;
+    let mud = 0;
+    let sand = 0;
+    for (const p of this.sediment.puffs) {
+      m += p.mass;
+      mud += p.mud * p.mass;
+      sand += p.sand * p.mass;
     }
-    lamp *= 0.006;
-    const path = 1.5;
-    this.siltColor.setRGB(
-      0.5 * (amb.r * e * 0.6 + lamp) * Math.exp(-o.ext[0] * path),
-      0.47 * (amb.g * e * 0.6 + lamp) * Math.exp(-o.ext[1] * path),
-      0.4 * (amb.b * e * 0.6 + lamp) * Math.exp(-o.ext[2] * path),
-    );
-    this.pass.setSilt(center, radius, 0.6 * this.plume, this.siltColor);
+    if (m > 0) this.silt.albedo.setRGB(...sedimentAlbedo({ mud: mud / m, sand: sand / m }));
+    this.effects.setSiltPuffs(this.sediment.allViews(this.sediment.maxPuffs, this.puffViews), this.silt.albedo);
   }
 
-  private readonly tmpCenter = new Vector3();
-  private readonly tmpOff = new Vector3();
   private readonly tmpL = new Vector3();
 
   /**
@@ -300,9 +330,15 @@ export class World {
       return;
     }
     this.tether.visible = true;
+    // Physical nodes end at the termination (rov.tetherAttach, inside the bend restrictor);
+    // the cable leaves through the restrictor tip, so route the last ~0.2 m along its axis.
+    const tip = this.rov.tetherPoint.getWorldPosition(this.tmpTip);
+    const pts = path.length >= 2 && tip.distanceTo(path[path.length - 1]) < 0.5 ? [...path.slice(0, -1), tip, path[path.length - 1]] : (path as Vector3[]);
     this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(path as Vector3[], false, 'centripetal'), Math.max(40, path.length * 4), 0.03, 8);
+    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts, false, 'centripetal'), Math.max(40, pts.length * 4), 0.03, 8);
   }
+
+  private readonly tmpTip = new Vector3();
 
   /** Camera panels drawn with the full water pipeline (composite + particles/beams) since the last reset — diagnostics/tests. */
   panelDraws = 0;
@@ -318,7 +354,13 @@ export class World {
     this.tetherMat.emissiveIntensity = on ? 0.6 : 0;
   }
 
+  /** Stream/refine seabed tiles around a focus point (the ROV). Bounded work per call. */
+  updateSeabed(focus: { x: number; z: number }): void {
+    this.seabed.update(focus);
+  }
+
   dispose(): void {
+    this.seabed.dispose();
     this.scene.traverse((o) => {
       const m = o as Mesh;
       if (m.geometry) m.geometry.dispose();

@@ -45,6 +45,7 @@ export const BINDABLE = [
   'zoomIn',
   'zoomOut',
   'tmsRecover',
+  'toggleGuide',
   'layoutCycle',
   'monitorOpen',
 ] as const;
@@ -83,6 +84,7 @@ const COMMON: Omit<KeyBindings, PresetKeys> = {
   zoomIn: ['KeyZ'],
   zoomOut: ['KeyX'],
   tmsRecover: ['KeyO'],
+  toggleGuide: ['F2'],
   layoutCycle: ['KeyY'],
   monitorOpen: ['F8'],
 };
@@ -181,6 +183,8 @@ export interface Settings {
   customStation: StationSnapshot | null;
   /** Camera-panel HUD overlay items (multi-panel layouts and monitor windows). */
   hudItems: HudItems;
+  /** Operational launch guide: expanded list, compact (current step) or hidden. */
+  guide: 'expanded' | 'compact' | 'hidden';
   /** Lighting multipliers (1 = default). */
   lighting: LightingSettings;
   /** Sonar display/processing preferences. */
@@ -191,6 +195,19 @@ export interface Settings {
   dockAssist: boolean;
   /** Default Top-Hat operating depth (m). */
   tmsDepth: number;
+  /**
+   * How the Top-Hat operating depth is chosen: 'fixed' = `tmsDepth` metres;
+   * 'seabed' = seabed under the launch point minus `tmsAboveSeabed` (typical for
+   * seabed work, see docs/research/tether-and-tms.md). Always clamped to the safe depth.
+   */
+  tmsDepthMode: 'fixed' | 'seabed';
+  /** Seed of the seabed relief and rock field (0 = reference site). Applied when the simulator starts. */
+  environmentSeed: number;
+  /** Suspended particle (marine snow) density multiplier 0–2. */
+  particles: number;
+  /** Sediment resuspension strength 0–2 (0 = off). */
+  sediment: number;
+  tmsAboveSeabed: number;
 }
 
 export type ViewLayout = 'single' | 'dual' | 'quad';
@@ -297,6 +314,11 @@ export const DEFAULT_SETTINGS: Settings = {
   tetherBuoyancy: 'neutral',
   dockAssist: true,
   tmsDepth: 50,
+  tmsDepthMode: 'fixed',
+  environmentSeed: 0,
+  particles: 1,
+  sediment: 1,
+  tmsAboveSeabed: 25,
   monitorSource: 'sonar',
   panelLocks: [false, true, true, true],
   camState: structuredClone(DEFAULT_CAM_STATES),
@@ -304,6 +326,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stationProfile: 'pilotagem',
   customStation: null,
   hudItems: { compass: true, depth: true, attitude: true, tether: true, camera: true, alarms: true },
+  guide: 'compact',
   lighting: { front: 1, top: 1, tms: 1, observer: 'assisted', tetherAssist: false },
   sonar: { range: 40, gain: 1, quality: 'medium', tilt: 15 },
   version: SETTINGS_VERSION,
@@ -367,12 +390,18 @@ export function sanitizeSettings(raw: unknown): Settings {
     monitorSource: pick(r.monitorSource, VIEW_SOURCES, d.monitorSource),
     // v3.1 → v3.1.1: the old default release depth (80 m) was found too deep; only migrate the untouched default.
     tmsDepth: typeof r.version !== 'number' && r.tmsDepth === 80 ? d.tmsDepth : num(r.tmsDepth, 20, 100, d.tmsDepth),
+    tmsDepthMode: pick(r.tmsDepthMode, ['fixed', 'seabed'] as const, d.tmsDepthMode),
+    environmentSeed: Math.round(num(r.environmentSeed, 0, 99, d.environmentSeed)),
+    particles: num(r.particles, 0, 2, d.particles),
+    sediment: num(r.sediment, 0, 2, d.sediment),
+    tmsAboveSeabed: num(r.tmsAboveSeabed, 10, 60, d.tmsAboveSeabed),
     panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
     camState: sanitizeCamStates(r.camState),
     monitors: sanitizeMonitors(r.monitors, r.monitor, r.monitorSource),
     stationProfile: pick(r.stationProfile, STATION_PROFILES, d.stationProfile),
     customStation: sanitizeSnapshot(r.customStation),
     hudItems: sanitizeHudItems(r.hudItems),
+    guide: pick(r.guide, ['expanded', 'compact', 'hidden'] as const, d.guide),
     lighting: sanitizeLighting(r.lighting),
     sonar: sanitizeSonar(r.sonar),
     version: SETTINGS_VERSION,
@@ -532,11 +561,11 @@ function safeStorage(): Storage | null {
 export const RESET_CATEGORIES = {
   station: ['layout', 'panels', 'panelLocks', 'monitors', 'stationProfile', 'monitorSource'],
   cameras: ['camState'],
-  graphics: ['graphics', 'cameraFx', 'lighting', 'showFps'],
+  graphics: ['graphics', 'cameraFx', 'lighting', 'showFps', 'particles', 'sediment'],
   controls: ['bindings', 'keyboardPreset', 'sensitivity', 'keyRamp', 'mouseSensitivity', 'invert', 'gamepadDeadzone', 'defaultMode'],
   sonar: ['sonar'],
-  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'dockAssist'],
-  interface: ['hudItems', 'showHints', 'volume'],
+  environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'tmsDepthMode', 'tmsAboveSeabed', 'dockAssist', 'environmentSeed'],
+  interface: ['hudItems', 'showHints', 'volume', 'guide'],
 } as const satisfies Record<string, readonly (keyof Settings)[]>;
 export type ResetCategory = keyof typeof RESET_CATEGORIES;
 

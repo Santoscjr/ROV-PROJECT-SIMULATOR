@@ -58,6 +58,7 @@ export type PilotAction =
   | 'layoutCycle'
   | 'monitorOpen'
   | 'tmsRecover'
+  | 'toggleGuide'
   | 'zoomIn'
   | 'zoomOut';
 

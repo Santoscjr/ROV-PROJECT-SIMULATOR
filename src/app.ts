@@ -10,7 +10,8 @@ import { Simulation } from './sim/simulation';
 import { CameraRig } from './render/cameras';
 import { UnderwaterPass } from './render/underwaterPass';
 import { World } from './render/world';
-import { Hud, type HudData } from './ui/hud';
+import { Hud, type GuideData, type HudData } from './ui/hud';
+import { launchGuide } from './mission/launchGuide';
 import { Menus } from './ui/menus';
 import { AudioEngine } from './audio/audio';
 import { SITE_BASE_DEPTH, terrainHeight } from './sim/terrain';
@@ -30,7 +31,8 @@ import { DEFAULT_SETTINGS, MAX_MONITORS, type MonitorSettings, type StationProfi
 import { InstrumentPanel, StationUi } from './ui/stationUi';
 import { Object3D, SpotLight } from 'three';
 import type { CameraMode } from './render/cameras';
-import { COLLIDERS, INSPECTION_POINTS } from './sim/site';
+import { COLLIDERS, INSPECTION_POINTS, LAUNCH_POINT, PIPELINE_PATH } from './sim/site';
+import { activeEnvironment, configureEnvironment } from './sim/environment';
 import type { ViewSource } from './config/settings';
 
 type AppState = 'menu' | 'running' | 'paused' | 'report';
@@ -121,6 +123,10 @@ export class App {
     this.renderer.autoClear = true;
 
     const s = this.store.get();
+    // Seabed relief + rock field from the persisted seed, BEFORE the simulation and the
+    // scene are built (physics, sonar, tether and rendering share this one environment).
+    configureEnvironment({ seed: s.environmentSeed });
+    this.environmentSeed = s.environmentSeed;
     this.sim = new Simulation(s.defaultMode);
     this.camStates = structuredClone(s.camState);
     this.camJson = JSON.stringify(this.camStates);
@@ -184,7 +190,8 @@ export class App {
       this.hud.toast(t(locked ? 'station.lockedOn' : 'station.lockedOff', { n: i + 1 }));
     };
     this.station.onActivate = (i) => (this.active = { w: 0, p: i });
-    this.sonar = new Sonar(terrainHeight, COLLIDERS);
+    // Sonar sees structures (list) and every physical rock through the shared spatial grid.
+    this.sonar = new Sonar(terrainHeight, COLLIDERS, activeEnvironment().grid);
     this.hud.onTmsAction = (a: PilotAction) => this.handleAction(a);
     this.menus = new Menus(container, this.store, MISSIONS, {
       start: (id) => this.start(id),
@@ -215,7 +222,7 @@ export class App {
     });
     this.resize();
     // Expose a read-only handle for automated browser tests.
-    (window as unknown as Record<string, unknown>).__ROV__ = { sim: this.sim, app: this, site: { inspectionPoints: INSPECTION_POINTS } };
+    (window as unknown as Record<string, unknown>).__ROV__ = { sim: this.sim, app: this, site: { inspectionPoints: INSPECTION_POINTS, pipelinePath: PIPELINE_PATH, rocks: activeEnvironment().rocks } };
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
@@ -243,6 +250,12 @@ export class App {
       this.mainPassSize = { w: 0, h: 0 };
       this.resize();
     }
+    // Water / sediment (shared by every panel and window): the cloud drifts with the
+    // simulated current; particle and resuspension amounts are operator settings.
+    this.world.setCurrentSampler((p, out) => this.sim.env.current(p, out));
+    this.world.setParticleDensity(s.particles);
+    this.world.setSedimentStrength(s.sediment);
+    this.world.setWaterDetail(s.graphics === 'low' ? 0 : s.graphics === 'medium' ? 1 : 2);
     this.keyboard.setBindings(s.bindings);
     this.keyboard.ramp = s.keyRamp;
     this.gamepad.deadzone = s.gamepadDeadzone;
@@ -261,7 +274,8 @@ export class App {
     this.world.setConditions(this.sim.conditions);
     this.audio.setVolume(s.volume);
     this.sim.tether.setBuoyancy(s.tetherBuoyancy);
-    this.sim.tmsDepth = s.tmsDepth;
+    // Top-Hat operating depth: fixed, or relative to the seabed under the launch point (clamped to the safe depth by the simulation).
+    this.sim.tmsDepth = s.tmsDepthMode === 'seabed' ? -terrainHeight(LAUNCH_POINT.x, LAUNCH_POINT.z) - s.tmsAboveSeabed : s.tmsDepth;
     this.sim.lars.assist = s.dockAssist;
     const mj = JSON.stringify(s.monitors);
     if (mj !== this.monitorJson) {
@@ -280,6 +294,7 @@ export class App {
     if (missionId !== this.store.get().mission) this.store.update({ mission: missionId });
     const def = missionById(missionId);
     this.sim.reset(this.store.get().defaultMode, def);
+    this.world.sediment.reset(); // a new operation starts with clear water around the vehicle
     this.world.setConditions(this.sim.conditions);
     this.fineLatched = false;
     this.pass.resetAdaptation();
@@ -318,6 +333,7 @@ export class App {
     this.state = 'menu';
     this.hud.show(false);
     this.sim.reset(this.store.get().defaultMode, missionById('inspection'));
+    this.world.sediment.reset();
     this.world.setConditions(this.sim.conditions);
     this.menus.show('main');
     this.audio.suspend(true);
@@ -634,6 +650,13 @@ export class App {
         this.hud.toast(t('msg.layout.' + next));
         break;
       }
+      case 'toggleGuide': {
+        const order = ['expanded', 'compact', 'hidden'] as const;
+        const next = order[(order.indexOf(this.store.get().guide) + 1) % order.length];
+        this.store.update({ guide: next });
+        this.hud.toast(t('guide.mode.' + next));
+        break;
+      }
       case 'tmsRecover': {
         // Free mode only (missions drive launch/recovery themselves).
         if (sim.missionDef.id !== 'free') {
@@ -811,6 +834,9 @@ export class App {
     // Main umbilical: crane sheave → Top-Hat termination (always attached).
     this.world.vessel.setWire(sim.lars.liftWorld(this.tmp));
     this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
+    this.world.updateSeabed(sim.rov.position);
+    // The sediment cloud evolves only while the operation runs (frozen when paused / in menus).
+    this.world.sedimentRunning = running;
     this.updateTetherDebug();
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     // TMS visuals follow the winch state.
@@ -1083,6 +1109,43 @@ export class App {
     } else d.arrow.visible = false;
   }
 
+  /** Seed the running environment was built with (a changed setting applies on restart). */
+  private environmentSeed = 0;
+
+  /** Last visual checks observed during the preparation (for the guide). */
+  private guideChecks = { lights: false, thrusters: false, camera: false };
+
+  /** Operational launch guide from the real simulation state (null when hidden or finished). */
+  private guideData(): GuideData | null {
+    const mode = this.store.get().guide;
+    if (mode === 'hidden') return null;
+    const sim = this.sim;
+    const prep = sim.mission.prepChecklist();
+    if (prep) this.guideChecks = { ...prep };
+    const crane = sim.missionDef.start === 'crane';
+    const st = this.store.get();
+    const view = launchGuide({
+      lars: sim.lars.state,
+      launchAuthorised: !crane || prep === null,
+      checks: crane ? this.guideChecks : { lights: true, thrusters: true, camera: true },
+      stationArranged: st.layout !== 'single' || this.monitors.some((w) => w.isOpen),
+      tmsDepth: -sim.lars.position.y,
+      tmsTargetDepth: sim.lars.depth,
+      payout: sim.tms.payout,
+      chord: sim.tether.chordLength,
+    });
+    if (view.complete) return null;
+    const steps = view.steps.map((s, i) => ({
+      label: t('guide.s.' + s.id),
+      detail: s.detail ? t(s.detail.key, s.detail.params) : null,
+      hint: i === view.current ? t('guide.h.' + s.id) : null,
+      done: s.done,
+      optional: s.optional,
+      current: i === view.current,
+    }));
+    return { mode, index: view.current + 1, total: steps.length, steps };
+  }
+
   /** Plain-text report for the diagnostics screen (and to paste into a bug report). */
   diagnostics(): string {
     const st = this.store.get();
@@ -1121,6 +1184,7 @@ export class App {
       `ambiente: ${runtimeEnvironment()}  ·  ${location.href.split('?')[0]}`,
       `versão publicada: ${pubTxt}`,
       `configurações: esquema salvo ${stored} → atual ${st.version}`,
+      `ambiente: semente ${this.environmentSeed}${st.environmentSeed !== this.environmentSeed ? ' — ' + t('diag.seedPending', { s: st.environmentSeed, c: this.environmentSeed }) : ''} · rochas físicas ${activeEnvironment().rocks.length} · tiles ${JSON.stringify(this.world.seabed.stats)}`,
       `GPU: ${gpu}`,
       '',
       '== DESEMPENHO ==',
@@ -1228,6 +1292,7 @@ export class App {
         sim.lars.state === 'atDepth' && sim.missionDef.start !== 'crane' ? t('lars.releasePrompt') : this.objectiveText(m.objective()),
       hint: hint ? this.objectiveText(hint) : null,
       checklist: m.prepChecklist(),
+      guide: this.guideData(),
       holdProgress: m.holdProgress(),
       range: geom ? geom.range : null,
       offAxis: geom ? geom.offAxis : null,

@@ -129,7 +129,10 @@ export class Mission implements OperationMission {
   }
 
   confirm(): Objective | null {
-    if (this.stage === 'prep' && this.checklistDone) {
+    // v3.2: the launch is never blocked by a checklist — the operational guide
+    // only recommends the visual checks (they are recorded for the report).
+    if (this.stage === 'prep') {
+      if (!this.checklistDone) this.stats.deviations.push({ time: this.time, key: 'deviation.skippedChecks' });
       this.stage = 'launch';
       this.stats.startTime = this.time;
       this.launchRequested = true;
@@ -271,7 +274,7 @@ export class Mission implements OperationMission {
     const c = this.config;
     switch (this.stage) {
       case 'prep':
-        return { key: this.checklistDone ? 'mission.prep.launch' : 'mission.prep.waiting' };
+        return { key: 'mission.prep.launch' };
       case 'launch':
         return { key: this.lars === 'atDepth' ? 'mission.launch.release' : 'mission.launch' };
       case 'descent':
