@@ -10,7 +10,8 @@ import { Simulation } from './sim/simulation';
 import { CameraRig } from './render/cameras';
 import { UnderwaterPass } from './render/underwaterPass';
 import { World } from './render/world';
-import { Hud, type HudData } from './ui/hud';
+import { Hud, type GuideData, type HudData } from './ui/hud';
+import { launchGuide } from './mission/launchGuide';
 import { Menus } from './ui/menus';
 import { AudioEngine } from './audio/audio';
 import { SITE_BASE_DEPTH, terrainHeight } from './sim/terrain';
@@ -634,6 +635,13 @@ export class App {
         this.hud.toast(t('msg.layout.' + next));
         break;
       }
+      case 'toggleGuide': {
+        const order = ['expanded', 'compact', 'hidden'] as const;
+        const next = order[(order.indexOf(this.store.get().guide) + 1) % order.length];
+        this.store.update({ guide: next });
+        this.hud.toast(t('guide.mode.' + next));
+        break;
+      }
       case 'tmsRecover': {
         // Free mode only (missions drive launch/recovery themselves).
         if (sim.missionDef.id !== 'free') {
@@ -1083,6 +1091,40 @@ export class App {
     } else d.arrow.visible = false;
   }
 
+  /** Last visual checks observed during the preparation (for the guide). */
+  private guideChecks = { lights: false, thrusters: false, camera: false };
+
+  /** Operational launch guide from the real simulation state (null when hidden or finished). */
+  private guideData(): GuideData | null {
+    const mode = this.store.get().guide;
+    if (mode === 'hidden') return null;
+    const sim = this.sim;
+    const prep = sim.mission.prepChecklist();
+    if (prep) this.guideChecks = { ...prep };
+    const crane = sim.missionDef.start === 'crane';
+    const st = this.store.get();
+    const view = launchGuide({
+      lars: sim.lars.state,
+      launchAuthorised: !crane || prep === null,
+      checks: crane ? this.guideChecks : { lights: true, thrusters: true, camera: true },
+      stationArranged: st.layout !== 'single' || this.monitors.some((w) => w.isOpen),
+      tmsDepth: -sim.lars.position.y,
+      tmsTargetDepth: sim.lars.depth,
+      payout: sim.tms.payout,
+      chord: sim.tether.chordLength,
+    });
+    if (view.complete) return null;
+    const steps = view.steps.map((s, i) => ({
+      label: t('guide.s.' + s.id),
+      detail: s.detail ? t(s.detail.key, s.detail.params) : null,
+      hint: i === view.current ? t('guide.h.' + s.id) : null,
+      done: s.done,
+      optional: s.optional,
+      current: i === view.current,
+    }));
+    return { mode, index: view.current + 1, total: steps.length, steps };
+  }
+
   /** Plain-text report for the diagnostics screen (and to paste into a bug report). */
   diagnostics(): string {
     const st = this.store.get();
@@ -1228,6 +1270,7 @@ export class App {
         sim.lars.state === 'atDepth' && sim.missionDef.start !== 'crane' ? t('lars.releasePrompt') : this.objectiveText(m.objective()),
       hint: hint ? this.objectiveText(hint) : null,
       checklist: m.prepChecklist(),
+      guide: this.guideData(),
       holdProgress: m.holdProgress(),
       range: geom ? geom.range : null,
       offAxis: geom ? geom.offAxis : null,

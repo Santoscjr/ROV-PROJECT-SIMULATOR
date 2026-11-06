@@ -234,6 +234,40 @@
   content: '●';
   color: var(--ok);
 }
+.hud .checklist li.g-title {
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.hud .checklist li.g-title::before {
+  content: '';
+  width: 0;
+}
+.hud .checklist li.g-title span {
+  color: var(--muted);
+  float: right;
+}
+.hud .checklist li.now {
+  color: #ffffff;
+}
+.hud .checklist li.now::before {
+  content: '▶';
+  color: var(--accent);
+}
+.hud .checklist li.opt:not(.done) {
+  font-style: italic;
+}
+.hud .checklist li em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+.hud .checklist li small {
+  display: block;
+  margin-left: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
 
 .hud .progress {
   margin: 8px 10px 0;

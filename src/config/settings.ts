@@ -45,6 +45,7 @@ export const BINDABLE = [
   'zoomIn',
   'zoomOut',
   'tmsRecover',
+  'toggleGuide',
   'layoutCycle',
   'monitorOpen',
 ] as const;
@@ -83,6 +84,7 @@ const COMMON: Omit<KeyBindings, PresetKeys> = {
   zoomIn: ['KeyZ'],
   zoomOut: ['KeyX'],
   tmsRecover: ['KeyO'],
+  toggleGuide: ['F2'],
   layoutCycle: ['KeyY'],
   monitorOpen: ['F8'],
 };
@@ -181,6 +183,8 @@ export interface Settings {
   customStation: StationSnapshot | null;
   /** Camera-panel HUD overlay items (multi-panel layouts and monitor windows). */
   hudItems: HudItems;
+  /** Operational launch guide: expanded list, compact (current step) or hidden. */
+  guide: 'expanded' | 'compact' | 'hidden';
   /** Lighting multipliers (1 = default). */
   lighting: LightingSettings;
   /** Sonar display/processing preferences. */
@@ -304,6 +308,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stationProfile: 'pilotagem',
   customStation: null,
   hudItems: { compass: true, depth: true, attitude: true, tether: true, camera: true, alarms: true },
+  guide: 'compact',
   lighting: { front: 1, top: 1, tms: 1, observer: 'assisted', tetherAssist: false },
   sonar: { range: 40, gain: 1, quality: 'medium', tilt: 15 },
   version: SETTINGS_VERSION,
@@ -373,6 +378,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     stationProfile: pick(r.stationProfile, STATION_PROFILES, d.stationProfile),
     customStation: sanitizeSnapshot(r.customStation),
     hudItems: sanitizeHudItems(r.hudItems),
+    guide: pick(r.guide, ['expanded', 'compact', 'hidden'] as const, d.guide),
     lighting: sanitizeLighting(r.lighting),
     sonar: sanitizeSonar(r.sonar),
     version: SETTINGS_VERSION,
@@ -536,7 +542,7 @@ export const RESET_CATEGORIES = {
   controls: ['bindings', 'keyboardPreset', 'sensitivity', 'keyRamp', 'mouseSensitivity', 'invert', 'gamepadDeadzone', 'defaultMode'],
   sonar: ['sonar'],
   environment: ['current', 'visibility', 'light', 'sea', 'tetherBuoyancy', 'tmsDepth', 'dockAssist'],
-  interface: ['hudItems', 'showHints', 'volume'],
+  interface: ['hudItems', 'showHints', 'volume', 'guide'],
 } as const satisfies Record<string, readonly (keyof Settings)[]>;
 export type ResetCategory = keyof typeof RESET_CATEGORIES;
 

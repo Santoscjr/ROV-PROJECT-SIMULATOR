@@ -7,6 +7,13 @@ import type { CraneState } from '../sim/simulation';
 import type { AxisCommand, AxisName, PilotAction } from '../input/types';
 import './hud.css';
 
+export interface GuideData {
+  mode: 'expanded' | 'compact';
+  index: number;
+  total: number;
+  steps: { label: string; detail: string | null; hint: string | null; done: boolean; optional: boolean; current: boolean }[];
+}
+
 export interface HudData {
   depth: number;
   depthSetpoint: number | null;
@@ -68,6 +75,8 @@ export interface HudData {
     released: boolean;
   };
   checklist: { lights: boolean; thrusters: boolean; camera: boolean } | null;
+  /** Operational launch guide (pre-formatted), null when hidden or finished. */
+  guide: GuideData | null;
   holdProgress: number | null;
   range: number | null;
   offAxis: number | null;
@@ -379,11 +388,16 @@ export class Hud {
     });
     e.stage.textContent = d.stageLabel;
     e.objective.textContent = d.objective;
-    if (d.checklist) {
-      e.checklist.innerHTML = (['lights', 'thrusters', 'camera'] as const)
-        .map((k) => `<li class="${d.checklist![k] ? 'done' : ''}">${t('mission.prep.' + k)}</li>`)
-        .join('');
-    } else e.checklist.innerHTML = '';
+    // Operational launch guide (non-blocking): compact = current step; expanded = all steps.
+    const g = d.guide;
+    const gHtml = g
+      ? `<li class="g-title">${t('guide.title')} <span>${g.index}/${g.total} · F2</span></li>` +
+        g.steps
+          .filter((s) => g.mode === 'expanded' || s.current)
+          .map((s) => `<li class="${s.done ? 'done' : ''}${s.current ? ' now' : ''}${s.optional ? ' opt' : ''}">${s.label}${s.detail ? ` <em>${s.detail}</em>` : ''}${s.current && s.hint ? `<small>${s.hint}</small>` : ''}</li>`)
+          .join('')
+      : '';
+    if (e.checklist.innerHTML !== gHtml) e.checklist.innerHTML = gHtml;
     if (d.range !== null && d.offAxis !== null && d.range < 40) {
       e.geom.innerHTML = `<span>${t('hud.dist')} <b>${fmt(d.range, 1)} m</b></span><span>Δ° <b>${fmt(d.offAxis, 0)}°</b></span>`;
     } else e.geom.innerHTML = '';

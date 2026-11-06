@@ -102,8 +102,9 @@ export class StationUi {
     this.stripT = now;
     const [mis, read, alarm] = Array.from(this.strip.children) as HTMLDivElement[];
     const step = d.steps.length ? `${Math.min(d.stepIndex + 1, d.steps.length)}/${d.steps.length} ` : '';
-    const cl = d.checklist;
-    const check = cl ? ' · ' + (['lights', 'thrusters', 'camera'] as const).map((k) => `${cl[k] ? '✓' : '○'} ${t('mission.prep.' + k)}`).join('  ') : '';
+    const g = d.guide;
+    const cur = g?.steps.find((s) => s.current);
+    const check = g && cur ? ` · ${t('guide.title')} ${g.index}/${g.total}: ${cur.label}${cur.detail ? ` (${cur.detail})` : ''}${cur.hint ? ` — ${cur.hint}` : ''}` : '';
     const hold = d.holdProgress !== null && d.holdProgress !== undefined && d.holdProgress > 0 ? ` · ${Math.round(d.holdProgress * 100)}%` : '';
     mis.innerHTML = `<span class="ss-stage">${step}${d.stageLabel}</span><span class="ss-obj">${d.objective}${hold}${check}</span>`;
     mis.title = d.objective;

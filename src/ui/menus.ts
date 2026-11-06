@@ -373,6 +373,9 @@ export class Menus {
                 .map((k) => `<div class="field"><label for="n-hud-${k}">${t('settings.hudItems.' + k)}</label><input id="n-hud-${k}" type="checkbox" data-n="hudItems.${k}"></div>`)
                 .join('')}
               <p class="muted small">${t('settings.hudItemsNote')}</p>
+              <div class="field"><label for="s-guide">${t('settings.guide')}</label><select id="s-guide" data-s="guide">${(['expanded', 'compact', 'hidden'] as const)
+                .map((g) => `<option value="${g}">${t('settings.guide.' + g)}</option>`)
+                .join('')}</select></div>
             </div>
             <div>
               <h3>${t('settings.monitors')}</h3>
