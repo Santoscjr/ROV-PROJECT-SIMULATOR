@@ -4,6 +4,7 @@ import { getEnvironment, type Rock } from '../src/sim/environment';
 import { DEPRESSIONS, terrainHeight } from '../src/sim/terrain';
 import { COLLIDERS, FREE_SPAN, MANIFOLD, PIPELINE_PATH, PIPELINE_RADIUS, type CapsuleCollider } from '../src/sim/site';
 import { RovPhysics, type PhysicsEnvironment } from '../src/physics/rovPhysics';
+import { sphereCollider } from '../src/physics/collision';
 import { SegmentTether } from '../src/physics/segmentTether';
 import { Sonar } from '../src/render/sonar';
 import { Simulation } from '../src/sim/simulation';
@@ -55,6 +56,48 @@ function altimeterAt(x: number, yBottom: number, z: number): number | null {
   return rov.altitude(physicsEnv());
 }
 
+/**
+ * Independent reference for the 6° single-beam altimeter: brute-force 1 cm
+ * ray-march along ~100 directions filling the cone, against the terrain and
+ * point-in-collider tests (structures + every rock near the footprint). The
+ * nearest echo in the cone is the physically correct reading; the model must
+ * find it (within its 7-ray sampling) and can never read longer than the
+ * vertical distance below it.
+ */
+function coneReference(x: number, yBottom: number, z: number, maxT: number): number {
+  const o = new Vector3(x, yBottom, z);
+  const near: import('../src/sim/site').Collider[] = [];
+  env.queryColliders(x - 3, z - 3, x + 3, z + 3, near);
+  const all = [...COLLIDERS, ...near];
+  const half = (3 * Math.PI) / 180;
+  let best = Infinity;
+  const p = new Vector3();
+  const dirs: Vector3[] = [new Vector3(0, -1, 0)];
+  for (let ring = 1; ring <= 4; ring++)
+    for (let k = 0; k < 24; k++) {
+      const th = (half * ring) / 4;
+      const a = (k / 24) * Math.PI * 2;
+      dirs.push(new Vector3(Math.sin(th) * Math.cos(a), -Math.cos(th), Math.sin(th) * Math.sin(a)));
+    }
+  for (const d of dirs)
+    for (let t = 0; t < Math.min(best, maxT); t += 0.01) {
+      p.copy(o).addScaledVector(d, t);
+      if (p.y <= terrainHeight(p.x, p.z) || all.some((c) => sphereCollider(p, 0.002, c) !== null)) {
+        best = Math.min(best, t);
+        break;
+      }
+    }
+  return best;
+}
+
+/** Cone model check: nearest echo in the cone (±2 cm of the dense reference), never longer than the vertical distance. */
+function expectCone(alt: number | null, x: number, yBottom: number, z: number, vertical: number): void {
+  expect(alt).not.toBeNull();
+  const ref = coneReference(x, yBottom, z, vertical + 0.1);
+  expect(alt!).toBeGreaterThanOrEqual(ref - 0.02);
+  expect(alt!).toBeLessThanOrEqual(Math.min(vertical, ref + 0.05) + 0.02);
+}
+
 describe('altimeter = real geometry (terrain, rocks, berm, pipeline, structures)', () => {
   const H = 3;
   it('flat seabed', () => {
@@ -67,18 +110,19 @@ describe('altimeter = real geometry (terrain, rocks, berm, pipeline, structures)
   it('over a boulder: distance to the rock top, not to the seabed', () => {
     const r = isolatedBoulder(0.6);
     const alt = altimeterAt(r.x, r.top + H, r.z)!;
-    expect(Math.abs(alt - H)).toBeLessThan(0.02);
+    expectCone(alt, r.x, r.top + H, r.z, H);
+    expect(alt).toBeLessThan(H + 0.02); // rock top, not the seabed
     // Off-centre point on the rock flank: analytic cap height.
     const c = Math.cos(r.yaw);
     const s = Math.sin(r.yaw);
     const x = r.x + s * r.halfWidth * 0.5;
     const z = r.z + c * r.halfWidth * 0.5;
     const top = Math.max(terrainHeight(x, z), capsuleTop(r.collider, x, z)!);
-    expect(Math.abs(altimeterAt(x, top + H, z)! - H)).toBeLessThan(0.02);
+    expectCone(altimeterAt(x, top + H, z), x, top + H, z, H);
     // Beside the rock: the seabed again.
     const xo = r.x + s * (r.halfWidth + 1.5);
     const zo = r.z + c * (r.halfWidth + 1.5);
-    expect(Math.abs(altimeterAt(xo, terrainHeight(xo, zo) + H, zo)! - H)).toBeLessThan(0.02);
+    expectCone(altimeterAt(xo, terrainHeight(xo, zo) + H, zo), xo, terrainHeight(xo, zo) + H, zo, H);
   });
 
   it('over a depression (free-span hollow), clear of the pipe', () => {
@@ -94,26 +138,26 @@ describe('altimeter = real geometry (terrain, rocks, berm, pipeline, structures)
     expect(best).not.toBeNull();
     const { x, z } = best!;
     const g = terrainHeight(x, z);
-    expect(altimeterAt(x, g + H, z)!).toBeCloseTo(H, 2);
+    expectCone(altimeterAt(x, g + H, z), x, g + H, z, H);
   });
 
   it('over the pipeline at the free span and over the rock berm', () => {
     const p = FREE_SPAN.point;
     const top = p.y + PIPELINE_RADIUS;
-    expect(Math.abs(altimeterAt(p.x, top + H, p.z)! - H)).toBeLessThan(0.02);
+    expectCone(altimeterAt(p.x, top + H, p.z), p.x, top + H, p.z, H);
     const b = env.bermColliders[3];
     const mx = (b.a.x + b.b.x) / 2;
     const mz = (b.a.z + b.b.z) / 2;
     // Highest of the (overlapping) berm capsules and the pipe at that point.
     const bt = Math.max(...[...env.bermColliders, ...COLLIDERS.filter((c): c is CapsuleCollider => c.kind === 'capsule')].map((c) => capsuleTop(c, mx, mz) ?? -Infinity));
     expect(bt).toBeGreaterThan(terrainHeight(mx, mz) + 0.6);
-    expect(Math.abs(altimeterAt(mx, bt + H, mz)! - H)).toBeLessThan(0.02);
+    expectCone(altimeterAt(mx, bt + H, mz), mx, bt + H, mz, H);
   });
 
   it('over a structure (manifold roof)', () => {
     const m = MANIFOLD.position;
     const roof = m.y + MANIFOLD.size.y;
-    expect(Math.abs(altimeterAt(m.x, roof + H, m.z)! - H)).toBeLessThan(0.02);
+    expectCone(altimeterAt(m.x, roof + H, m.z), m.x, roof + H, m.z, H);
   });
 
   it('Simulation wires the rock field into physics and altimeter', () => {
@@ -121,7 +165,7 @@ describe('altimeter = real geometry (terrain, rocks, berm, pipeline, structures)
     const r = isolatedBoulder(0.6);
     sim.crane = 'released';
     sim.rov.reset(new Vector3(r.x, r.top + H + sim.rov.params.size[1] / 2, r.z), 0);
-    expect(Math.abs(sim.rov.altitude(sim.env)! - H)).toBeLessThan(0.02);
+    expectCone(sim.rov.altitude(sim.env), r.x, r.top + H, r.z, H);
   });
 });
 
@@ -284,5 +328,23 @@ describe('tether vs boulder', () => {
     // Without a spatial query in SegmentTether every node bound-checks every rock (see report);
     // keep it within a few times the structure-only cost.
     expect(withRocks).toBeLessThan(base * 5 + 0.3);
+  });
+});
+
+describe('altimeter beam model (6° cone, body-fixed)', () => {
+  it('reads the slant range when the vehicle is tilted, and nothing beyond 50 m', () => {
+    const x = 0;
+    const z = -84;
+    const g = terrainHeight(x, z);
+    const rov = new RovPhysics();
+    rov.reset(new Vector3(x, g + 4 + rov.params.size[1] / 2, z), 0);
+    const level = rov.altitude(physicsEnv())!;
+    // Pitch 20°: the body-fixed beam reads the slant distance (longer than the vertical).
+    rov.orientation.setFromAxisAngle(new Vector3(0, 0, 1), (20 * Math.PI) / 180);
+    const tilted = rov.altitude(physicsEnv())!;
+    expect(tilted).toBeGreaterThan(level * 1.03);
+    rov.orientation.identity();
+    rov.position.y = g + 70;
+    expect(rov.altitude(physicsEnv())).toBeNull();
   });
 });

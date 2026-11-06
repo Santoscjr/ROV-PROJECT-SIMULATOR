@@ -1,7 +1,8 @@
 import { Quaternion, Vector3 } from 'three';
 import { DEFAULT_ROV_PARAMS, type RovParams } from './rovParams';
 import { ThrusterBank, type Wrench } from './thrusters';
-import { colliderBounds, rayDownToCollider, sphereCollider } from './collision';
+import { colliderBounds, sphereCollider } from './collision';
+import { ALTIMETER, altimeterReading } from '../sim/altimeter';
 import type { TetherForceProvider } from './tether';
 import type { Collider } from '../sim/site';
 
@@ -520,23 +521,12 @@ export class RovPhysics {
    * Altimeter: vertical distance from the bottom of the frame to the seabed
    * or a structure below. Returns null when out of range.
    */
-  altitude(env: PhysicsEnvironment, maxRange = 60): number | null {
+  altitude(env: PhysicsEnvironment, maxRange: number = ALTIMETER.maxRange): number | null {
+    // Transducer on the bottom of the frame, looking along the body's down axis
+    // (it tilts with the vehicle) — single-beam altimeter model (sim/altimeter.ts).
     const bottom = _tmp.set(0, -this.params.size[1] / 2, 0).applyQuaternion(this.orientation).add(this.position);
-    let d = bottom.y - env.terrainHeight(bottom.x, bottom.z);
-    for (const c of env.colliders) {
-      const hit = rayDownToCollider(bottom, c);
-      if (hit !== null && hit < d) d = hit;
-    }
-    if (env.queryColliders) {
-      // Vertical ray: only colliders whose footprint contains the point can be hit.
-      _near.length = 0;
-      env.queryColliders(bottom.x, bottom.z, bottom.x, bottom.z, _near);
-      for (const c of _near) {
-        const hit = rayDownToCollider(bottom, c);
-        if (hit !== null && hit < d) d = hit;
-      }
-    }
-    if (d > maxRange) return null;
-    return Math.max(0, d);
+    const axis = _tmp2.set(0, -1, 0).applyQuaternion(this.orientation).normalize();
+    return altimeterReading(bottom, axis, env, { ...ALTIMETER, maxRange });
   }
+
 }

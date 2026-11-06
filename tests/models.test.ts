@@ -5,7 +5,11 @@
  * are not part of the model (auxiliary, tether cameras in cameras.ts) stay
  * clear of geometry, and the lamp beams leave the vehicle unobstructed.
  */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+// Raycast-heavy clearance checks (tens of thousands of rays per quality): a compute-time
+// budget, not a behaviour limit — keep the full suite from timing them out under load.
+vi.setConfig({ testTimeout: 60_000 });
 import * as THREE from 'three';
 import { THRUSTERS, DEFAULT_ROV_PARAMS } from '../src/physics/rovParams';
 import { createRovModel, type Quality, type RovModel } from '../src/render/rovModel';
