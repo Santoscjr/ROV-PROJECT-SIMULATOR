@@ -40,7 +40,8 @@ const sleep = (ms, p = page) => p.waitForTimeout(ms);
 const set = (patch) => page.evaluate((p) => window.__ROV__.app.store.update(p), patch);
 const shot = async (name, settle = 2200, p = page) => {
   await sleep(settle, p);
-  await p.screenshot({ path: `${out}/${name}.png` });
+  // Software GL: a frame can take several seconds (first use of a program compiles it).
+  await p.screenshot({ path: `${out}/${name}.png`, timeout: 120000 });
   console.log('  ' + name);
 };
 

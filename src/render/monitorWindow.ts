@@ -1,4 +1,4 @@
-import { ACESFilmicToneMapping, PCFSoftShadowMap, SRGBColorSpace, Vector2, WebGLRenderer, type Vector3 } from 'three';
+import { ACESFilmicToneMapping, PCFSoftShadowMap, PerspectiveCamera, SRGBColorSpace, Vector2, WebGLRenderer, type Vector3 } from 'three';
 import { SecondaryView, glViewport, isCameraSource, layoutRects, renderCameraPanel, type PanelEnv, type Rect } from './station';
 import { Sonar } from './sonar';
 import { activeEnvironment } from '../sim/environment';
@@ -52,6 +52,7 @@ export class MonitorWindow {
   private sonarCfg: SonarSettings | null = null;
   private readonly size = new Vector2();
   private msaa = 0;
+  private effectsCompiled = false;
   /** Draw calls / triangles of the last frame of this window. */
   stats = { calls: 0, triangles: 0 };
   /** Time (ms) of the last frame drawn — for the link diagnostics. */
@@ -281,6 +282,11 @@ export class MonitorWindow {
     const doc = this.doc;
     const renderer = this.renderer;
     this.msaa = f.msaa;
+    if (!this.effectsCompiled) {
+      // Each WebGL context compiles its own programs: do it once, before a cloud appears.
+      f.world.effects.precompile(renderer, new PerspectiveCamera());
+      this.effectsCompiled = true;
+    }
     const W = Math.max(1, win.innerWidth);
     const H = Math.max(1, win.innerHeight - BAR_H);
     const pr = Math.min(win.devicePixelRatio || 1, f.pixelRatioCap);
@@ -378,6 +384,7 @@ export class MonitorWindow {
   }
 
   private releaseGpu(): void {
+    this.effectsCompiled = false;
     this.stats = { calls: 0, triangles: 0 };
     this.views.forEach((v, i) => {
       v?.dispose();

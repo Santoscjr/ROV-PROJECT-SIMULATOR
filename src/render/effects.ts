@@ -20,6 +20,8 @@ import {
   type Object3D,
   type PerspectiveCamera,
   type SpotLight,
+  type Camera,
+  type WebGLRenderer,
 } from 'three';
 import { OPTICS, waterOptics, type WaterOptics } from './optics';
 import type { PuffView } from '../sim/sedimentCloud';
@@ -591,6 +593,21 @@ export class WaterEffects {
     this.particles.visible = opts.underwater;
     this.silt.visible = opts.underwater && this.siltPuffs > 0;
     void dt;
+  }
+
+  /**
+   * Compile every effect program up front (the silt sprites are otherwise first
+   * compiled when a cloud appears mid-operation → a visible hitch). Call once per
+   * WebGL context (main window and each monitor window).
+   */
+  precompile(renderer: WebGLRenderer, camera: Camera): void {
+    const vis = this.silt.visible;
+    const pv = this.particles.visible;
+    this.silt.visible = true;
+    this.particles.visible = true;
+    renderer.compile(this.scene, camera);
+    this.silt.visible = vis;
+    this.particles.visible = pv;
   }
 
   dispose(): void {

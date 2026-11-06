@@ -1,4 +1,5 @@
 import {
+  PerspectiveCamera,
   CatmullRomCurve3,
   Color,
   DirectionalLight,
@@ -153,6 +154,8 @@ export class World {
     this.effects = new WaterEffects(quality, pass.depthTexture, pass.cameraUniforms);
     this.effects.attachLights(this.lamps, this.rov.lightMounts, quality !== 'low');
     this.applyOptics();
+    // No first-cloud hitch: compile the effect programs now.
+    this.effects.precompile(renderer, new PerspectiveCamera());
   }
 
   /**
