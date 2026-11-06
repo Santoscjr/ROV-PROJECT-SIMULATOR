@@ -294,6 +294,7 @@ export class App {
     if (missionId !== this.store.get().mission) this.store.update({ mission: missionId });
     const def = missionById(missionId);
     this.sim.reset(this.store.get().defaultMode, def);
+    this.world.sediment.reset(); // a new operation starts with clear water around the vehicle
     this.world.setConditions(this.sim.conditions);
     this.fineLatched = false;
     this.pass.resetAdaptation();
@@ -332,6 +333,7 @@ export class App {
     this.state = 'menu';
     this.hud.show(false);
     this.sim.reset(this.store.get().defaultMode, missionById('inspection'));
+    this.world.sediment.reset();
     this.world.setConditions(this.sim.conditions);
     this.menus.show('main');
     this.audio.suspend(true);
@@ -833,6 +835,8 @@ export class App {
     this.world.vessel.setWire(sim.lars.liftWorld(this.tmp));
     this.world.updateTether(dt, sim.crane === 'released' ? sim.tether.polyline(16, this.tetherPts) : null);
     this.world.updateSeabed(sim.rov.position);
+    // The sediment cloud evolves only while the operation runs (frozen when paused / in menus).
+    this.world.sedimentRunning = running;
     this.updateTetherDebug();
     const seabedDepth = -terrainHeight(cam.position.x, cam.position.z) || SITE_BASE_DEPTH;
     // TMS visuals follow the winch state.
