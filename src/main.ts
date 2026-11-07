@@ -1,8 +1,15 @@
 import './ui/style.css';
-import { t } from './i18n';
+import { getLocale, setLocale, t } from './i18n';
+import { SettingsStore } from './config/settings';
 import { installErrorCapture, recordError } from './diagnostics/errors';
 
 installErrorCapture();
+
+// O idioma tem de valer antes de qualquer t(): HUD, menus e painéis montam o DOM
+// uma única vez. Trocar de idioma salva a preferência e recarrega a página.
+setLocale(new SettingsStore().get().language);
+document.documentElement.lang = getLocale();
+document.title = t('app.title');
 
 const container = document.getElementById('app')!;
 const loading = document.createElement('div');

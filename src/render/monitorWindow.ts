@@ -4,7 +4,7 @@ import { Sonar } from './sonar';
 import { activeEnvironment } from '../sim/environment';
 import type { CameraStates, HudItems, MonitorSettings, SonarSettings, ViewSource } from '../config/settings';
 import { VIEW_SOURCES } from '../config/settings';
-import { t } from '../i18n';
+import { applyI18n, getLocale, t } from '../i18n';
 import type { InstrumentPanel } from '../ui/stationUi';
 import type { Hud, HudData } from '../ui/hud';
 import type { Collider } from '../sim/site';
@@ -111,6 +111,10 @@ export class MonitorWindow {
     this.doc = doc;
     const host = doc.getElementById('host');
     if (!host) return;
+    // A página do monitor é estática: os textos fixos dela (data-i18n) e o lang
+    // seguem o idioma da janela principal, que é quem adota o monitor.
+    doc.documentElement.lang = getLocale();
+    applyI18n(doc);
     if (!doc.getElementById('pov-css')) {
       const st = doc.createElement('style');
       st.id = 'pov-css';

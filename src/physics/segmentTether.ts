@@ -39,8 +39,22 @@ export interface SegmentTetherConfig {
   axialStiffness: number;
   /** Axial damping (N per m/s of stretch rate). */
   axialDamping: number;
-  /** Constraint iterations per step. */
+  /** Constraint iterations per step (mínimo; cresce com o número de segmentos). */
   iterations: number;
+  /**
+   * Comprimento-alvo de cada segmento (m). O número de segmentos acompanha o
+   * cabo pago: com resolução fixa, 250 m viravam elos rígidos de ~8 m e o cabo
+   * suspenso aparecia como um polígono de quinas.
+   */
+  targetSegmentLength: number;
+  /** Teto de segmentos (custo por passo cresce com n × iterações). */
+  maxSegments: number;
+  /**
+   * Rigidez à flexão (N·m², EI). Um tether de verdade não dobra como corrente:
+   * a capa e os condutores dão uma rigidez pequena, mas suficiente para o cabo
+   * folgado deitar em curvas largas em vez de quinas. 0 desliga.
+   */
+  bendStiffness: number;
   /** Contact radius of the cable for collisions (m). */
   radius: number;
   /** Clamp of the force transmitted to the ROV (N). */
@@ -60,6 +74,10 @@ export const DEFAULT_SEGMENT_TETHER: SegmentTetherConfig = {
   axialStiffness: 3.0e5,
   axialDamping: 2.0e4,
   iterations: 12,
+  targetSegmentLength: 1.5,
+  maxSegments: 160,
+  // Ordem de grandeza de cabos de ~30 mm com capa de poliuretano (aproximação).
+  bendStiffness: 60,
   radius: 0.05,
   maxForce: 15000,
   waterDensity: 1025,
@@ -75,6 +93,23 @@ const ROV_BOX = { cx: 0, cy: -0.05, cz: 0, hx: 1.35, hy: 0.85, hz: 0.85 };
  * produced a full-scale tension spike at release).
  */
 const ROV_ANCHOR_MARGIN = 0.3;
+/**
+ * Trecho junto à terminação que fica livre do contato com o casco (m, medido ao
+ * longo do cabo). A terminação fica ~0,2 m acima da face superior do casco, então
+ * basta isentar o próprio ponto de fixação. Antes a isenção era "os dois últimos
+ * nós": com elos longos isso deixava vários metros de cabo atravessando o ROV.
+ */
+const ROV_TERMINATION_FREE = 0.15;
+/**
+ * Se a terminação estiver DENTRO do volume do casco (ex.: fixação na proa em
+ * testes ou outro veículo), o cabo precisa de um trecho livre maior para sair
+ * do volume sem ficar preso entre a fixação e o contato.
+ */
+const ROV_TERMINATION_FREE_INSIDE = 0.75;
+/** Espaçamento das amostras usadas para testar cada segmento contra o casco (m). */
+const ROV_SEGMENT_SAMPLE = 0.2;
+/** Raio de uma esfera que contém o casco (para descartar segmentos longe do ROV). */
+const ROV_BOX_RADIUS = Math.hypot(1.35, 0.9, 0.85);
 
 /** Per-node contact flags in {@link TetherDebugState.nodeContact}. */
 export const TETHER_CONTACT = { seabed: 1, structure: 2, rov: 4 } as const;
@@ -118,18 +153,26 @@ const _a = new Vector3();
 const _b = new Vector3();
 const _q = new Quaternion();
 const _qi = new Quaternion();
+const _s = new Vector3();
+const _w = new Vector3();
+const _o = new Vector3();
 
 export class SegmentTether implements TetherForceProvider {
   readonly config: SegmentTetherConfig;
-  readonly n: number;
+  /** Número atual de segmentos (muda com o cabo pago, ver remesh()). */
+  n: number;
   /** Particle positions (world) — index 0 at the TMS exit, n at the ROV termination. */
-  readonly p: Vector3[];
-  private readonly prev: Vector3[];
-  private readonly lambda: Float64Array;
+  p: Vector3[];
+  private prev: Vector3[];
+  private lambda: Float64Array;
+  /** Lambdas acumulados da flexão (XPBD), um por nó interno. */
+  private lambdaBend: Float64Array;
   /** Per-node contact flags of the last step (TETHER_CONTACT bits). */
-  private readonly nodeFlags: Uint8Array;
+  private nodeFlags: Uint8Array;
   private lastDt = 1 / 120;
   private rovContactSuspended = false;
+  /** Trecho do cabo junto à terminação sem contato com o casco (m), calculado a cada passo. */
+  private rovFree = ROV_TERMINATION_FREE;
   private debug: TetherDebugState | null = null;
   /** Paid-out length (m), set by the TMS winch every step. */
   payout = 30;
@@ -163,16 +206,60 @@ export class SegmentTether implements TetherForceProvider {
     },
   ) {
     this.config = { ...DEFAULT_SEGMENT_TETHER, ...config };
-    this.n = Math.max(4, Math.round(this.config.segments));
+    this.n = this.targetSegments();
     this.p = Array.from({ length: this.n + 1 }, () => new Vector3());
     this.prev = Array.from({ length: this.n + 1 }, () => new Vector3());
     this.lambda = new Float64Array(this.n);
+    this.lambdaBend = new Float64Array(this.n + 1);
     this.nodeFlags = new Uint8Array(this.n + 1);
     this.bounds = colliders.map(colliderBounds);
   }
 
   setBuoyancy(b: TetherBuoyancy): void {
     this.config.wetWeight = TETHER_BUOYANCY[b];
+  }
+
+  /** Quantos segmentos o cabo pago pede: ~targetSegmentLength cada, entre o mínimo e o teto. */
+  private targetSegments(): number {
+    const c = this.config;
+    const min = Math.max(4, Math.round(c.segments));
+    return Math.min(Math.max(min, c.maxSegments), Math.max(min, Math.round(this.payout / c.targetSegmentLength)));
+  }
+
+  /**
+   * Troca a resolução do cabo sem mudar sua forma: reamostro a curva atual por
+   * comprimento de arco em `m` segmentos iguais. A posição anterior (prev) é
+   * reamostrada nos mesmos parâmetros, então a velocidade de cada trecho também
+   * se mantém — o cabo não dá saltos quando o guincho paga ou recolhe.
+   */
+  private remesh(m: number): void {
+    // Reamostragem pelo índice fracionário dos nós (o nó novo i fica na posição
+    // i·n/m da cadeia antiga), não por comprimento de arco uniforme. Assim cada
+    // trecho mantém a sua deformação e o seu espaçamento: onde o cabo estava
+    // folgado continua folgado, onde estava esticado continua esticado, e um
+    // trecho curto dobrado na quina do casco continua curto. Com arco uniforme,
+    // a corda nova junto ao ROV cortava a quina e o contato reacomodava o cabo
+    // ~25 cm num passo. p e prev usam os mesmos parâmetros, então a velocidade
+    // de cada ponto é preservada.
+    const n = this.n;
+    const at = (src: Vector3[], u: number): Vector3 => {
+      const j = Math.min(n - 1, Math.floor(u));
+      return new Vector3().lerpVectors(src[j], src[j + 1], Math.min(1, Math.max(0, u - j)));
+    };
+    const newP: Vector3[] = [];
+    const newPrev: Vector3[] = [];
+    for (let i = 0; i <= m; i++) {
+      const u = (i * n) / m;
+      newP.push(i === m ? this.p[n].clone() : at(this.p, u));
+      newPrev.push(i === m ? this.prev[n].clone() : at(this.prev, u));
+    }
+    this.n = m;
+    this.p = newP;
+    this.prev = newPrev;
+    this.lambda = new Float64Array(m);
+    this.lambdaBend = new Float64Array(m + 1);
+    this.nodeFlags = new Uint8Array(m + 1);
+    this.debug = null;
   }
 
   /** Vehicle pose for cable-on-ROV contact (call before each step). */
@@ -204,6 +291,17 @@ export class SegmentTether implements TetherForceProvider {
    */
   reset(anchor: Vector3, attach: Vector3, sagDirection?: Vector3): void {
     this.anchor.copy(anchor);
+    // Resolução de acordo com o cabo pago agora (reset recoloca todos os nós).
+    const m = this.targetSegments();
+    if (m !== this.n) {
+      this.n = m;
+      this.p = Array.from({ length: m + 1 }, () => new Vector3());
+      this.prev = Array.from({ length: m + 1 }, () => new Vector3());
+      this.lambda = new Float64Array(m);
+      this.lambdaBend = new Float64Array(m + 1);
+      this.nodeFlags = new Uint8Array(m + 1);
+      this.debug = null;
+    }
     const chord = anchor.distanceTo(attach);
     const extra = Math.max(0, this.payout - chord);
     // Shallow-sag estimate, capped so that no segment starts stretched: the
@@ -215,6 +313,16 @@ export class SegmentTether implements TetherForceProvider {
     const sag = Math.min(Math.sqrt((3 * Math.max(chord, 1) * extra) / 8), sagCap);
     const dir = _c.set(0, -1, 0);
     if (sagDirection && sagDirection.lengthSq() > 1e-12) dir.copy(sagDirection).normalize();
+    else if (this.hasVehicle) {
+      // Sem direção dada (re-lançamento após teleporte, testes): deito a barriga do
+      // cabo para FORA do casco, a partir do centro do ROV em direção à fixação.
+      // Com a barriga para baixo e a saída do TMS acima do ROV, o cabo nascia
+      // atravessando o veículo — um nó preso "por dentro" que nenhum contato
+      // local consegue desenroscar.
+      _t.subVectors(attach, this.vehiclePos);
+      _t.y = 0;
+      if (_t.lengthSq() > 1e-6) dir.copy(_t.normalize()).multiplyScalar(1).add(_a.set(0, -0.3, 0)).normalize();
+    }
     for (let i = 0; i <= this.n; i++) {
       const s = i / this.n;
       this.p[i].lerpVectors(anchor, attach, s).addScaledVector(dir, sag * 4 * s * (1 - s));
@@ -240,6 +348,10 @@ export class SegmentTether implements TetherForceProvider {
 
   step(dt: number, attachWorld: Vector3, attachVelocityWorld: Vector3, out: Vector3): Vector3 {
     void attachVelocityWorld;
+    // Ajusto a resolução quando o cabo pago muda o bastante (histerese de ~10 %
+    // para não reamostrar a cada passo durante o pagamento/recolhimento).
+    const want = this.targetSegments();
+    if (this.enabled && Math.abs(want - this.n) >= Math.max(2, Math.ceil(this.n * 0.1))) this.remesh(want);
     const n = this.n;
     const cfg = this.config;
     const p = this.p;
@@ -296,8 +408,17 @@ export class SegmentTether implements TetherForceProvider {
     // 2. Rope constraints (unilateral: resist stretching only), XPBD-style.
     const lam = this.lambda;
     lam.fill(0);
+    this.lambdaBend.fill(0);
     const alpha = L / cfg.axialStiffness / dt2;
-    for (let it = 0; it < cfg.iterations; it++) {
+    // Mais segmentos pedem mais iterações para a tração atravessar o cabo inteiro
+    // (senão ele fica "elástico" e o esticamento vira tração falsa no ROV).
+    // Testei varrer alternando o sentido: converge igual, mas distribui mal os
+    // lambdas por segmento e estraga a leitura de tração por trecho — ficou só TMS→ROV.
+    // Só o cabo esticado precisa disso: folgado, não há tração para propagar e as
+    // iterações-base bastam (300 m de cabo folgado custavam 4× mais à toa).
+    const taut = this.stretch > 5e-4 * this.payout || this.tension > 50;
+    const iters = taut ? Math.min(48, Math.max(cfg.iterations, Math.ceil(n / 4))) : cfg.iterations;
+    for (let it = 0; it < iters; it++) {
       for (let j = 0; j < n; j++) {
         const a = p[j];
         const b = p[j + 1];
@@ -319,8 +440,13 @@ export class SegmentTether implements TetherForceProvider {
         if (wa) a.addScaledVector(_v, wa * dl);
         if (wb) b.addScaledVector(_v, -wb * dl);
       }
+      // Flexão: restrição entre vizinhos de segunda ordem (i−1, i+1), unilateral —
+      // só age quando o cabo dobra (distância < 2L); reto e tracionado, não muda nada.
+      if (cfg.bendStiffness > 0) this.solveBending(L, dt2);
       // 3. Contacts (every few iterations and at the end).
-      if (it % 4 === 3 || it === cfg.iterations - 1) this.solveContacts(it === cfg.iterations - 1);
+      // Contatos a cada 2 iterações: a flexão empurra nós contra o casco entre uma
+      // passada e outra, e penetrações rasas são resolvidas pela face certa.
+      if (it % 2 === 1 || it === iters - 1) this.solveContacts(it === iters - 1);
     }
 
     // 4. Force on the ROV: local pull of the last segment vs elastic stretch of the whole line.
@@ -349,6 +475,45 @@ export class SegmentTether implements TetherForceProvider {
     return out.copy(this.force);
   }
 
+  /**
+   * Rigidez à flexão no estilo XPBD. Para cada nó interno, a restrição é a
+   * distância entre o nó e o ponto médio dos vizinhos (zero = cabo reto). A
+   * correção move o nó do meio em direção à corda e os vizinhos no sentido
+   * oposto, o que só ENCURTA os segmentos — como a restrição axial só resiste a
+   * esticar, a flexão nunca cria tração falsa no ROV (a primeira versão afastava
+   * os vizinhos e gerava picos de tração).
+   * Rigidez equivalente de uma viga de vão 2L com carga no meio: k = 6·EI/L³.
+   * Os lambdas são acumulados por passo, então a rigidez não depende do número
+   * de iterações.
+   */
+  private solveBending(L: number, dt2: number): void {
+    const n = this.n;
+    const p = this.p;
+    const lam = this.lambdaBend;
+    const k = (6 * this.config.bendStiffness) / (L * L * L);
+    const alpha = 1 / (k * dt2);
+    for (let i = 1; i < n; i++) {
+      const a = p[i - 1];
+      const m = p[i];
+      const b = p[i + 1];
+      // Vetor do ponto médio dos vizinhos até o nó do meio.
+      _v.set((a.x + b.x) * 0.5 - m.x, (a.y + b.y) * 0.5 - m.y, (a.z + b.z) * 0.5 - m.z);
+      const C = _v.length();
+      if (C < 1e-7) continue;
+      _v.divideScalar(C); // direção nó → corda
+      // Pesos (massa inversa) e gradientes: nó do meio 1, vizinhos 1/2 cada.
+      const wa = i - 1 === 0 ? 0 : 1;
+      const wm = 1;
+      const wb = i + 1 === n ? 0 : 1;
+      const wsum = wm + 0.25 * wa + 0.25 * wb;
+      const dl = (C - alpha * lam[i]) / (wsum + alpha);
+      lam[i] += dl;
+      m.addScaledVector(_v, wm * dl);
+      if (wa) a.addScaledVector(_v, -0.5 * wa * dl);
+      if (wb) b.addScaledVector(_v, -0.5 * wb * dl);
+    }
+  }
+
   private solveContacts(count: boolean): void {
     const n = this.n;
     const r = this.config.radius;
@@ -367,6 +532,13 @@ export class SegmentTether implements TetherForceProvider {
       rovContact = !this.rovContactSuspended;
     } else this.rovContactSuspended = false;
     if (count) flags.fill(0);
+    // Trecho livre junto à terminação: mínimo se a fixação está fora do casco.
+    this.rovFree = ROV_TERMINATION_FREE;
+    if (rovContact) {
+      _b.subVectors(this.p[n], this.vehiclePos).applyQuaternion(_qi);
+      const inside = Math.abs(_b.x - ROV_BOX.cx) < ROV_BOX.hx + r && Math.abs(_b.y - ROV_BOX.cy) < ROV_BOX.hy + r && Math.abs(_b.z - ROV_BOX.cz) < ROV_BOX.hz + r;
+      if (inside) this.rovFree = ROV_TERMINATION_FREE_INSIDE;
+    }
     // Seabed colliders near the cable: one grid query for the cable's xz bounding box.
     const near = this.nearIdx;
     near.length = 0;
@@ -414,27 +586,101 @@ export class SegmentTether implements TetherForceProvider {
           if (count) flags[i] |= TETHER_CONTACT.structure;
         }
       }
-      // ROV body (skip the last two particles: the termination itself).
-      if (rovContact && i < n - 2) {
+      // Casco do ROV. Fica de fora só o trecho do restritor junto à terminação,
+      // medido ao longo do cabo (não por índice de nó).
+      if (rovContact && (n - i) * this.restLength >= this.rovFree) {
         _b.subVectors(q, this.vehiclePos).applyQuaternion(_qi);
-        const lx = _b.x - ROV_BOX.cx;
-        const ly = _b.y - ROV_BOX.cy;
-        const lz = _b.z - ROV_BOX.cz;
-        const px = ROV_BOX.hx + r - Math.abs(lx);
-        const py = ROV_BOX.hy + r - Math.abs(ly);
-        const pz = ROV_BOX.hz + r - Math.abs(lz);
-        if (px > 0 && py > 0 && pz > 0) {
-          if (py <= px && py <= pz) _b.y += Math.sign(ly || 1) * py;
-          else if (px <= pz) _b.x += Math.sign(lx || 1) * px;
-          else _b.z += Math.sign(lz || 1) * pz;
+        _o.subVectors(this.prev[i], this.vehiclePos).applyQuaternion(_qi);
+        if (this.rovPushOut(_b.x - ROV_BOX.cx, _b.y - ROV_BOX.cy, _b.z - ROV_BOX.cz, _o.x - ROV_BOX.cx, _o.y - ROV_BOX.cy, _o.z - ROV_BOX.cz)) {
+          _b.add(_w);
           q.copy(_b.applyQuaternion(this.vehicleQuat).add(this.vehiclePos));
           rov++;
           if (count) flags[i] |= TETHER_CONTACT.rov;
         }
       }
     }
+    // Segmentos contra o casco: com elos de 1–2 m, um trecho pode cruzar uma
+    // quina do casco com os dois nós do lado de fora. Amostro cada segmento
+    // próximo ao ROV a cada ~20 cm e, se uma amostra entrar no casco, empurro os
+    // dois nós do segmento (peso proporcional à posição da amostra, como no PBD).
+    if (rovContact) rov += this.solveRovSegments(count);
     if (count) this.contacts = { seabed, structure, rov };
     void _q;
+  }
+
+  /**
+   * Empurra um ponto (no referencial do ROV) para fora do casco. A face de saída
+   * é a face por onde ele ENTROU (decidida pela posição do passo anterior, também
+   * no referencial do ROV); só se o ponto já estava dentro uso a face mais
+   * próxima. Sair sempre pela face mais próxima deixava o cabo "atravessar" o
+   * casco: um ponto que passava do meio saía pelo lado oposto. Resultado em _w
+   * (deslocamento local); retorna false se o ponto está fora.
+   */
+  private rovPushOut(lx: number, ly: number, lz: number, ox: number, oy: number, oz: number): boolean {
+    const r = this.config.radius;
+    const hx = ROV_BOX.hx + r;
+    const hy = ROV_BOX.hy + r;
+    const hz = ROV_BOX.hz + r;
+    const px = hx - Math.abs(lx);
+    const py = hy - Math.abs(ly);
+    const pz = hz - Math.abs(lz);
+    if (px <= 0 || py <= 0 || pz <= 0) return false;
+    // De onde veio: eixo(s) em que a posição anterior estava fora; fico com o de
+    // maior "folga" anterior (a face realmente atravessada).
+    const ex = Math.abs(ox) - hx;
+    const ey = Math.abs(oy) - hy;
+    const ez = Math.abs(oz) - hz;
+    if (ex > 0 || ey > 0 || ez > 0) {
+      if (ey >= ex && ey >= ez) _w.set(0, Math.sign(oy || 1) * hy - ly, 0);
+      else if (ex >= ez) _w.set(Math.sign(ox || 1) * hx - lx, 0, 0);
+      else _w.set(0, 0, Math.sign(oz || 1) * hz - lz);
+    } else if (py <= px && py <= pz) _w.set(0, Math.sign(ly || 1) * py, 0);
+    else if (px <= pz) _w.set(Math.sign(lx || 1) * px, 0, 0);
+    else _w.set(0, 0, Math.sign(lz || 1) * pz);
+    return true;
+  }
+
+  private solveRovSegments(count: boolean): number {
+    const n = this.n;
+    const L = this.restLength;
+    const r = this.config.radius;
+    const flags = this.nodeFlags;
+    const pos = this.vehiclePos;
+    const reach = ROV_BOX_RADIUS + r + L * 0.5;
+    const samples = Math.max(2, Math.ceil(L / ROV_SEGMENT_SAMPLE));
+    let hits = 0;
+    for (let j = 0; j < n; j++) {
+      const a = this.p[j];
+      const b = this.p[j + 1];
+      _s.addVectors(a, b).multiplyScalar(0.5);
+      if (_s.distanceToSquared(pos) > reach * reach) continue;
+      for (let k = 1; k < samples; k++) {
+        const t = k / samples;
+        // Trecho do restritor (perto da terminação) fica livre do contato.
+        if ((n - j - t) * L < this.rovFree) break;
+        _s.lerpVectors(a, b, t).sub(pos).applyQuaternion(_qi);
+        _o.lerpVectors(this.prev[j], this.prev[j + 1], t).sub(pos).applyQuaternion(_qi);
+        if (!this.rovPushOut(_s.x - ROV_BOX.cx, _s.y - ROV_BOX.cy, _s.z - ROV_BOX.cz, _o.x - ROV_BOX.cx, _o.y - ROV_BOX.cy, _o.z - ROV_BOX.cz)) continue;
+        _w.applyQuaternion(this.vehicleQuat);
+        // Nós fixos (saída do TMS e terminação) não se movem.
+        const wa = j === 0 ? 0 : 1 - t;
+        const wb = j + 1 >= n ? 0 : t;
+        const den = wa * wa + wb * wb;
+        if (den < 1e-9) continue;
+        // Perto de um nó fixo a correção do nó livre é amplificada (1/(1−t)); limito
+        // para não injetar saltos — o resto é resolvido nas próximas iterações.
+        const ka = Math.min(4, wa / den);
+        const kb = Math.min(4, wb / den);
+        a.addScaledVector(_w, ka);
+        b.addScaledVector(_w, kb);
+        hits++;
+        if (count) {
+          flags[j] |= TETHER_CONTACT.rov;
+          flags[j + 1] |= TETHER_CONTACT.rov;
+        }
+      }
+    }
+    return hits;
   }
 
   /**
