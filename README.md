@@ -1,8 +1,35 @@
 # ROV Offshore Simulator
 
-Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no navegador (Three.js + TypeScript, site estático).
+**Independent Subsea Simulation Project** · *Explore the depths. Master the operation.*
+Created & Developed by **Claudio Junior**.
+
+Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no navegador (Three.js + TypeScript, site estático). É um projeto pessoal e independente: uma simulação educacional com modelos simplificados, sem a pretensão de reproduzir a dinâmica certificada de um equipamento real.
 
 **Acesse:** https://santoscjr.github.io/ROV-PROJECT-SIMULATOR/
+
+Interface em português (Brasil) e inglês: o idioma é escolhido na tela inicial (ou em Configurações → Estação) e aplicado ao recarregar a página. A tela inicial também dá acesso a **Sobre** e **Contato**.
+
+## Recursos
+
+Resumo objetivo; o detalhamento, com as fontes, está em [docs/PORTFOLIO.md](docs/PORTFOLIO.md).
+
+**Disponível**
+- ROV fictício de 8 propulsores com dinâmica de 6 graus de liberdade em passo fixo (1/120 s), potência hidráulica compartilhada e modos MANUAL, STABILIZE e DEPTH HOLD.
+- Tether segmentado com resolução que acompanha o comprimento pago, rigidez à flexão e contato com o casco do ROV; mesma aparência do tambor do TMS até o veículo.
+- TMS Top-Hat com guincho (AUTO/MANUAL), limites de tensão e ciclo completo de lançamento, liberação, acoplamento e recuperação.
+- Sonar de imageamento frontal geométrico, altímetro de feixe, DVL, USBL simulado e instrumentação completa.
+- Câmeras principal, auxiliar, externa, do tether e do TMS, com óptica submarina por canal, partículas e ressuspensão de sedimentos.
+- Ambiente compartilhado: o mesmo terreno com semente e o mesmo campo de rochas para física, sensores, tether e imagem.
+- Cinco operações com relatório; roteiro de lançamento não bloqueante.
+- Teclado, mouse, gamepad e SpaceMouse (via WebHID); estação com até 3 monitores adicionais.
+
+**Em desenvolvimento**
+- Refinamento visual do fundo; contador de voltas do tether; novas missões e instrumentação.
+
+**Limitações conhecidas**
+- Gamepad e SpaceMouse suportados, mas **sem validação em hardware físico** até agora; desempenho em GPU real não medido.
+- Tether sem autocolisão nem torção (folga grande empilhada pode dobrar sobre si mesma); sonar sem multipercurso/refração e com leque fixo em roll/pitch.
+- A janela principal precisa ficar visível para alimentar os monitores; posicionamento das janelas é manual.
 
 ## Operações
 
@@ -11,6 +38,8 @@ Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no 
 | **Treinamento de pilotagem** | Começa submerso, já liberado do Top-Hat, com o tether pago. Exercícios verificados pela simulação: avanço, recuo, lateral, rumo, profundidade, manter rumo, estabilização, portais e aproximação de alvo | Corrente fraca, água clara (impostas) |
 | **Inspeção de estrutura offshore** | Checklist, lançamento pelo guindaste e descida a ~120 m. Depois, inspeção de três pontos (jumper no manifold, vão livre do duto, painel da árvore de natal) com procedimento de aproximação e iluminação mínima, retorno e recuperação | Escolhidas pelo piloto |
 | **Navegação em condições adversas** | Rota ao longo do duto até o PLET, manutenção de posição em estação, inspeção da válvula e retorno | Corrente forte, água turva, céu nublado (impostas) |
+| **Treinamento de TMS** | Começa acoplado ao Top-Hat: preparar o guincho, pagar tether, afastar-se mantendo folga sem tensão excessiva, reaproximar, recolher e acoplar | Escolhidas pelo piloto |
+| **Pilotagem livre** | Sem objetivos nem cronômetro: pilotar, operar o TMS, testar câmeras, sonar e layouts | Escolhidas pelo piloto |
 
 Cada operação termina com um relatório que traz:
 - tempo de operação, profundidade máxima e distância percorrida;
@@ -108,9 +137,13 @@ src/
   render/       cena Three.js, ROV procedural, óptica submarina, efeitos, câmeras
   ui/           HUD, menus, configurações, relatório
   audio/        som procedural (Web Audio)
-  i18n/         textos (pt-BR)
+  i18n/         textos (pt-BR e inglês), identidade e contato
 ```
 
 Fluxo por quadro: `InputManager.poll()` → `Simulation.advance(dt)`, que roda a física a 120 Hz fixos, independente do FPS → atualização da missão → sincronização visual → render (cena → passe submarino → partículas/feixes) → HUD.
 
 Detalhes do modelo físico, da óptica e das simplificações adotadas: [docs/SIMULACAO.md](docs/SIMULACAO.md).
+
+## Contato
+
+Contato profissional, sugestões, feedback e colaboração: [santoscjr@gmail.com](mailto:santoscjr@gmail.com) · [LinkedIn](https://www.linkedin.com/in/claudio-junior-1b3335142).
