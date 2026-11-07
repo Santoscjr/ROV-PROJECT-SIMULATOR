@@ -1,6 +1,5 @@
 import {
   PerspectiveCamera,
-  CatmullRomCurve3,
   Color,
   DirectionalLight,
   HemisphereLight,
@@ -11,7 +10,6 @@ import {
   PointLight,
   Scene,
   SpotLight,
-  TubeGeometry,
   Vector3,
   type WebGLRenderer,
   type Texture,
@@ -29,7 +27,7 @@ import { SedimentCloud, type CurrentSampler, type PuffView, type SedimentSource 
 import { sedimentAlbedo } from '../sim/sediment';
 import { WaterEffects } from './effects';
 import type { UnderwaterPass } from './underwaterPass';
-import { TETHER_LOOK, tetherJacketMaterial, tetherRenderPoints, tetherTubeSegments } from './tetherLook';
+import { TETHER_LOOK, TetherTube, sampleTetherCurve, tetherJacketMaterial, tetherRenderPoints } from './tetherLook';
 
 /**
  * Front lighting = 2 directional "spot" lamps (upper pair: long throw on the
@@ -147,7 +145,8 @@ export class World {
       this.lamps.push(l);
     });
 
-    this.tether = new Mesh(new TubeGeometry(new CatmullRomCurve3([new Vector3(), new Vector3(0, 1, 0)]), 4, TETHER_LOOK.radius, 8), this.tetherMat);
+    this.tetherTube.update([new Vector3(), new Vector3(0, 1, 0)]);
+    this.tether = new Mesh(this.tetherTube.geometry, this.tetherMat);
     this.tether.frustumCulled = false;
     this.tether.castShadow = quality !== 'low';
     this.scene.add(this.tether);
@@ -334,12 +333,14 @@ export class World {
     // Os nós físicos terminam na terminação (rov.tetherAttach, dentro do restritor);
     // o cabo sai pela ponta do restritor (regras em render/tetherLook.ts).
     const tip = this.rov.tetherPoint.getWorldPosition(this.tmpTip);
+    // Amostragem adaptativa da curva e tubo em buffers reaproveitados: o cabo é
+    // redesenhado a cada quadro sem alocar geometria nova.
     const pts = tetherRenderPoints(path, tip);
-    const curve = new CatmullRomCurve3(pts, false, 'centripetal');
-    const segs = tetherTubeSegments(curve.getLength(), pts.length);
-    this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(curve, segs, TETHER_LOOK.radius, 8);
+    this.tetherTube.update(sampleTetherCurve(pts, this.tetherSamples));
   }
+
+  private readonly tetherTube = new TetherTube(TETHER_LOOK.radius, 8);
+  private readonly tetherSamples: Vector3[] = [];
 
   private readonly tmpTip = new Vector3();
 

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { CatmullRomCurve3, Quaternion, Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import { Simulation, FIXED_DT } from '../src/sim/simulation';
 import { missionById } from '../src/mission/catalog';
 import { terrainHeight } from '../src/sim/terrain';
 import { DEFAULT_SEGMENT_TETHER } from '../src/physics/segmentTether';
 import { TOPHAT } from '../src/sim/topHat';
-import { TETHER_LOOK, TETHER_MIN_BEND_RADIUS, tetherRenderPoints, tetherTubeSegments } from '../src/render/tetherLook';
+import { TETHER_LOOK, TETHER_MIN_BEND_RADIUS, TETHER_SAMPLE_MAX_TURN_DEG, TetherTube, sampleTetherCurve, tetherRenderPoints } from '../src/render/tetherLook';
 
 /**
  * Engenharia do tether (v3.3), cenários do §5 do pedido:
@@ -387,29 +387,56 @@ describe('tether v3.3 — curva desenhada e aparência', () => {
     // Ponta do restritor ~0,16 m acima da terminação, no eixo do restritor.
     const tip = end.clone().add(new Vector3(0, 0.16, 0));
     const pts = tetherRenderPoints(poly, tip);
-    const curve = new CatmullRomCurve3(pts, false, 'centripetal');
-    expect(curve.getPoint(0).distanceTo(sim.tmsExit)).toBeLessThan(1e-6);
-    expect(curve.getPoint(1).distanceTo(sim.attachWorld())).toBeLessThan(1e-6);
-    // Tubo com segmentos proporcionais ao comprimento: ≤ ~20 cm por segmento.
-    const segs = tetherTubeSegments(curve.getLength(), pts.length);
-    expect(curve.getLength() / segs).toBeLessThan(0.2);
+    const s = sampleTetherCurve(pts);
+    // Âncoras: as amostras desenhadas começam na saída do TMS e terminam na terminação.
+    expect(s[0].distanceTo(sim.tmsExit)).toBeLessThan(1e-6);
+    expect(s[s.length - 1].distanceTo(sim.attachWorld())).toBeLessThan(1e-6);
+    // Todo nó físico está entre as amostras, exatamente (nada deslocado).
+    for (const n of poly) expect(s.some((q) => q.distanceTo(n) < 1e-9)).toBe(true);
+    // Custo limitado: 250 m com amostragem adaptativa (antes do ajuste: 1600 anéis).
+    expect(s.length).toBeLessThan(700);
     // Curva desenhada sem dobras em ângulo, inclusive na saída do restritor, onde
     // o cabo vem por baixo do veículo e sobe até a ponta (curva real de >100°).
-    const s = curve.getSpacedPoints(segs);
-    let maxTurn = 0;
+    // O trecho ponta → terminação fica dentro do restritor (não aparece).
     const a = new Vector3();
     const b = new Vector3();
-    // O trecho ponta → terminação fica dentro do restritor (não aparece).
-    const inside = Math.ceil((tip.distanceTo(end) / curve.getLength()) * segs) + 1;
-    for (let i = 1; i < s.length - 1 - inside; i++) {
-      a.subVectors(s[i], s[i - 1]).normalize();
-      b.subVectors(s[i + 1], s[i]).normalize();
-      maxTurn = Math.max(maxTurn, (Math.acos(Math.min(1, a.dot(b))) * 180) / Math.PI);
+    let maxTurn = 0;
+    let minRadius = Infinity;
+    const tipIdx = s.findIndex((q) => q.distanceTo(tip) < 1e-9);
+    expect(tipIdx).toBeGreaterThan(0);
+    for (let i = 1; i < tipIdx; i++) {
+      a.subVectors(s[i], s[i - 1]);
+      b.subVectors(s[i + 1], s[i]);
+      const h = 0.5 * (a.length() + b.length());
+      const turn = Math.acos(Math.min(1, a.normalize().dot(b.normalize())));
+      maxTurn = Math.max(maxTurn, (turn * 180) / Math.PI);
+      if (turn > 1e-6) minRadius = Math.min(minRadius, h / turn);
     }
-    // Critério: nenhuma dobra mais fechada que o raio mínimo do cabo (≈10× o diâmetro).
-    // Ângulo máximo entre amostras de passo h para raio R: h/R rad.
-    const h = curve.getLength() / segs;
-    expect(maxTurn).toBeLessThan(((h / TETHER_MIN_BEND_RADIUS) * 180) / Math.PI);
+    // Facetas invisíveis: giro pequeno entre anéis consecutivos do tubo.
+    expect(maxTurn).toBeLessThan(2 * TETHER_SAMPLE_MAX_TURN_DEG);
+    // Nenhuma dobra mais fechada que o raio mínimo do cabo (≈10× o diâmetro).
+    expect(minRadius).toBeGreaterThan(0.9 * TETHER_MIN_BEND_RADIUS);
+  });
+
+  it('o tubo reaproveita os buffers e envolve as amostras com o raio do cabo', () => {
+    const tube = new TetherTube(TETHER_LOOK.radius, 8);
+    const line = (k: number) => [...Array(k)].map((_, i) => new Vector3(i * 0.5, Math.sin(i * 0.2), 0));
+    tube.update(line(40));
+    const pos = tube.geometry.getAttribute('position');
+    tube.update(line(30));
+    // Menos amostras: mesmo buffer, só o drawRange encolhe.
+    expect(tube.geometry.getAttribute('position')).toBe(pos);
+    expect(tube.geometry.drawRange.count).toBe(29 * 8 * 6);
+    // Cada vértice do anel i fica a um raio da amostra i.
+    const s = line(30);
+    const v = new Vector3();
+    for (let i = 0; i < 30; i++)
+      for (let j = 0; j <= 8; j++) {
+        v.fromBufferAttribute(pos, i * 9 + j);
+        expect(v.distanceTo(s[i])).toBeCloseTo(TETHER_LOOK.radius, 5);
+      }
+    for (const q of s) expect(tube.geometry.boundingSphere!.containsPoint(q)).toBe(true);
+    tube.dispose();
   });
 
   it('a ponta do restritor só entra na curva quando fica entre o penúltimo nó e a terminação', () => {

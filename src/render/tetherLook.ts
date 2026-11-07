@@ -10,7 +10,7 @@
  * em tethers de ROVs work-class: o cabo precisa aparecer nas câmeras e para a
  * equipe no convés. O diâmetro é o mesmo usado pela física.
  */
-import { MeshStandardMaterial, Vector3 } from 'three';
+import { Box3, BufferAttribute, BufferGeometry, CatmullRomCurve3, MeshStandardMaterial, Sphere, Vector3 } from 'three';
 import { DEFAULT_SEGMENT_TETHER } from '../physics/segmentTether';
 
 export const TETHER_LOOK = {
@@ -28,10 +28,6 @@ export const TETHER_LOOK = {
 export function tetherJacketMaterial(name = 'tether-jacket'): MeshStandardMaterial {
   return new MeshStandardMaterial({ name, color: TETHER_LOOK.color, roughness: TETHER_LOOK.roughness, metalness: TETHER_LOOK.metalness });
 }
-
-/** Passo (m) e teto de segmentos do tubo: suave em qualquer comprimento, custo limitado. */
-export const TETHER_TUBE_STEP = 0.15;
-export const TETHER_TUBE_MAX_SEGMENTS = 1600;
 
 /** Passo (m) das amostras do arco de saída do restritor. */
 const EXIT_ARC_STEP = 0.06;
@@ -133,10 +129,170 @@ function restrictorExit(tip: Vector3, axis: Vector3, node: Vector3): Vector3[] {
   return pts;
 }
 
+/** Giro máximo (graus) entre amostras consecutivas da curva desenhada. */
+export const TETHER_SAMPLE_MAX_TURN_DEG = 3;
+/** Distância máxima (m) entre amostras num trecho reto. */
+const SAMPLE_MAX_STEP = 0.75;
+const MAX_SUBDIV = 24;
+
+const _t0 = new Vector3();
+const _t1 = new Vector3();
+
 /**
- * Segmentos do tubo proporcionais ao comprimento da curva (~15 cm cada). Com
- * poucos segmentos um vão longo aparecia como trechos retos e dobras em ângulo.
+ * Amostras da curva desenhada (Catmull-Rom centrípeta pelos pontos de
+ * `tetherRenderPoints`). A densidade é adaptativa: cada trecho entre pontos é
+ * subdividido pelo quanto o cabo gira ali, não por um passo fixo. Trecho reto
+ * de 1,5 m leva 2 amostras; a saída do restritor e as dobras levam várias. Com
+ * passo fixo de 15 cm, 250 m de cabo davam 1600 anéis e ~7 ms de CPU por quadro.
+ * Os pontos de entrada (nós físicos inclusive) estão todos entre as amostras.
  */
-export function tetherTubeSegments(curveLength: number, points: number): number {
-  return Math.min(TETHER_TUBE_MAX_SEGMENTS, Math.max(64, Math.ceil(curveLength / TETHER_TUBE_STEP), points * 4));
+export function sampleTetherCurve(pts: readonly Vector3[], out: Vector3[] = []): Vector3[] {
+  const N = pts.length;
+  let count = 0;
+  const push = (v: Vector3) => {
+    (out[count] ??= new Vector3()).copy(v);
+    count++;
+  };
+  if (N < 2) {
+    for (const v of pts) push(v);
+    out.length = count;
+    return out;
+  }
+  const curve = new CatmullRomCurve3(pts as Vector3[], false, 'centripetal');
+  const turnAt = (i: number): number => {
+    if (i <= 0 || i >= N - 1) return 0;
+    _t0.subVectors(pts[i], pts[i - 1]);
+    _t1.subVectors(pts[i + 1], pts[i]);
+    const l = _t0.length() * _t1.length();
+    return l > 1e-12 ? (Math.acos(Math.min(1, Math.max(-1, _t0.dot(_t1) / l))) * 180) / Math.PI : 0;
+  };
+  const tmp = new Vector3();
+  push(pts[0]);
+  for (let i = 0; i < N - 1; i++) {
+    const len = pts[i].distanceTo(pts[i + 1]);
+    // Giro do trecho: o maior das duas pontas (a spline concentra a dobra perto
+    // do nó; pela média, as amostras vizinhas a um nó dobrado ficavam esparsas).
+    // A folga de 1,5× cobre o giro da spline ser maior que o das cordas.
+    const turn = Math.max(turnAt(i), turnAt(i + 1));
+    const k = Math.min(MAX_SUBDIV, Math.max(1, Math.ceil(len / SAMPLE_MAX_STEP), Math.ceil((1.5 * turn) / TETHER_SAMPLE_MAX_TURN_DEG)));
+    for (let j = 1; j < k; j++) push(curve.getPoint((i + j / k) / (N - 1), tmp));
+    push(pts[i + 1]);
+  }
+  out.length = count;
+  return out;
+}
+
+/**
+ * Tubo do tether reaproveitando os mesmos buffers a cada quadro (só crescem
+ * quando faltam anéis). Os referenciais dos anéis usam transporte paralelo, então
+ * o tubo não torce de um quadro para outro.
+ */
+export class TetherTube {
+  readonly geometry = new BufferGeometry();
+  private capacity = 0;
+  private pos = new Float32Array(0);
+  private nrm = new Float32Array(0);
+  private readonly n = new Vector3();
+  private readonly b = new Vector3();
+  private readonly t = new Vector3();
+  private readonly tPrev = new Vector3();
+  private readonly box = new Box3();
+
+  constructor(
+    private readonly radius: number,
+    private readonly radial = 8,
+  ) {}
+
+  private ensure(rings: number): void {
+    if (rings <= this.capacity) return;
+    const cap = Math.max(64, Math.ceil(rings * 1.5));
+    const R = this.radial + 1; // costura: primeiro e último vértice do anel repetidos
+    this.pos = new Float32Array(cap * R * 3);
+    this.nrm = new Float32Array(cap * R * 3);
+    const idx = new Uint32Array((cap - 1) * this.radial * 6);
+    let o = 0;
+    for (let i = 0; i < cap - 1; i++)
+      for (let j = 0; j < this.radial; j++) {
+        const a = i * R + j;
+        const b = (i + 1) * R + j;
+        idx[o++] = a;
+        idx[o++] = b;
+        idx[o++] = a + 1;
+        idx[o++] = b;
+        idx[o++] = b + 1;
+        idx[o++] = a + 1;
+      }
+    this.geometry.setAttribute('position', new BufferAttribute(this.pos, 3));
+    this.geometry.setAttribute('normal', new BufferAttribute(this.nrm, 3));
+    this.geometry.setIndex(new BufferAttribute(idx, 1));
+    this.capacity = cap;
+  }
+
+  /** Reconstrói o tubo pelas amostras (≥ 2). */
+  update(samples: readonly Vector3[]): void {
+    const m = samples.length;
+    if (m < 2) {
+      this.geometry.setDrawRange(0, 0);
+      return;
+    }
+    this.ensure(m);
+    const R = this.radial + 1;
+    const { n, b, t, tPrev } = this;
+    for (let i = 0; i < m; i++) {
+      // Tangente por diferença central (nas pontas, unilateral).
+      const a = samples[Math.max(0, i - 1)];
+      const c = samples[Math.min(m - 1, i + 1)];
+      t.subVectors(c, a);
+      if (t.lengthSq() < 1e-16) t.copy(tPrev.lengthSq() > 0 ? tPrev : _t0.set(0, 1, 0));
+      t.normalize();
+      if (i === 0) {
+        // Normal inicial: qualquer perpendicular estável à tangente.
+        n.set(Math.abs(t.y) < 0.9 ? 0 : 1, Math.abs(t.y) < 0.9 ? 1 : 0, 0);
+      }
+      // Transporte paralelo: tira da normal a componente na tangente nova.
+      n.addScaledVector(t, -n.dot(t));
+      if (n.lengthSq() < 1e-12) {
+        // Normal caiu sobre a tangente (dobra de ~180° entre amostras): recomeça.
+        n.set(Math.abs(t.x) < 0.9 ? 1 : 0, Math.abs(t.x) < 0.9 ? 0 : 1, 0);
+        n.addScaledVector(t, -n.dot(t));
+      }
+      n.normalize();
+      b.crossVectors(t, n);
+      const p = samples[i];
+      for (let j = 0; j <= this.radial; j++) {
+        const ang = (j / this.radial) * Math.PI * 2;
+        const cs = Math.cos(ang);
+        const sn = Math.sin(ang);
+        const nx = cs * n.x + sn * b.x;
+        const ny = cs * n.y + sn * b.y;
+        const nz = cs * n.z + sn * b.z;
+        const o = (i * R + j) * 3;
+        this.nrm[o] = nx;
+        this.nrm[o + 1] = ny;
+        this.nrm[o + 2] = nz;
+        this.pos[o] = p.x + this.radius * nx;
+        this.pos[o + 1] = p.y + this.radius * ny;
+        this.pos[o + 2] = p.z + this.radius * nz;
+      }
+      tPrev.copy(t);
+    }
+    const posAttr = this.geometry.getAttribute('position') as BufferAttribute;
+    const nrmAttr = this.geometry.getAttribute('normal') as BufferAttribute;
+    posAttr.addUpdateRange(0, m * R * 3);
+    nrmAttr.addUpdateRange(0, m * R * 3);
+    posAttr.needsUpdate = true;
+    nrmAttr.needsUpdate = true;
+    this.geometry.setDrawRange(0, (m - 1) * this.radial * 6);
+    // Esfera envolvente só das amostras usadas (o buffer tem sobras de quadros
+    // anteriores além do drawRange, que computeBoundingSphere() incluiria).
+    const box = this.box.makeEmpty();
+    for (let i = 0; i < m; i++) box.expandByPoint(samples[i]);
+    const sphere = (this.geometry.boundingSphere ??= new Sphere());
+    box.getCenter(sphere.center);
+    sphere.radius = box.getSize(_t0).length() / 2 + this.radius;
+  }
+
+  dispose(): void {
+    this.geometry.dispose();
+  }
 }
