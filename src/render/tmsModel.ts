@@ -24,6 +24,7 @@ import {
   sub,
 } from './rovModelParts';
 import { ATLAS_STRIPES, type AtlasRect, atlasPlacard, createRovTextures } from './rovTextures';
+import { TETHER_LOOK, tetherJacketMaterial } from './tetherLook';
 
 /**
  * Procedural Top-Hat Tether Management System (training approximation): a
@@ -175,8 +176,8 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
     map: cable.map,
     normalMap: cable.normal,
     normalScale: new THREE.Vector2(0.9, 0.9),
-    roughness: 0.58,
-    metalness: 0.05,
+    roughness: TETHER_LOOK.roughness,
+    metalness: TETHER_LOOK.metalness,
   });
   const packGeo = new THREE.CylinderGeometry(1, 1, 2 * (DRUM_HALF - 0.015) - 0.006, d.radial * 2, 1, true);
   packGeo.rotateX(Math.PI / 2);
@@ -198,10 +199,12 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
   }
 
   // --- Cable path: drum → level-wind fairlead → exit guide (two dynamic spans) ---
-  const spanGeo = new THREE.CylinderGeometry(0.016, 0.016, 1, Math.max(6, d.small), 1, true);
-  const spanA = new THREE.Mesh(spanGeo, mats.rubber);
-  const spanB = new THREE.Mesh(spanGeo, mats.rubber);
-  const spanC = new THREE.Mesh(spanGeo, mats.rubber);
+  // Mesmo cabo do tambor e do trecho livre: mesma capa e mesmo diâmetro (render/tetherLook.ts).
+  const spanMat = tetherJacketMaterial('tms-cable-span');
+  const spanGeo = new THREE.CylinderGeometry(TETHER_LOOK.radius, TETHER_LOOK.radius, 1, Math.max(6, d.small), 1, true);
+  const spanA = new THREE.Mesh(spanGeo, spanMat);
+  const spanB = new THREE.Mesh(spanGeo, spanMat);
+  const spanC = new THREE.Mesh(spanGeo, spanMat);
   spanA.name = 'tms-cable-span-a';
   spanB.name = 'tms-cable-span-b';
   spanC.name = 'tms-cable-span-guide';
@@ -244,6 +247,7 @@ export function createTmsModel(opts: { quality?: 'low' | 'medium' | 'high' } = {
     geos.forEach((g) => g.dispose());
     for (const k of MAT_KEYS) mats[k].dispose();
     cableMat.dispose();
+    spanMat.dispose();
     boardMat.dispose();
     boardTex.dispose();
     cable.map.dispose();
@@ -296,28 +300,30 @@ function cableTextures(q: 'low' | 'medium' | 'high'): { map: THREE.CanvasTexture
   c.width = W;
   c.height = H;
   const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#202326';
+  // Base na cor da capa do tether; sulcos, reflexo e marcas por cima.
+  ctx.fillStyle = TETHER_LOOK.colorCss;
   ctx.fillRect(0, 0, W, H);
   const pitch = H / wraps;
   // Helical wraps: each wrap advances one cable diameter per revolution.
   for (let k = -1; k <= wraps; k++) {
-    ctx.strokeStyle = '#0b0c0d';
+    ctx.strokeStyle = '#5e4712';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(0, k * pitch);
     ctx.lineTo(W, (k + 1) * pitch);
     ctx.stroke();
-    ctx.strokeStyle = 'rgba(160,165,170,0.18)';
+    ctx.strokeStyle = 'rgba(255,240,205,0.22)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(0, k * pitch + pitch * 0.45);
     ctx.lineTo(W, (k + 1) * pitch + pitch * 0.45);
     ctx.stroke();
   }
-  // Metre marks (white) and a yellow tracer every quarter turn: rotation reads on camera.
+  // Marcas de metragem (pretas, como as impressas na capa) e uma faixa vermelha
+  // a cada volta, para a rotação do tambor aparecer na câmera.
   for (let i = 0; i < 4; i++) {
     const x = (i / 4) * W;
-    ctx.fillStyle = i === 0 ? '#d4a52a' : '#cfd2d4';
+    ctx.fillStyle = i === 0 ? '#a8361c' : '#1c1d1f';
     for (let k = 0; k < wraps; k++) ctx.fillRect(x + (k * W) / wraps / 4, k * pitch + 3, i === 0 ? 10 : 4, pitch - 6);
   }
   const map = new THREE.CanvasTexture(c);

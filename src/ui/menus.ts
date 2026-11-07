@@ -1,4 +1,5 @@
-import { t } from '../i18n';
+import { LOCALES, getLocale, t } from '../i18n';
+import { CONTACT_EMAIL, CREATOR, LINKEDIN_LABEL, LINKEDIN_URL } from '../i18n/identity';
 import {
   BINDABLE,
   KEYBOARD_PRESETS,
@@ -6,6 +7,7 @@ import {
   type CameraFx,
   type GraphicsQuality,
   type KeyboardPreset,
+  type Language,
   type Settings,
   type SettingsStore,
   type StationProfileId,
@@ -27,7 +29,7 @@ import type { PilotMode } from '../control/rovController';
 import type { SpaceMouseDevice } from '../input/spacemouse/spacemouseDevice';
 import { SpaceMousePanel } from './spacemousePanel';
 
-type ScreenName = 'main' | 'pause' | 'settings' | 'help' | 'report' | 'diagnostics' | null;
+type ScreenName = 'main' | 'pause' | 'settings' | 'help' | 'report' | 'diagnostics' | 'about' | null;
 type SettingsTab = 'station' | 'graphics' | 'controls' | 'spacemouse' | 'environment';
 
 export interface MenuCallbacks {
@@ -63,7 +65,7 @@ export function keyLabel(code: string): string {
     Minus: '-',
     Escape: 'Esc',
     Enter: 'Enter',
-    Space: 'Espaço',
+    Space: t('key.space'),
     PageUp: 'PgUp',
     PageDown: 'PgDn',
     Period: '.',
@@ -115,6 +117,7 @@ export class Menus {
       help: this.buildHelp(),
       report: this.buildReportShell(),
       diagnostics: this.buildDiagnostics(),
+      about: this.buildAbout(),
     };
     Object.values(this.screens).forEach((s) => this.root.appendChild(s));
     window.addEventListener('keydown', this.onKeyCapture, true);
@@ -132,6 +135,7 @@ export class Menus {
   show(name: ScreenName): void {
     if (name === 'settings' && this.current !== 'settings') this.settingsReturn = this.current;
     if (name === 'help' && this.current !== 'help') this.helpReturn = this.current;
+    if (name === 'about' && this.current !== 'about') this.aboutReturn = this.current;
     this.current = name;
     for (const [k, el] of Object.entries(this.screens)) el.hidden = k !== name;
     if (name === 'settings') this.refreshSettings();
@@ -142,11 +146,34 @@ export class Menus {
   }
 
   back(): void {
+    if (this.current === 'about') {
+      this.show(this.aboutReturn ?? 'main');
+      // devolve o foco ao botão que abriu a tela, para quem navega pelo teclado
+      this.aboutOpener?.focus({ preventScroll: true });
+      return;
+    }
     if (this.current === 'diagnostics') this.show(this.diagReturn);
     else this.show(this.current === 'help' ? this.helpReturn : this.settingsReturn);
   }
 
   private diagReturn: ScreenName = 'main';
+  private aboutReturn: ScreenName = 'main';
+  private aboutOpener: HTMLElement | null = null;
+
+  /** Tela Sobre; com `section = 'contact'` já abre posicionada no bloco de contato. */
+  showAbout(section: 'about' | 'contact' = 'about'): void {
+    this.aboutOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.show('about');
+    const card = this.screens.about.querySelector<HTMLElement>('.card');
+    if (section === 'contact') {
+      const c = this.screens.about.querySelector<HTMLElement>('#about-contact');
+      c?.scrollIntoView({ block: 'start' });
+      c?.focus({ preventScroll: true });
+    } else {
+      if (card) card.scrollTop = 0;
+      this.screens.about.querySelector<HTMLElement>('[data-a="back"]')?.focus({ preventScroll: true });
+    }
+  }
   private diagTimer = 0;
   showDiagnostics(): void {
     if (this.current !== 'diagnostics') this.diagReturn = this.current;
@@ -178,8 +205,8 @@ export class Menus {
       <div class="card wide">
         <div class="menu-grid">
           <section>
-            <div class="brand">${LOGO}<div><div class="eyebrow">Offshore ROV Operations</div>
-              <h1>${t('app.title')}</h1><div class="sub">${t('app.subtitle')}</div></div></div>
+            <div class="brand">${LOGO}<div><div class="eyebrow">${t('brand.positioning')}</div>
+              <h1>${t('app.title')}</h1><div class="sub slogan">${t('brand.slogan')}</div></div></div>
             <h3 class="sec">${t('menu.selectOp')}</h3>
             <div class="op-list" data-o="ops"></div>
             <h3 class="sec">${t('menu.conditions')}</h3>
@@ -213,6 +240,16 @@ export class Menus {
             <div class="update-banner" data-o="update" hidden></div>
           </section>
         </div>
+        <div class="ident-bar">
+          <p class="signature">${signature()}</p>
+          <div class="ident-links">
+            <button class="link-btn" data-a="about">${t('menu.about')}</button>
+            <button class="link-btn" data-a="contact">${t('menu.contact')}</button>
+            <label class="lang"><span>${t('menu.language')}</span>
+              <select data-q="language" aria-describedby="lang-note">${languageOptions()}</select>
+              <span class="lang-note" id="lang-note">${t('menu.languageNote')}</span></label>
+          </div>
+        </div>
       </div>`;
     on(s, 'start', () => this.cb.start(this.store.get().mission));
     on(s, 'controls', () => this.show('help'));
@@ -221,6 +258,15 @@ export class Menus {
       if (!this.cb.openMonitor()) alert(t('settings.monitorBlocked'));
     });
     on(s, 'diag', () => this.showDiagnostics());
+    on(s, 'about', () => this.showAbout('about'));
+    on(s, 'contact', () => this.showAbout('contact'));
+    // Na tela inicial não há operação a perder: troca, salva e recarrega na hora.
+    const lang = s.querySelector<HTMLSelectElement>('[data-q="language"]')!;
+    lang.value = this.store.get().language;
+    lang.addEventListener('change', () => {
+      this.store.update({ language: lang.value as Language });
+      location.reload();
+    });
     const prof = s.querySelector<HTMLSelectElement>('[data-q="profile"]')!;
     prof.addEventListener('change', () => {
       if (!this.cb.applyProfile(prof.value as StationProfileId)) alert(t('profile.customEmpty'));
@@ -376,6 +422,9 @@ export class Menus {
               <div class="field"><label for="s-guide">${t('settings.guide')}</label><select id="s-guide" data-s="guide">${(['expanded', 'compact', 'hidden'] as const)
                 .map((g) => `<option value="${g}">${t('settings.guide.' + g)}</option>`)
                 .join('')}</select></div>
+              <h3 style="margin-top:18px">${t('menu.language')}</h3>
+              <div class="field"><label for="s-lang">${t('settings.language')}</label><select id="s-lang" data-o="langSel">${languageOptions()}</select></div>
+              <p class="muted small">${t('settings.languageNote')} <button class="mini" data-a="langReload" hidden>${t('settings.languageReload')}</button></p>
             </div>
             <div>
               <h3>${t('settings.monitors')}</h3>
@@ -489,9 +538,17 @@ export class Menus {
       const cat = (s.querySelector('[data-o="resetCat"]') as HTMLSelectElement).value as ResetCategory | 'all';
       const scope = cat === 'all' ? t('reset.all') : `${t('reset.' + cat)} (${RESET_CATEGORIES[cat].join(', ')})`;
       if (!confirm(t('reset.confirm', { scope }))) return;
-      if (cat === 'all') this.store.reset();
+      if (cat === 'all') {
+        // "Tudo" restaura a operação, não o idioma escolhido pelo usuário.
+        const language = this.store.get().language;
+        this.store.reset();
+        if (language !== this.store.get().language) this.store.update({ language });
+      }
       else this.store.update(resetPatch(cat));
     });
+    const langSel = s.querySelector<HTMLSelectElement>('[data-o="langSel"]')!;
+    langSel.addEventListener('change', () => this.store.update({ language: langSel.value as Language }));
+    on(s, 'langReload', () => location.reload());
     on(s, 'applyProfile', () => {
       const id = (s.querySelector('[data-o="profileSel"]') as HTMLSelectElement).value as StationProfileId;
       if (!this.cb.applyProfile(id)) alert(t('profile.customEmpty'));
@@ -621,6 +678,14 @@ export class Menus {
     return s;
   }
 
+  // ---------- Sobre / Contato ----------
+  private buildAbout(): HTMLElement {
+    const s = screen(true);
+    s.innerHTML = aboutMarkup();
+    s.querySelectorAll<HTMLElement>('[data-a="back"]').forEach((b) => b.addEventListener('click', () => this.back()));
+    return s;
+  }
+
   private refreshDiagnostics(): void {
     clearTimeout(this.diagTimer);
     if (this.current !== 'diagnostics') return;
@@ -660,6 +725,10 @@ export class Menus {
     // Station tab.
     const ps = s.querySelector<HTMLSelectElement>('[data-o="profileSel"]');
     if (ps && document.activeElement !== ps) ps.value = v.stationProfile;
+    const ls = s.querySelector<HTMLSelectElement>('[data-o="langSel"]');
+    if (ls && document.activeElement !== ls) ls.value = v.language;
+    const lr = s.querySelector<HTMLButtonElement>('[data-a="langReload"]');
+    if (lr) lr.hidden = v.language === getLocale();
     const pd = s.querySelector('[data-o="profileDesc"]');
     if (pd) pd.textContent = t('profile.desc.' + (ps?.value ?? v.stationProfile));
     this.renderMonitors(s.querySelector('[data-o="monitors"]'));
@@ -697,7 +766,7 @@ export class Menus {
   /** Captures the next key for rebinding (before the game sees it). */
   private onKeyCapture = (e: KeyboardEvent) => {
     if (!this.listening) {
-      if (e.code === 'Escape' && (this.current === 'settings' || this.current === 'help')) {
+      if (e.code === 'Escape' && (this.current === 'settings' || this.current === 'help' || this.current === 'about')) {
         e.stopPropagation();
         e.preventDefault();
         this.back();
@@ -766,6 +835,69 @@ export class Menus {
 }
 
 type NestedGroup = 'lighting' | 'sonar' | 'hudItems';
+
+/** Assinatura com o nome do autor em destaque (o texto vem do dicionário). */
+function signature(): string {
+  return t('brand.signature', { name: `<strong>${CREATOR}</strong>` });
+}
+
+function languageOptions(): string {
+  return LOCALES.map((l) => `<option value="${l.id}" lang="${l.id}">${l.name}</option>`).join('');
+}
+
+/** Bloco de contato: só e-mail e LinkedIn, sem telefone. Exportado para os testes. */
+export function contactMarkup(): string {
+  return `<section class="about-contact" id="about-contact" tabindex="-1" aria-labelledby="about-contact-title">
+      <h3 id="about-contact-title">${t('contact.title')}</h3>
+      <p>${t('contact.intro')}</p>
+      <dl>
+        <dt>${t('contact.email')}</dt>
+        <dd><a class="link" href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a></dd>
+        <dt>${t('contact.linkedin')}</dt>
+        <dd><a class="link" href="${LINKEDIN_URL}" target="_blank" rel="noopener noreferrer">${LINKEDIN_LABEL}<span class="sr-only"> ${t('contact.newTab')}</span></a></dd>
+      </dl>
+    </section>`;
+}
+
+/**
+ * Tela Sobre: placa de identificação, texto do autor, dedicatória e contato.
+ * Ordem do DOM = ordem de leitura no celular; no desktop o CSS só reposiciona o contato.
+ */
+export function aboutMarkup(): string {
+  const paragraphs = [1, 2, 3, 4, 5, 6, 7].map((i) => `<p>${t('about.p' + i)}</p>`).join('');
+  return `
+    <div class="card about" role="dialog" aria-modal="true" aria-labelledby="about-title">
+      <header><h2 id="about-title">${t('about.title')}</h2><button data-a="back">${t('menu.back')} <kbd>Esc</kbd></button></header>
+      <div class="body about-body">
+        <div class="about-plate">
+          ${LOGO}
+          <div>
+            <div class="eyebrow">${t('brand.positioning')}</div>
+            <div class="plate-name">${t('app.title')}</div>
+            <div class="slogan">${t('brand.slogan')}</div>
+          </div>
+          <div class="plate-meta">
+            <p class="signature">${signature()}</p>
+            <p class="plate-build">${buildLabel()}</p>
+          </div>
+        </div>
+        <section class="about-text" aria-label="${t('about.title')}">
+          <p class="lead">${t('about.lead')}</p>
+          ${paragraphs}
+        </section>
+        <section class="dedication" aria-labelledby="about-dedication-title">
+          <h3 id="about-dedication-title">${t('about.dedication.title')}</h3>
+          <p>${t('about.dedication.p1')}</p>
+          <p>${t('about.dedication.p2')}</p>
+          <p>${t('about.dedication.p3')}</p>
+          <p class="closing">${t('about.dedication.closing')}</p>
+        </section>
+        ${contactMarkup()}
+        <p class="disclaimer about-note">${t('menu.disclaimer')}</p>
+      </div>
+      <footer><button class="primary" data-a="back">${t('menu.back')}</button></footer>
+    </div>`;
+}
 
 function nRange(path: string, min: number, max: number, step: number): string {
   const id = 'n-' + path.replace('.', '-');

@@ -208,7 +208,12 @@ export interface Settings {
   /** Sediment resuspension strength 0–2 (0 = off). */
   sediment: number;
   tmsAboveSeabed: number;
+  /** Idioma da interface. Só é aplicado na carga da página (main.ts), antes de montar a UI. */
+  language: Language;
 }
+
+export type Language = 'pt-BR' | 'en';
+export const LANGUAGES: readonly Language[] = ['pt-BR', 'en'];
 
 export type ViewLayout = 'single' | 'dual' | 'quad';
 export type ViewSource = 'operational' | 'auxiliary' | 'external' | 'tms' | 'tether' | 'sonar' | 'instruments';
@@ -319,6 +324,7 @@ export const DEFAULT_SETTINGS: Settings = {
   particles: 1,
   sediment: 1,
   tmsAboveSeabed: 25,
+  language: 'pt-BR',
   monitorSource: 'sonar',
   panelLocks: [false, true, true, true],
   camState: structuredClone(DEFAULT_CAM_STATES),
@@ -395,6 +401,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     particles: num(r.particles, 0, 2, d.particles),
     sediment: num(r.sediment, 0, 2, d.sediment),
     tmsAboveSeabed: num(r.tmsAboveSeabed, 10, 60, d.tmsAboveSeabed),
+    language: pick(r.language, LANGUAGES, d.language),
     panelLocks: d.panelLocks.map((def, i) => (Array.isArray(r.panelLocks) && typeof r.panelLocks[i] === 'boolean' ? (r.panelLocks[i] as boolean) : def)),
     camState: sanitizeCamStates(r.camState),
     monitors: sanitizeMonitors(r.monitors, r.monitor, r.monitorSource),

@@ -51,6 +51,9 @@ export default defineConfig({
   base: './',
   build: {
     target: 'es2022',
+    // Sem sourcemaps no site publicado: não são necessários para rodar e
+    // entregariam o código-fonte comentado junto com o bundle.
+    sourcemap: false,
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       input: {
