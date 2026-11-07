@@ -29,6 +29,7 @@ import { SedimentCloud, type CurrentSampler, type PuffView, type SedimentSource 
 import { sedimentAlbedo } from '../sim/sediment';
 import { WaterEffects } from './effects';
 import type { UnderwaterPass } from './underwaterPass';
+import { TETHER_LOOK, tetherJacketMaterial, tetherRenderPoints, tetherTubeSegments } from './tetherLook';
 
 /**
  * Front lighting = 2 directional "spot" lamps (upper pair: long throw on the
@@ -63,8 +64,8 @@ export class World {
   /** Visualisation aid: soft light carried by the external (observer) camera. */
   readonly observerLight: PointLight;
   private readonly tether: Mesh;
-  /** Tether jacket: yellow polyurethane (common on work-class tethers), same diameter as the physics. */
-  private readonly tetherMat = new MeshStandardMaterial({ color: 0xd9a42a, roughness: 0.5, metalness: 0 });
+  /** Capa do tether: mesma aparência do cabo enrolado no tambor do TMS (ver render/tetherLook.ts). */
+  private readonly tetherMat = tetherJacketMaterial('tether-free');
   /** Front-lamp multiplier (settings → lighting.front). */
   frontGain = 1;
   private readonly envTex: Texture;
@@ -146,7 +147,7 @@ export class World {
       this.lamps.push(l);
     });
 
-    this.tether = new Mesh(new TubeGeometry(new CatmullRomCurve3([new Vector3(), new Vector3(0, 1, 0)]), 4, 0.03, 8), this.tetherMat);
+    this.tether = new Mesh(new TubeGeometry(new CatmullRomCurve3([new Vector3(), new Vector3(0, 1, 0)]), 4, TETHER_LOOK.radius, 8), this.tetherMat);
     this.tether.frustumCulled = false;
     this.tether.castShadow = quality !== 'low';
     this.scene.add(this.tether);
@@ -330,12 +331,14 @@ export class World {
       return;
     }
     this.tether.visible = true;
-    // Physical nodes end at the termination (rov.tetherAttach, inside the bend restrictor);
-    // the cable leaves through the restrictor tip, so route the last ~0.2 m along its axis.
+    // Os nós físicos terminam na terminação (rov.tetherAttach, dentro do restritor);
+    // o cabo sai pela ponta do restritor (regras em render/tetherLook.ts).
     const tip = this.rov.tetherPoint.getWorldPosition(this.tmpTip);
-    const pts = path.length >= 2 && tip.distanceTo(path[path.length - 1]) < 0.5 ? [...path.slice(0, -1), tip, path[path.length - 1]] : (path as Vector3[]);
+    const pts = tetherRenderPoints(path, tip);
+    const curve = new CatmullRomCurve3(pts, false, 'centripetal');
+    const segs = tetherTubeSegments(curve.getLength(), pts.length);
     this.tether.geometry.dispose();
-    this.tether.geometry = new TubeGeometry(new CatmullRomCurve3(pts, false, 'centripetal'), Math.max(40, pts.length * 4), 0.03, 8);
+    this.tether.geometry = new TubeGeometry(curve, segs, TETHER_LOOK.radius, 8);
   }
 
   private readonly tmpTip = new Vector3();
