@@ -3,18 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ROV Offshore Simulator — Monitor secundário</title>
+    <meta name="author" content="Claudio Junior" />
+    <meta name="theme-color" content="#0b1117" />
+    <title>ROV Offshore Simulator — Monitor</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   </head>
   <body>
     <div id="bar">
       <strong id="title">MONITOR</strong>
-      <label>Painéis <select id="layout" aria-label="Painéis"></select></label>
-      <label>Faixa de instrumentos <select id="instr" aria-label="Faixa de instrumentos"></select></label>
-      <span id="status">Aguardando a janela principal…</span>
+      <label><span data-i18n="settings.monitorPanels">Painéis</span> <select id="layout"></select></label>
+      <label><span data-i18n="settings.monitorStrip">Faixa de instrumentos</span> <select id="instr"></select></label>
+      <span id="status" data-i18n="monitor.waiting">Aguardando a janela principal…</span>
+      <span id="no-link-text" hidden data-i18n="monitor.noLink">sem conexão</span>
     </div>
     <div id="host"><canvas id="view"></canvas></div>
-    <div id="lost" hidden>Conexão com a janela principal perdida. Mantenha a janela principal aberta: ao recarregá-la, este monitor é reconectado automaticamente. Se não reconectar, reabra o monitor secundário pela janela principal (F8 ou Configurações → Estação).</div>
+    <div id="lost" hidden data-i18n="monitor.lost">Conexão com a janela principal perdida. Mantenha a janela principal aberta: ao recarregá-la, este monitor é reconectado automaticamente. Se não reconectar, reabra o monitor secundário pela janela principal (F8 ou Configurações → Estação).</div>
     <script type="module" src="/src/monitor.ts"></script>
   </body>
 </html>

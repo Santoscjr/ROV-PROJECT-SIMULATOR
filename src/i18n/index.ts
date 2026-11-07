@@ -1,12 +1,26 @@
 import { ptBR } from './pt-BR';
+import { en } from './en';
 
 export type Dictionary = Record<string, string>;
+export type Locale = 'pt-BR' | 'en';
 
-const dictionaries: Record<string, Dictionary> = { 'pt-BR': ptBR };
+/** Idiomas oferecidos, com o nome de cada um escrito no próprio idioma (não traduzir). */
+export const LOCALES: readonly { id: Locale; name: string }[] = [
+  { id: 'pt-BR', name: 'Português (Brasil)' },
+  { id: 'en', name: 'English' },
+];
+
+const dictionaries: Record<Locale, Dictionary> = { 'pt-BR': ptBR, en };
 let current: Dictionary = ptBR;
+let currentId: Locale = 'pt-BR';
 
 export function setLocale(locale: string): void {
-  current = dictionaries[locale] ?? ptBR;
+  currentId = locale in dictionaries ? (locale as Locale) : 'pt-BR';
+  current = dictionaries[currentId];
+}
+
+export function getLocale(): Locale {
+  return currentId;
 }
 
 /** Translate `key`, replacing `{name}` placeholders with `params`. */

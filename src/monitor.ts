@@ -66,7 +66,8 @@ setInterval(() => {
   const now = performance.timeOrigin + performance.now();
   const alive = !!window.opener && !(window.opener as Window).closed && now - beat < 6000;
   lost.hidden = alive || beat === 0;
-  if (!alive && beat !== 0) statusEl.textContent = 'sem conexão';
+  // Texto já traduzido pela janela principal na adoção (elemento oculto do monitor.html).
+  if (!alive && beat !== 0) statusEl.textContent = document.getElementById('no-link-text')?.textContent || 'sem conexão';
   // Link lost (main window reloaded): try to be adopted again every 2 s.
   if (!alive && performance.now() - lastAdopt > 2000) {
     lastAdopt = performance.now();
