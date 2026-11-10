@@ -726,13 +726,6 @@ a.link {
   }
 }
 
-.version {
-  margin-top: auto;
-  padding-top: 12px;
-  font-family: var(--mono);
-  letter-spacing: 0.06em;
-}
-
 /* v3.2: station block on the start screen, build identification, monitors editor, diagnostics */
 .menu-actions.row {
   flex-direction: row;
@@ -851,6 +844,20 @@ a:focus-visible,
   position: sticky;
   bottom: 0;
   z-index: 1;
+}
+
+/* Assinatura e versão juntas, à esquerda da barra: é a identificação do projeto. */
+.ident-who {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.version-tag {
+  font: 11px var(--mono);
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
 
 .ident-links {

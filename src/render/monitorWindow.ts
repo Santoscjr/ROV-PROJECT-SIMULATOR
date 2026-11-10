@@ -123,7 +123,7 @@ export class MonitorWindow {
     }
     const title = doc.getElementById('title');
     if (title) title.textContent = `MONITOR ${this.index + 2}`;
-    doc.title = `ROV — Monitor ${this.index + 2}`;
+    doc.title = `ROV Offshore Simulator — Monitor ${this.index + 2}`;
     const old = doc.getElementById('view');
     const canvas = doc.createElement('canvas');
     canvas.id = 'view';
