@@ -1,7 +1,7 @@
 # ROV Offshore Simulator
 
 **Independent Subsea Simulation Project** · *Explore the depths. Master the operation.*
-Created & Developed by **Claudio Junior**.
+Created & Developed by **Claudio Junior** · versão **v3.3.0**.
 
 Simulador de pilotagem de um ROV *work class* offshore que roda inteiramente no navegador (Three.js + TypeScript, site estático). É um projeto pessoal e independente: uma simulação educacional com modelos simplificados, sem a pretensão de reproduzir a dinâmica certificada de um equipamento real.
 
@@ -92,7 +92,7 @@ As condições ambientais são **corrente**, **visibilidade**, **luz natural** e
 
 A fonte **Instrumentação** foi feita para ocupar um monitor: horizonte artificial, rosa dos ventos, leituras agrupadas, alarmes e navegação.
 
-**Versão e diagnóstico.** A tela inicial mostra versão · commit · data do build. Se houver uma versão mais nova publicada, aparece um aviso para recarregar (build antigo em cache). **Diagnóstico** mostra:
+**Versão e diagnóstico.** A tela inicial mostra a versão (por exemplo, `v3.3.0`); commit e data do build ficam em **Diagnóstico**. Se houver uma versão mais nova publicada, aparece um aviso para recarregar (build antigo em cache). **Diagnóstico** mostra:
 - build e comparação com a versão publicada;
 - esquema das configurações;
 - GPU e desempenho;
@@ -121,7 +121,7 @@ node scripts/visual.mjs http://localhost:4173/                     # capturas de
 node scripts/perf.mjs http://localhost:4173/ low,medium            # tempo de quadro com 1, 2, 4 e 4+2 painéis
 ```
 
-Ambiente submarino v3.2 (rochas físicas, terreno com semente e LOD, água por canal, ressuspensão de sedimentos, altímetro de feixe, roteiro de lançamento, novos modelos do ROV e TMS): [docs/V3.2_SUBSEA.md](docs/V3.2_SUBSEA.md). Pesquisa: [docs/research/](docs/research/references.md). Auditoria, matriz de regressões e limitações: [docs/AUDITORIA_V3.2.md](docs/AUDITORIA_V3.2.md). Pesquisa técnica: [docs/PESQUISA_TECNICA.md](docs/PESQUISA_TECNICA.md). Sonar: [docs/SONAR.md](docs/SONAR.md).
+Engenharia do tether e identidade do projeto v3.3: [docs/V3.3_TETHER_IDENTIDADE.md](docs/V3.3_TETHER_IDENTIDADE.md). Ambiente submarino v3.2 (rochas físicas, terreno com semente e LOD, água por canal, ressuspensão de sedimentos, altímetro de feixe, roteiro de lançamento, novos modelos do ROV e TMS): [docs/V3.2_SUBSEA.md](docs/V3.2_SUBSEA.md). Pesquisa: [docs/research/](docs/research/references.md). Auditoria, matriz de regressões e limitações: [docs/AUDITORIA_V3.2.md](docs/AUDITORIA_V3.2.md). Pesquisa técnica: [docs/PESQUISA_TECNICA.md](docs/PESQUISA_TECNICA.md). Sonar: [docs/SONAR.md](docs/SONAR.md).
 
 A publicação é automática: cada push em `main` executa typecheck, testes e build, e publica `dist/` no GitHub Pages (`.github/workflows/deploy.yml`). Em **Settings → Pages**, a fonte precisa estar como **GitHub Actions**.
 

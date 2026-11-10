@@ -1,6 +1,6 @@
 # Pesquisa técnica — simulador de ROV work class
 
-Pesquisa feita em **05/11/2026** pelo Agente 7 (Pesquisa Técnica), na branch `recovery/v3.2`. Usei buscas na web (WebSearch), leitura de páginas (WebFetch), arquivos brutos do GitHub (`raw.githubusercontent.com`) e o pacote npm `@mdn/browser-compat-data` **8.1.8** (publicado em 02/11/2026), consultado localmente para os dados de compatibilidade dos navegadores. Fiz cerca de 30 consultas.
+Pesquisa feita em **05/11/2026**, na branch `recovery/v3.2`. Fontes: buscas na web, leitura das páginas, arquivos brutos do GitHub (`raw.githubusercontent.com`) e o pacote npm `@mdn/browser-compat-data` **8.1.8** (publicado em 02/11/2026), consultado localmente para os dados de compatibilidade dos navegadores. Foram cerca de 30 consultas.
 
 **Restrição de rede desta sessão.** Os hosts abaixo **não resolveram** no ambiente de pesquisa. Nenhum conteúdo deles foi lido diretamente:
 
