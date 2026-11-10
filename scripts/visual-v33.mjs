@@ -1,7 +1,7 @@
 /**
  * Capturas da v3.3 (tether e identidade) para revisão por uma pessoa.
  *   npm run build && npx vite preview --port 4173 &
- *   node scripts/visual-v33.mjs [url] [pasta] [--tether-only]
+ *   node scripts/visual-v33.mjs [url] [pasta] [--tether-only | --identity-only]
  *
  * --tether-only roda só as cenas do cabo. Serve para gerar o "antes" com a
  * mesma cena num build da main, que não tem as telas novas.
@@ -26,6 +26,8 @@ try {
 const url = process.argv[2] ?? 'http://localhost:4173/';
 const out = process.argv[3] ?? 'test-results/visual-v33';
 const tetherOnly = process.argv.includes('--tether-only');
+// --identity-only: só início, Sobre e Contato (sem as cenas do cabo).
+const identityOnly = process.argv.includes('--identity-only');
 mkdirSync(out, { recursive: true });
 
 const browser = await playwright.chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -74,6 +76,11 @@ if (!tetherOnly) {
 }
 
 // --- Tether --------------------------------------------------------------------------
+if (identityOnly) {
+  console.log(errors.length ? `console errors (${errors.length}):\n` + errors.join('\n') : 'no console errors');
+  await browser.close();
+  process.exit(0);
+}
 const page = await newPage({ width: 1280, height: 720 }, { graphics: 'medium', tmsDepth: 50 });
 await page.locator('[data-op="free"]').click();
 await page.getByRole('button', { name: 'Iniciar operação' }).click();

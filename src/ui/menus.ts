@@ -21,7 +21,7 @@ import {
   resetPatch,
   sanitizeMonitor,
 } from '../config/settings';
-import { buildLabel, runtimeEnvironment, shortCommit, type PublishedCheck } from '../diagnostics/buildInfo';
+import { runtimeEnvironment, versionLabel, type PublishedCheck } from '../diagnostics/buildInfo';
 import type { MissionDefinition, MissionStats, OperationMission } from '../mission/types';
 import type { ConditionChoice } from '../sim/conditions';
 import { resolveConditions, visibilityRange } from '../sim/conditions';
@@ -186,7 +186,7 @@ export class Menus {
     if (!el) return;
     if (r.state === 'newer') {
       el.hidden = false;
-      el.innerHTML = `${t('build.newer', { v: r.published.version, c: shortCommit(r.published.commit) })} <button class="mini" data-a="reload">${t('build.reload')}</button>`;
+      el.innerHTML = `${t('build.newer', { v: r.published.version })} <button class="mini" data-a="reload">${t('build.reload')}</button>`;
       el.querySelector('[data-a="reload"]')?.addEventListener('click', () => location.reload());
     } else el.hidden = true;
   }
@@ -236,12 +236,14 @@ export class Menus {
               <dt>${t('menu.site')}</dt><dd>${t('menu.siteDesc')}</dd>
             </dl>
             <p class="disclaimer">${t('menu.disclaimer')}</p>
-            <p class="muted small version" data-o="build" title="${t('build.tooltip')}">${buildLabel()}</p>
             <div class="update-banner" data-o="update" hidden></div>
           </section>
         </div>
         <div class="ident-bar">
-          <p class="signature">${signature()}</p>
+          <div class="ident-who">
+            <p class="signature">${signature()}</p>
+            <span class="version-tag" data-o="build" title="${t('build.tooltip')}">${versionLabel()}</span>
+          </div>
           <div class="ident-links">
             <button class="link-btn" data-a="about">${t('menu.about')}</button>
             <button class="link-btn" data-a="contact">${t('menu.contact')}</button>
@@ -878,7 +880,7 @@ export function aboutMarkup(): string {
           </div>
           <div class="plate-meta">
             <p class="signature">${signature()}</p>
-            <p class="plate-build">${buildLabel()}</p>
+            <p class="plate-build">${versionLabel()}</p>
           </div>
         </div>
         <section class="about-text" aria-label="${t('about.title')}">

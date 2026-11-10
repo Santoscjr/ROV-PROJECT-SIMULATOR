@@ -344,7 +344,8 @@ await sleep(300);
 const prof = await st();
 check(prof.stationProfile === 'offshore' && prof.layout === 'quad' && prof.panels.join() === 'tether,tms,operational,auxiliary' && prof.monitors.length === 2, 'offshore profile: quad tether/TMS/main/aux + sonar monitor + instruments monitor');
 const ver = await page.locator('[data-o="build"]').textContent();
-check(/v\d+\.\d+\.\d+(-[\w.]+)? · [0-9a-f]{7}/.test(ver ?? ''), `start screen shows version + commit (${ver})`);
+// v3.3.0: a tela inicial mostra só a versão; commit e data ficam no Diagnóstico.
+check(/^v\d+\.\d+\.\d+$/.test((ver ?? '').trim()), `start screen shows only the version (${ver})`);
 
 // (G) Operational launch guide: non-blocking, follows the real state, F2 cycles and persists.
 await page.selectOption('[data-q="profile"]', 'pilotagem');

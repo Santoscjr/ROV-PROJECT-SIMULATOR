@@ -31,7 +31,16 @@ export function runtimeEnvironment(loc: { hostname: string; protocol: string } =
   return h || 'desconhecido';
 }
 
-/** One-line label for the start screen. */
+/**
+ * Versão como aparece para quem usa o simulador (tela inicial, Sobre): só
+ * "v3.3.0". Commit e data do build ficam fora da identificação visual, mas
+ * continuam em buildLabel(), usado no Diagnóstico para rastrear o build.
+ */
+export function versionLabel(b: BuildInfo = BUILD): string {
+  return `v${b.version}`;
+}
+
+/** Rótulo técnico completo (versão · commit · data), para o Diagnóstico. */
 export function buildLabel(b: BuildInfo = BUILD): string {
   const date = b.builtAt ? b.builtAt.replace('T', ' ').slice(0, 16) + ' UTC' : '—';
   return `v${b.version} · ${shortCommit(b.commit)}${b.dirty ? '+' : ''} · ${date}`;

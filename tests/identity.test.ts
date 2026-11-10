@@ -16,6 +16,12 @@ import ptSrc from '../src/i18n/pt-BR.ts?raw';
 import enSrc from '../src/i18n/en.ts?raw';
 import identitySrc from '../src/i18n/identity.ts?raw';
 import mainSrc from '../src/main.ts?raw';
+import pkgSrc from '../package.json?raw';
+import lockSrc from '../package-lock.json?raw';
+import v33Doc from '../docs/V3.3_TETHER_IDENTIDADE.md?raw';
+import v32Doc from '../docs/V3.2_SUBSEA.md?raw';
+import researchDoc from '../docs/PESQUISA_TECNICA.md?raw';
+import { BUILD, buildLabel, versionLabel } from '../src/diagnostics/buildInfo';
 
 // arquivos de interface e documentação que carregam a identidade do projeto
 const FILES: Record<string, string> = {
@@ -110,5 +116,46 @@ describe('Sobre e Contato', () => {
       expect(about).not.toMatch(/\b(IA|AI|ChatGPT|Claude|LLM|intelig[êe]ncia artificial|artificial intelligence)\b/);
       expect(about).not.toMatch(/certificad|certified|perfeitamente|perfectly/i);
     }
+  });
+});
+
+describe('apresentação pública', () => {
+  afterEach(() => setLocale('pt-BR'));
+
+  // Interface e documentação pública falam do produto e do autor, não das
+  // ferramentas usadas para construí-lo. O arquivo interno de instruções do
+  // repositório fica de fora: é material de manutenção, não de apresentação.
+  const PUBLIC: Record<string, string> = {
+    ...FILES,
+    'docs/V3.3_TETHER_IDENTIDADE.md': v33Doc,
+    'docs/V3.2_SUBSEA.md': v32Doc,
+    'docs/PESQUISA_TECNICA.md': researchDoc,
+  };
+
+  it('não cita ferramentas de IA nem o processo de desenvolvimento por agentes', () => {
+    const tools = /\b(chatgpt|gpt-?\d*|claude|anthropic|codex|copilot|llm|subagent\w*|agentes? de ia|ai agents?)\b|intelig[êe]ncia artificial|artificial intelligence|ai[- ]assisted|generated (by|with) ai/i;
+    for (const [f, txt] of Object.entries(PUBLIC)) expect(txt.match(tools)?.[0], f).toBeUndefined();
+    // "IA"/"AI" em maiúsculas só nos textos da interface (nos documentos, "IA" é
+    // também um tipo de água de Jerlov).
+    for (const f of ['index.html', 'monitor.html', 'spacemouse.html', 'src/i18n/pt-BR.ts', 'src/i18n/en.ts']) expect(PUBLIC[f], f).not.toMatch(/\b(IA|AI)\b/);
+  });
+
+  it('a versão aparece só como vX.Y.Z; commit e data ficam no Diagnóstico', () => {
+    const b = { version: '3.3.0', commit: 'abcdef1234567', dirty: true, builtAt: '2026-11-07T16:22:00Z', builder: 'local', ref: '' };
+    expect(versionLabel(b)).toBe('v3.3.0');
+    expect(buildLabel(b)).toContain('abcdef1');
+    expect(menusSrc).not.toMatch(/buildLabel/);
+    const about = aboutMarkup();
+    expect(about).toContain(`<p class="plate-build">v${BUILD.version}</p>`);
+    if (/^[0-9a-f]{7,}$/.test(BUILD.commit)) expect(about).not.toContain(BUILD.commit.slice(0, 7));
+    expect(about).not.toMatch(/UTC/);
+  });
+
+  it('versão consistente entre package.json, package-lock.json e o build', () => {
+    const pkg = JSON.parse(pkgSrc) as { version: string };
+    const lock = JSON.parse(lockSrc) as { version: string; packages: Record<string, { version?: string }> };
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages[''].version).toBe(pkg.version);
+    expect(BUILD.version).toBe(pkg.version);
   });
 });
